@@ -31,6 +31,7 @@ func main() {
 	staticDir := flag.String("static", "", "serve UI from this directory instead of the embedded copy (dev)")
 	signup := flag.String("signup", "open", "account creation: open or closed (close before exposing to the internet)")
 	allowOrigin := flag.String("allow-origin", "", "extra websocket origin to accept, e.g. http://localhost:5173 for the vite dev server")
+	dev := flag.Bool("dev", false, "seed dev users with passwordless quick login — NEVER on a real instance")
 	flag.Parse()
 	if *signup != "open" && *signup != "closed" {
 		log.Fatalf("-signup must be open or closed, got %q", *signup)
@@ -44,6 +45,12 @@ func main() {
 	db, err := openDB(*dbPath)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
+	}
+	if *dev {
+		log.Print("DEV MODE: passwordless quick login enabled for seeded dev users")
+		if err := seedDevUsers(db); err != nil {
+			log.Fatalf("seed dev users: %v", err)
+		}
 	}
 
 	var staticFS fs.FS
@@ -63,7 +70,7 @@ func main() {
 	hub := newHub(db, origins)
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           routes(db, hub, staticFS, *signup == "open"),
+		Handler:           routes(db, hub, staticFS, *signup == "open", *dev),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

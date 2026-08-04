@@ -4,11 +4,36 @@
   // parent state directly.
   import { api } from './api.js'
 
+  import { onMount } from 'svelte'
+
   // $props() declares what the parent passes in (Svelte 5's replacement
   // for `export let`).
   let { onSignedIn } = $props()
 
   let error = $state('')
+
+  // Quick-login roster, present only when the server runs with -dev.
+  // A 404 (production) simply leaves this empty and the section hidden.
+  let devUsers = $state([])
+  onMount(async () => {
+    try {
+      devUsers = await api('/api/dev/users')
+    } catch {
+      devUsers = []
+    }
+  })
+
+  async function devLogin(u) {
+    try {
+      const user = await api('/api/dev/login', {
+        method: 'POST',
+        body: JSON.stringify({ email: u.email }),
+      })
+      onSignedIn(user)
+    } catch (err) {
+      error = err.message
+    }
+  }
 
   // Shared by both forms: read the fields, post them, report errors inline.
   async function submit(event, path) {
@@ -23,6 +48,15 @@
     }
   }
 </script>
+
+{#if devUsers.length > 0}
+  <fieldset>
+    <legend>Dev quick login</legend>
+    {#each devUsers as u (u.email)}
+      <button onclick={() => devLogin(u)}>{u.name}</button>
+    {/each}
+  </fieldset>
+{/if}
 
 <fieldset>
   <legend>Sign in</legend>

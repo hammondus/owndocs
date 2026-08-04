@@ -8,8 +8,13 @@ import (
 	"strings"
 )
 
-func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen bool) http.Handler {
+func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen, dev bool) http.Handler {
 	mux := http.NewServeMux()
+
+	if dev {
+		mux.HandleFunc("GET /api/dev/users", handleDevUsers())
+		mux.HandleFunc("POST /api/dev/login", handleDevLogin(db))
+	}
 
 	mux.HandleFunc("POST /api/signup", handleSignup(db, signupOpen))
 	mux.HandleFunc("POST /api/login", handleLogin(db))

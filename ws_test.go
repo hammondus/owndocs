@@ -27,7 +27,7 @@ func testServer(t *testing.T) (*httptest.Server, *sql.DB, *hub) {
 	t.Cleanup(func() { db.Close() })
 	h := newHub(db, nil)
 	static := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<!doctype html>test")}}
-	srv := httptest.NewServer(routes(db, h, static, true))
+	srv := httptest.NewServer(routes(db, h, static, true, false))
 	t.Cleanup(srv.Close)
 	return srv, db, h
 }

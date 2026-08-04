@@ -14,8 +14,10 @@ js:
 test:
 	go vet ./... && go test ./...
 
+# Local dev run: quick-login users + vite dev server origin allowed.
+# Production runs via docker compose, whose entrypoint has neither flag.
 run: build
-	./$(BIN)
+	./$(BIN) -dev -allow-origin http://localhost:5173
 
 # Backend deploy target is linux/arm64. CGO_ENABLED=0 is explicit even though
 # every dep is pure Go — it guarantees the static binary if a dep ever changes.

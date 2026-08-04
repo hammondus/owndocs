@@ -35,7 +35,7 @@ function selectionTouches(state, from, to) {
   return false
 }
 
-function buildDecorations(view) {
+function buildDecorations(view, from, to) {
   const { state } = view
   const decos = []
   const lineDecos = new Map() // line.from -> class, deduped
@@ -48,7 +48,7 @@ function buildDecorations(view) {
     }
   }
 
-  for (const { from, to } of view.visibleRanges) {
+  {
     syntaxTree(state).iterate({
       from,
       to,
@@ -91,15 +91,31 @@ function buildDecorations(view) {
   return Decoration.set(decos, true)
 }
 
+// Decorations are built over the viewport plus this much overscan on each
+// side. Scrolling within the covered range triggers no rebuild — rebuilding
+// per scroll changed line heights mid-measure and made CodeMirror's layout
+// loop oscillate ("Viewport failed to stabilize") on large documents.
+const OVERSCAN = 4000
+
 const livePreview = ViewPlugin.fromClass(
   class {
     constructor(view) {
-      this.decorations = buildDecorations(view)
+      this.decorations = this.build(view)
     }
     update(u) {
-      if (u.docChanged || u.selectionSet || u.viewportChanged) {
-        this.decorations = buildDecorations(u.view)
+      if (u.docChanged || u.selectionSet || (u.viewportChanged && !this.covers(u.view))) {
+        this.decorations = this.build(u.view)
       }
+    }
+    covers(view) {
+      const vp = view.viewport
+      return this.range && this.range.from <= vp.from && this.range.to >= vp.to
+    }
+    build(view) {
+      const from = Math.max(0, view.viewport.from - OVERSCAN)
+      const to = Math.min(view.state.doc.length, view.viewport.to + OVERSCAN)
+      this.range = { from, to }
+      return buildDecorations(view, from, to)
     }
   },
   { decorations: (v) => v.decorations }

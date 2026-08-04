@@ -4,9 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io/fs"
-	"mime"
 	"net/http"
-	"path"
 	"strings"
 )
 
@@ -34,22 +32,15 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS) http.Handler {
 	return mux
 }
 
-// staticHandler serves the UI. Cache policy is set here, at the chokepoint:
-// HTML is no-cache (store but always revalidate); everything else gets a
-// short max-age since none of it is content-hashed yet. Revisit when the
-// Svelte build introduces hashed asset names.
+// staticHandler serves the UI. Cache policy is set here, at the chokepoint.
+// Everything is no-cache (store but always revalidate) for now: app.js is
+// unhashed and changes every build — max-age let browsers run a stale
+// bundle for up to an hour after a rebuild. Switch assets to
+// public/immutable when the Vite build introduces content-hashed names.
 func staticHandler(staticFS fs.FS) http.Handler {
 	fileServer := http.FileServerFS(staticFS)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := path.Clean(r.URL.Path)
-		if p == "/" {
-			p = "/index.html"
-		}
-		if strings.HasSuffix(p, ".html") || mime.TypeByExtension(path.Ext(p)) == "" {
-			w.Header().Set("Cache-Control", "no-cache")
-		} else {
-			w.Header().Set("Cache-Control", "max-age=3600")
-		}
+		w.Header().Set("Cache-Control", "no-cache")
 		fileServer.ServeHTTP(w, r)
 	})
 }

@@ -13,6 +13,11 @@ import {
 const MSG_DOC = 0
 const MSG_AWARENESS = 1
 
+// Client-side guard just under the server's 16 MiB per-message read limit.
+// Sending anything bigger gets the connection closed (1009) — and must
+// never be retried blindly, or the reconnect loop becomes self-sustaining.
+const MAX_WS_UPDATE = 15 * 1024 * 1024
+
 // Server->client batches: repeated [uvarint len][bytes].
 function* iterFrames(buf) {
   let i = 0
@@ -63,6 +68,13 @@ export class Provider {
 
   _send(type, payload) {
     if (this.ws?.readyState !== WebSocket.OPEN) return
+    if (payload.length > MAX_WS_UPDATE) {
+      console.error(
+        `docs: refusing to send a ${payload.length}-byte update (limit ${MAX_WS_UPDATE}). ` +
+        'This edit is too large for one message; it will sync via the next reconnect diff or not at all.'
+      )
+      return
+    }
     const msg = new Uint8Array(1 + payload.length)
     msg[0] = type
     msg.set(payload, 1)
@@ -80,20 +92,29 @@ export class Provider {
     ws.binaryType = 'arraybuffer'
     this.ws = ws
     this.onStatus('connecting…')
+    // When resyncing, collect the replay frames so we can reconstruct the
+    // server's state vector and send only the diff (see synced handler).
+    let replayFrames = this.resyncNeeded ? [] : null
 
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
         const msg = JSON.parse(ev.data)
         if (msg.type === 'synced') {
           // A dropped connection may have swallowed local updates the server
-          // never received — there's no per-update ack to know which. After
-          // the replay lands, push our full state once; Yjs updates are
-          // idempotent, so the server-side log grows a redundant row and
-          // compaction reclaims it later. Correctness over log elegance.
+          // never received — there's no per-update ack to know which. The
+          // replay we just received is exactly what the server has, so diff
+          // against it and push only what's missing. (An earlier version
+          // sent the full state here; combined with the message size limit
+          // that turned one oversized doc into an infinite reconnect loop.)
           if (this.resyncNeeded) {
             this.resyncNeeded = false
-            this._send(MSG_DOC, Y.encodeStateAsUpdate(this.doc))
+            const scratch = new Y.Doc()
+            for (const f of replayFrames) Y.applyUpdate(scratch, f)
+            const diff = Y.encodeStateAsUpdate(this.doc, Y.encodeStateVector(scratch))
+            scratch.destroy()
+            if (diff.length > 2) this._send(MSG_DOC, diff) // 2 bytes = empty update
           }
+          replayFrames = null
           this.onStatus('synced')
           this.onSynced(msg)
         }
@@ -102,7 +123,10 @@ export class Provider {
       const u8 = new Uint8Array(ev.data)
       const body = u8.subarray(1)
       if (u8[0] === MSG_DOC) {
-        for (const update of iterFrames(body)) Y.applyUpdate(this.doc, update, this)
+        for (const update of iterFrames(body)) {
+          Y.applyUpdate(this.doc, update, this)
+          if (replayFrames) replayFrames.push(update)
+        }
       } else if (u8[0] === MSG_AWARENESS) {
         applyAwarenessUpdate(this.awareness, body, this)
       }
@@ -114,10 +138,12 @@ export class Provider {
         this._send(MSG_AWARENESS, encodeAwarenessUpdate(this.awareness, [this.doc.clientID]))
       }
     }
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (this.stopped) return
       this.resyncNeeded = true
-      this.onStatus('disconnected, retrying…')
+      // Surface the close code: 1009 = a message exceeded the server limit,
+      // 1008 = policy violation (write from viewer), 1006 = abnormal.
+      this.onStatus(`disconnected (${ev.code || '?'}), retrying…`)
       setTimeout(() => this.connect(), this.backoff)
       this.backoff = Math.min(this.backoff * 2, 10000)
     }

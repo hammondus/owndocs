@@ -233,13 +233,19 @@ but their doc writes close the connection.
 
 **Reconnect resync**: there is no per-update ack, so after a dropped
 connection the client cannot know which of its updates the server received.
-On every reconnect, once the replay lands, the client pushes its full state
-as one update. Yjs updates are idempotent, so the cost is a redundant log
-row that compaction later reclaims — correctness over log elegance. This
-also sets the message size ceiling: the server's per-message read limit is
-16 MiB because a resync (or a large paste, which arrives as ONE update)
-carries a whole document; the original 1 MiB limit broke the first big
-paste.
+On reconnect the client rebuilds the server's state vector from the replay
+it just received and sends only the **diff**. ~~First version pushed the
+full document state~~ — combined with the per-message size limit, that
+turned one oversized document into a self-sustaining reconnect loop
+(send > limit → server closes 1009 → reconnect → full resync → 1009 → …).
+The diff is near-empty in the normal case, so the loop cannot restart.
+
+**Message size limit**: 16 MiB server-side read limit (a paste arrives as
+ONE Yjs update; the original 1 MiB broke the first big paste). The client
+refuses to send any single update over 15 MiB with a loud console error
+instead of letting the server close the connection — a deliberate hard
+ceiling on single-edit size rather than a retry loop. Close codes are
+surfaced in the client status line for diagnosability.
 
 Joining holds the room lock across the log read and client registration, so
 no update can slip between "read the log" and "start receiving broadcasts".
@@ -274,6 +280,15 @@ hashes (a leaked db doesn't leak live sessions); CSRF protection is the
 cross-origin form can't send that without a CORS preflight) plus
 `coder/websocket`'s default same-origin check on upgrade; signup is currently
 open — gate or invite-code it before exposing an instance to the internet.
+
+### Static assets: everything no-cache until content-hashed
+
+The bundle (`app.js`) is unhashed and changes every build; `max-age` let
+browsers run a stale bundle for up to an hour after a rebuild, which made
+debugging incoherent (old client code against a new server). Deviation from
+the usual "unhashed assets get ~1h" policy is deliberate and temporary:
+switch to `public, max-age=31536000, immutable` when the Vite build
+introduces content-hashed asset names.
 
 ### Version history: the archived update log *is* the history
 

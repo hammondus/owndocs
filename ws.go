@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
@@ -14,12 +15,24 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Wire protocol (see DESIGN-DECISIONS.md):
-//   client -> server  binary: ONE raw Yjs update, unframed
-//   server -> client  binary: a batch of updates, each [uvarint len][bytes]
-//   server -> client  text:   JSON control, currently {"type":"synced"}
-// A stored `updates` row is exactly one server->client batch message, so
-// replay is a straight copy from SQLite to the socket.
+// Wire protocol v2 (see DESIGN-DECISIONS.md). Every binary message starts
+// with a type byte:
+//
+//	client -> server  [msgDoc]       one raw Yjs update, unframed
+//	client -> server  [msgAwareness] one raw y-protocols awareness update
+//	server -> client  [msgDoc]       a batch: repeated [uvarint len][bytes]
+//	server -> client  [msgAwareness] one awareness update, relayed as-is
+//	server -> client  text           JSON control; "synced" carries replay
+//	                                 stats the client uses to decide whether
+//	                                 to snapshot or verify (compaction.js)
+//
+// A stored `updates` row is a msgDoc payload without the type byte, so
+// replay is prepend-a-byte-and-copy. Awareness is ephemeral: relayed and
+// remembered per-connection for join replay, never persisted.
+const (
+	msgDoc       = 0
+	msgAwareness = 1
+)
 
 const (
 	maxUpdateSize = 1 << 20 // per-message read limit
@@ -44,15 +57,17 @@ type room struct {
 
 	mu         sync.Mutex
 	clients    map[*client]struct{}
-	buf        [][]byte // updates received but not yet flushed to sqlite
+	awareness  map[*client][]byte // each connection's latest awareness payload
+	buf        [][]byte           // updates received but not yet flushed to sqlite
 	flushTimer *time.Timer
 	closed     bool // room removed from hub map; joins must retry
 }
 
 type client struct {
-	conn *websocket.Conn
-	send chan []byte // framed batches; closed by the room on eviction
-	role string
+	conn   *websocket.Conn
+	send   chan []byte // typed messages; closed by the room on eviction
+	role   string
+	synced []byte // the synced control message, prepared at join time
 }
 
 var errRoomClosed = errors.New("room closed")
@@ -66,12 +81,21 @@ func frameUpdates(updates [][]byte) []byte {
 	return out
 }
 
+func typed(msgType byte, payload []byte) []byte {
+	return append([]byte{msgType}, payload...)
+}
+
 func (h *hub) room(docID string) *room {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	rm, ok := h.rooms[docID]
 	if !ok {
-		rm = &room{hub: h, docID: docID, clients: make(map[*client]struct{})}
+		rm = &room{
+			hub:       h,
+			docID:     docID,
+			clients:   make(map[*client]struct{}),
+			awareness: make(map[*client][]byte),
+		}
 		h.rooms[docID] = rm
 	}
 	return rm
@@ -98,6 +122,7 @@ func (h *hub) closeRoom(docID string) {
 		close(c.send)
 	}
 	rm.clients = map[*client]struct{}{}
+	rm.awareness = map[*client][]byte{}
 	rm.mu.Unlock()
 }
 
@@ -115,36 +140,137 @@ func (h *hub) shutdown() {
 	}
 }
 
-// join registers the client after enqueueing the full replay backlog (every
-// persisted batch row plus the current unflushed buffer) on c.send. Holding
-// the lock across the DB read guarantees no update can slip between "read
-// the log" and "start receiving broadcasts". Returns errRoomClosed if the
-// room was concurrently deleted; the caller fetches a fresh room and retries.
+// replayInfo is the initial-sync backlog plus the stats reported in the
+// synced control message.
+type replayInfo struct {
+	msgs      [][]byte
+	lastSeq   int64
+	snapSeq   int64
+	snapState string
+	tailRows  int
+	tailBytes int
+}
+
+// buildReplay assembles the document backlog: the newest snapshot whose
+// checksum verifies, then live update rows past it. If no snapshot is
+// usable it falls back to archived segments plus the full live log — the
+// log-is-truth property means a bad snapshot costs a fallback, not data.
+func buildReplay(db *sql.DB, docID string) (*replayInfo, error) {
+	ri := &replayInfo{}
+	if err := db.QueryRow("SELECT last_seq FROM documents WHERE id = ?", docID).Scan(&ri.lastSeq); err != nil {
+		return nil, err
+	}
+
+	// The db pool is pinned to one connection, so every result set must be
+	// fully consumed (or closed) before the next query — an open cursor
+	// holds the only connection and the next Query deadlocks.
+	type snap struct {
+		seq       int64
+		data, sum []byte
+		state     string
+	}
+	var snaps []snap
+	rows, err := db.Query("SELECT last_seq, data, sha256, state FROM snapshots WHERE doc_id = ? ORDER BY last_seq DESC", docID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var s snap
+		if err := rows.Scan(&s.seq, &s.data, &s.sum, &s.state); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		snaps = append(snaps, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	afterSeq := int64(0)
+	for _, s := range snaps {
+		got := sha256.Sum256(s.data)
+		if string(got[:]) != string(s.sum) {
+			log.Printf("doc %s: snapshot seq %d fails checksum, skipping", docID, s.seq)
+			continue
+		}
+		ri.msgs = append(ri.msgs, typed(msgDoc, frameUpdates([][]byte{s.data})))
+		ri.snapSeq, ri.snapState, afterSeq = s.seq, s.state, s.seq
+		break
+	}
+
+	if afterSeq == 0 {
+		// No usable snapshot: archived segments (if any) come first.
+		segs, err := db.Query("SELECT data FROM history_segments WHERE doc_id = ? ORDER BY start_seq", docID)
+		if err != nil {
+			return nil, err
+		}
+		defer segs.Close()
+		for segs.Next() {
+			var gz []byte
+			if err := segs.Scan(&gz); err != nil {
+				return nil, err
+			}
+			raw, err := gunzip(gz)
+			if err != nil {
+				return nil, err
+			}
+			ri.msgs = append(ri.msgs, typed(msgDoc, raw))
+		}
+		if err := segs.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	upd, err := db.Query("SELECT data FROM updates WHERE doc_id = ? AND seq > ? ORDER BY seq", docID, afterSeq)
+	if err != nil {
+		return nil, err
+	}
+	defer upd.Close()
+	for upd.Next() {
+		var data []byte
+		if err := upd.Scan(&data); err != nil {
+			return nil, err
+		}
+		ri.msgs = append(ri.msgs, typed(msgDoc, data))
+		ri.tailRows++
+		ri.tailBytes += len(data)
+	}
+	return ri, upd.Err()
+}
+
+// join registers the client after enqueueing the replay backlog (snapshot +
+// tail + unflushed buffer + peers' awareness) on c.send. Holding the lock
+// across the DB read guarantees no update can slip between "read the log"
+// and "start receiving broadcasts". Returns errRoomClosed if the room was
+// concurrently deleted; the caller fetches a fresh room and retries.
 func (rm *room) join(c *client) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	if rm.closed {
 		return errRoomClosed
 	}
-	rows, err := rm.hub.db.Query("SELECT data FROM updates WHERE doc_id = ? ORDER BY seq", rm.docID)
+	ri, err := buildReplay(rm.hub.db, rm.docID)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	var backlog [][]byte
-	for rows.Next() {
-		var data []byte
-		if err := rows.Scan(&data); err != nil {
-			return err
-		}
-		backlog = append(backlog, data)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
+	backlog := ri.msgs
 	if len(rm.buf) > 0 {
-		backlog = append(backlog, frameUpdates(rm.buf))
+		backlog = append(backlog, typed(msgDoc, frameUpdates(rm.buf)))
+		ri.tailRows++
+		ri.tailBytes += len(backlog[len(backlog)-1]) - 1
 	}
+	for _, aw := range rm.awareness {
+		backlog = append(backlog, typed(msgAwareness, aw))
+	}
+	c.synced, _ = json.Marshal(map[string]any{
+		"type":           "synced",
+		"last_seq":       ri.lastSeq,
+		"snapshot_seq":   ri.snapSeq,
+		"snapshot_state": ri.snapState,
+		"tail_rows":      ri.tailRows,
+		"tail_bytes":     ri.tailBytes,
+	})
 	// send is sized to hold the whole backlog so enqueueing here can't block
 	// while the lock is held.
 	c.send = make(chan []byte, len(backlog)+sendQueueSize)
@@ -159,6 +285,7 @@ func (rm *room) leave(c *client) {
 	rm.mu.Lock()
 	if _, ok := rm.clients[c]; ok {
 		delete(rm.clients, c)
+		delete(rm.awareness, c)
 		close(c.send)
 	}
 	empty := len(rm.clients) == 0 && !rm.closed
@@ -179,9 +306,27 @@ func (rm *room) leave(c *client) {
 	rm.hub.mu.Unlock()
 }
 
-// ingest buffers one update from `from` and broadcasts it to everyone else.
+// broadcastLocked sends msg to every client except from, evicting slow
+// consumers rather than blocking the room; they reconnect and replay from
+// the log, so eviction never loses data. Caller holds rm.mu.
+func (rm *room) broadcastLocked(from *client, msg []byte) {
+	for c := range rm.clients {
+		if c == from {
+			continue
+		}
+		select {
+		case c.send <- msg:
+		default:
+			delete(rm.clients, c)
+			delete(rm.awareness, c)
+			close(c.send)
+		}
+	}
+}
+
+// ingest buffers one doc update from `from` and broadcasts it.
 func (rm *room) ingest(from *client, update []byte) {
-	framed := frameUpdates([][]byte{update})
+	msg := typed(msgDoc, frameUpdates([][]byte{update}))
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	if rm.closed {
@@ -191,22 +336,24 @@ func (rm *room) ingest(from *client, update []byte) {
 	if rm.flushTimer == nil {
 		rm.flushTimer = time.AfterFunc(flushInterval, rm.flush)
 	}
-	for c := range rm.clients {
-		if c == from {
-			continue
-		}
-		select {
-		case c.send <- framed:
-		default:
-			// Slow consumer: evict rather than block the room. The client
-			// reconnects and replays from the log, so nothing is lost.
-			delete(rm.clients, c)
-			close(c.send)
-		}
-	}
+	rm.broadcastLocked(from, msg)
 }
 
-// flush persists the buffered updates as one batch row.
+// ingestAwareness relays a presence update and remembers it so later
+// joiners see current peers immediately.
+func (rm *room) ingestAwareness(from *client, payload []byte) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	if rm.closed {
+		return
+	}
+	rm.awareness[from] = payload
+	rm.broadcastLocked(from, typed(msgAwareness, payload))
+}
+
+// flush persists the buffered updates as one batch row, advancing the
+// document's sequence counter. documents.last_seq is authoritative:
+// MAX(updates.seq) breaks once verified rows are archived away.
 func (rm *room) flush() {
 	rm.mu.Lock()
 	buf := rm.buf
@@ -219,11 +366,27 @@ func (rm *room) flush() {
 	if len(buf) == 0 {
 		return
 	}
-	now := time.Now().Unix()
-	_, err := rm.hub.db.Exec(`
-		INSERT INTO updates (doc_id, seq, data, created_at)
-		VALUES (?, 1 + COALESCE((SELECT MAX(seq) FROM updates WHERE doc_id = ?), 0), ?, ?)`,
-		rm.docID, rm.docID, frameUpdates(buf), now)
+	err := func() error {
+		tx, err := rm.hub.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		var last int64
+		if err := tx.QueryRow("SELECT last_seq FROM documents WHERE id = ?", rm.docID).Scan(&last); err != nil {
+			return err
+		}
+		now := time.Now().Unix()
+		if _, err := tx.Exec("INSERT INTO updates (doc_id, seq, data, created_at) VALUES (?,?,?,?)",
+			rm.docID, last+1, frameUpdates(buf), now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec("UPDATE documents SET last_seq = ?, updated_at = ? WHERE id = ?",
+			last+1, now, rm.docID); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}()
 	if err != nil {
 		// Put the updates back so the next flush (or shutdown) retries;
 		// losing acknowledged edits is the one unacceptable outcome.
@@ -236,9 +399,7 @@ func (rm *room) flush() {
 			}
 		}
 		rm.mu.Unlock()
-		return
 	}
-	_, _ = rm.hub.db.Exec("UPDATE documents SET updated_at = ? WHERE id = ?", now, rm.docID)
 }
 
 // writer drains c.send to the socket. The backlog is pre-enqueued, so "queue
@@ -264,8 +425,7 @@ func (c *client) writer(ctx context.Context, cancel context.CancelFunc) {
 		}
 		break
 	}
-	synced, _ := json.Marshal(map[string]string{"type": "synced"})
-	if c.conn.Write(ctx, websocket.MessageText, synced) != nil {
+	if c.conn.Write(ctx, websocket.MessageText, c.synced) != nil {
 		return
 	}
 
@@ -321,20 +481,27 @@ func (h *hub) handleWS() http.HandlerFunc {
 		defer cancel()
 		go c.writer(ctx, cancel)
 
-		// Reader (this goroutine): ingest updates until the peer goes away.
+		// Reader (this goroutine): ingest messages until the peer goes away.
 		for {
 			typ, data, err := conn.Read(ctx)
 			if err != nil {
 				break
 			}
-			if typ != websocket.MessageBinary || len(data) == 0 {
+			if typ != websocket.MessageBinary || len(data) < 2 {
 				continue
 			}
-			if c.role == "viewer" {
-				conn.Close(websocket.StatusPolicyViolation, "read-only access")
-				break
+			switch data[0] {
+			case msgDoc:
+				// Presence is harmless from viewers; document writes are not.
+				if c.role == "viewer" {
+					conn.Close(websocket.StatusPolicyViolation, "read-only access")
+					rm.leave(c)
+					return
+				}
+				rm.ingest(c, data[1:])
+			case msgAwareness:
+				rm.ingestAwareness(c, data[1:])
 			}
-			rm.ingest(c, data)
 		}
 		rm.leave(c)
 	}

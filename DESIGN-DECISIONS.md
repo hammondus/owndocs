@@ -95,6 +95,17 @@ encode bugs; replay-compare → decodable-but-semantically-wrong snapshots
 (e.g. a Yjs version bug). If all three miss, the archived log still recovers.
 Trusting client blobs is thereby a performance question, not a durability one.
 
+Implementation notes (phase 2): the replay-compare uses state-vector
+**dominance**, not equality — the snapshot legitimately contains its
+uploader's not-yet-flushed edits, so it may be ahead of the log but must
+never be behind it. The verify bundle (both reconstructions + the pending
+seq) is read in one SQLite transaction, so a flush can't race the
+comparison. Caveat: state vectors track inserts, not delete sets, so a
+snapshot that lost only deletions would pass — accepted as a residual risk
+since the archived log makes even that recoverable. If the pending snapshot
+fails checksum or rejection, joins transparently fall back to verified
+snapshot, else archived segments + live log.
+
 Edge cases: client crash mid-snapshot costs nothing (next session
 re-triggers); concurrent snapshot posts resolve by highest `last_seq` wins; a
 never-reopened doc never verifies but is also never read; a marathon single
@@ -199,21 +210,35 @@ stdlib has no WebSocket support (`x/net/websocket` is effectively abandoned).
 `coder/websocket` is minimal, modern, and context-aware — the smallest
 justified dependency that closes the gap.
 
-### Sync wire protocol (phase 1)
+### Sync wire protocol (v2)
 
-- client → server, binary: **one raw Yjs update**, unframed.
-- server → client, binary: **a batch** — repeated `[uvarint len][bytes]`. A
-  stored `updates` row is exactly one batch message, so replay is a straight
-  copy from SQLite to the socket with zero parsing.
-- server → client, text: JSON control messages; currently only
-  `{"type":"synced"}`, sent once the replay backlog has drained.
+Every binary message starts with a type byte: `0` document, `1` awareness.
+
+- client → server `[0]`: one raw Yjs update, unframed.
+- client → server `[1]`: one raw y-protocols awareness update.
+- server → client `[0]`: a batch — repeated `[uvarint len][bytes]`. A stored
+  `updates` row is a batch payload, so replay is prepend-a-byte-and-copy.
+- server → client `[1]`: one awareness update, relayed as-is.
+- server → client, text: JSON control. `synced` carries replay stats
+  (`last_seq`, snapshot seq/state, tail rows/bytes) — the client uses these
+  to decide whether to upload or verify a snapshot (compaction.js).
+
+Awareness (presence/cursors) is ephemeral: relayed, never persisted. The
+room remembers each connection's latest awareness payload and replays them
+to joiners so peers appear immediately. Known wart: the server can't
+synthesize a departure (it would need to decode client IDs), so on a hard
+crash a peer's cursor lingers until the awareness protocol's 30s timeout;
+clean closes broadcast removal via beforeunload. Viewers may send awareness
+but their doc writes close the connection.
 
 Joining holds the room lock across the log read and client registration, so
 no update can slip between "read the log" and "start receiving broadcasts".
 Slow consumers are evicted rather than buffered without bound — the client
 reconnects and replays from the log, so eviction never loses data. Room
 buffers flush to SQLite after 1s of activity, on last-client exit, and on
-shutdown; a failed flush re-queues rather than drops.
+shutdown; a failed flush re-queues rather than drops. `documents.last_seq`
+is the authoritative sequence counter — `MAX(updates.seq)` breaks once
+verified rows are archived away.
 
 ### Persistence: SQLite via `modernc.org/sqlite`
 
@@ -259,8 +284,8 @@ docx is excluded.
 
 ## Open questions
 
-- Snapshot-trigger threshold and batch-flush interval: pick real numbers once
-  there's real typing traffic to measure.
+- Snapshot-trigger thresholds (currently >100 tail rows or >128 KiB) and the
+  1s batch-flush interval: revisit once there's real typing traffic.
 - Comment threads: anchor storage in the Yjs doc vs. SQLite side-table.
 - Search: without server-side document reads, any full-text search must be
   client-fed. Deferred until wanted.

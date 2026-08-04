@@ -2,4 +2,4 @@
 /dist/
 /data/
 web/node_modules/
-web/static/demo.js
+web/static/app.js

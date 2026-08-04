@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -75,27 +76,39 @@ func dialWS(t *testing.T, srv *httptest.Server, c *http.Client, docID string) *w
 	return conn
 }
 
+type syncedMsg struct {
+	Type          string `json:"type"`
+	LastSeq       int64  `json:"last_seq"`
+	SnapshotSeq   int64  `json:"snapshot_seq"`
+	SnapshotState string `json:"snapshot_state"`
+	TailRows      int    `json:"tail_rows"`
+	TailBytes     int    `json:"tail_bytes"`
+}
+
 // readUntilSynced consumes messages until the synced control message,
-// returning all updates decoded from binary batches along the way.
-func readUntilSynced(t *testing.T, conn *websocket.Conn) [][]byte {
+// returning doc updates and awareness payloads seen along the way.
+func readUntilSynced(t *testing.T, conn *websocket.Conn) (updates, awareness [][]byte, synced syncedMsg) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var updates [][]byte
 	for {
 		typ, data, err := conn.Read(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if typ == websocket.MessageText {
-			var msg struct{ Type string }
-			json.Unmarshal(data, &msg)
-			if msg.Type == "synced" {
-				return updates
+			json.Unmarshal(data, &synced)
+			if synced.Type == "synced" {
+				return updates, awareness, synced
 			}
 			continue
 		}
-		updates = append(updates, decodeBatch(t, data)...)
+		switch data[0] {
+		case msgDoc:
+			updates = append(updates, decodeBatch(t, data[1:])...)
+		case msgAwareness:
+			awareness = append(awareness, data[1:])
+		}
 	}
 }
 
@@ -114,7 +127,8 @@ func decodeBatch(t *testing.T, data []byte) [][]byte {
 	return out
 }
 
-func readOneUpdate(t *testing.T, conn *websocket.Conn) []byte {
+// readOneMessage returns the next binary message's type byte and payload.
+func readOneMessage(t *testing.T, conn *websocket.Conn) (byte, []byte) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -126,11 +140,27 @@ func readOneUpdate(t *testing.T, conn *websocket.Conn) []byte {
 		if typ != websocket.MessageBinary {
 			continue
 		}
-		got := decodeBatch(t, data)
-		if len(got) != 1 {
-			t.Fatalf("expected batch of 1, got %d", len(got))
-		}
-		return got[0]
+		return data[0], data[1:]
+	}
+}
+
+func readOneUpdate(t *testing.T, conn *websocket.Conn) []byte {
+	t.Helper()
+	mt, payload := readOneMessage(t, conn)
+	if mt != msgDoc {
+		t.Fatalf("message type = %d, want msgDoc", mt)
+	}
+	got := decodeBatch(t, payload)
+	if len(got) != 1 {
+		t.Fatalf("expected batch of 1, got %d", len(got))
+	}
+	return got[0]
+}
+
+func sendTyped(t *testing.T, conn *websocket.Conn, msgType byte, payload []byte) {
+	t.Helper()
+	if err := conn.Write(context.Background(), websocket.MessageBinary, typed(msgType, payload)); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -141,7 +171,7 @@ func TestRelayAndReplay(t *testing.T) {
 
 	a := dialWS(t, srv, alice, docID)
 	defer a.Close(websocket.StatusNormalClosure, "")
-	if got := readUntilSynced(t, a); len(got) != 0 {
+	if got, _, _ := readUntilSynced(t, a); len(got) != 0 {
 		t.Fatalf("fresh doc replayed %d updates, want 0", len(got))
 	}
 
@@ -151,10 +181,7 @@ func TestRelayAndReplay(t *testing.T) {
 
 	// A's update reaches B (payload is opaque to the server, any bytes do).
 	update := []byte{0xde, 0xad, 0xbe, 0xef}
-	ctx := context.Background()
-	if err := a.Write(ctx, websocket.MessageBinary, update); err != nil {
-		t.Fatal(err)
-	}
+	sendTyped(t, a, msgDoc, update)
 	if got := readOneUpdate(t, b); !bytes.Equal(got, update) {
 		t.Fatalf("B got %x, want %x", got, update)
 	}
@@ -166,7 +193,7 @@ func TestRelayAndReplay(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		c := dialWS(t, srv, alice, docID)
-		got := readUntilSynced(t, c)
+		got, _, _ := readUntilSynced(t, c)
 		c.Close(websocket.StatusNormalClosure, "")
 		if len(got) == 1 && bytes.Equal(got[0], update) {
 			break
@@ -177,6 +204,192 @@ func TestRelayAndReplay(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func TestAwarenessRelayAndJoinReplay(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	docID := createDoc(t, srv, alice)
+
+	a := dialWS(t, srv, alice, docID)
+	defer a.Close(websocket.StatusNormalClosure, "")
+	readUntilSynced(t, a)
+
+	b := dialWS(t, srv, alice, docID)
+	defer b.Close(websocket.StatusNormalClosure, "")
+	readUntilSynced(t, b)
+
+	// Live relay: A's presence reaches B.
+	presence := []byte{0x42, 0x43}
+	sendTyped(t, a, msgAwareness, presence)
+	mt, payload := readOneMessage(t, b)
+	if mt != msgAwareness || !bytes.Equal(payload, presence) {
+		t.Fatalf("B got type %d payload %x, want awareness %x", mt, payload, presence)
+	}
+
+	// Join replay: a newcomer sees A's remembered presence immediately.
+	c := dialWS(t, srv, alice, docID)
+	defer c.Close(websocket.StatusNormalClosure, "")
+	_, aw, _ := readUntilSynced(t, c)
+	found := false
+	for _, p := range aw {
+		if bytes.Equal(p, presence) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("join replayed %d awareness payloads, none matched", len(aw))
+	}
+}
+
+func TestSnapshotLifecycle(t *testing.T) {
+	srv, db, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	docID := createDoc(t, srv, alice)
+
+	// Write an update and disconnect so it flushes as row seq 1.
+	a := dialWS(t, srv, alice, docID)
+	readUntilSynced(t, a)
+	update := []byte{1, 2, 3}
+	sendTyped(t, a, msgDoc, update)
+	a.Close(websocket.StatusNormalClosure, "")
+	waitForRow(t, db, docID, 1)
+
+	// Upload a (fake) snapshot claiming coverage of seq 1.
+	snap := []byte{9, 9, 9}
+	res, err := alice.Post(srv.URL+"/api/docs/"+docID+"/snapshot?last_seq=1", "application/octet-stream", bytes.NewReader(snap))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("snapshot upload: status %d", res.StatusCode)
+	}
+
+	// A joining client now replays the snapshot first and reports pending.
+	c := dialWS(t, srv, alice, docID)
+	got, _, synced := readUntilSynced(t, c)
+	c.Close(websocket.StatusNormalClosure, "")
+	if len(got) < 1 || !bytes.Equal(got[0], snap) {
+		t.Fatalf("replay did not start with snapshot: %x", got)
+	}
+	if synced.SnapshotSeq != 1 || synced.SnapshotState != "pending" {
+		t.Fatalf("synced = %+v, want snapshot 1 pending", synced)
+	}
+
+	// The verify bundle carries both reconstructions and the pending seq.
+	res, err = alice.Get(srv.URL + "/api/docs/" + docID + "/verify-bundle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	parts := splitBundle(t, bundle)
+	if len(parts) != 3 {
+		t.Fatalf("bundle has %d parts, want 3", len(parts))
+	}
+	if a := decodeBatch(t, parts[0]); len(a) != 1 || !bytes.Equal(a[0], update) {
+		t.Fatalf("bundle A = %x, want the logged update", parts[0])
+	}
+	if b := decodeBatch(t, parts[1]); len(b) != 1 || !bytes.Equal(b[0], snap) {
+		t.Fatalf("bundle B = %x, want the snapshot", parts[1])
+	}
+
+	// Positive verdict: snapshot verified, rows archived (gzipped), log empty.
+	body, _ := json.Marshal(map[string]any{"last_seq": 1, "ok": true})
+	res, err = alice.Post(srv.URL+"/api/docs/"+docID+"/verify", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("verify: status %d", res.StatusCode)
+	}
+	var liveRows int
+	db.QueryRow("SELECT COUNT(*) FROM updates WHERE doc_id = ?", docID).Scan(&liveRows)
+	if liveRows != 0 {
+		t.Fatalf("%d live rows after archive, want 0", liveRows)
+	}
+	var gz []byte
+	if err := db.QueryRow("SELECT data FROM history_segments WHERE doc_id = ?", docID).Scan(&gz); err != nil {
+		t.Fatal("no history segment written:", err)
+	}
+	raw, err := gunzip(gz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seg := decodeBatch(t, raw); len(seg) != 1 || !bytes.Equal(seg[0], update) {
+		t.Fatalf("archived segment = %x, want the original update", raw)
+	}
+
+	// New edits after archival must get fresh sequence numbers (> 1).
+	d := dialWS(t, srv, alice, docID)
+	readUntilSynced(t, d)
+	sendTyped(t, d, msgDoc, []byte{7})
+	d.Close(websocket.StatusNormalClosure, "")
+	waitForRow(t, db, docID, 2)
+}
+
+func TestSnapshotReject(t *testing.T) {
+	srv, db, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	docID := createDoc(t, srv, alice)
+
+	a := dialWS(t, srv, alice, docID)
+	readUntilSynced(t, a)
+	sendTyped(t, a, msgDoc, []byte{1})
+	a.Close(websocket.StatusNormalClosure, "")
+	waitForRow(t, db, docID, 1)
+
+	res, _ := alice.Post(srv.URL+"/api/docs/"+docID+"/snapshot?last_seq=1", "application/octet-stream", bytes.NewReader([]byte{9}))
+	res.Body.Close()
+
+	body, _ := json.Marshal(map[string]any{"last_seq": 1, "ok": false})
+	res, err := alice.Post(srv.URL+"/api/docs/"+docID+"/verify", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	var snaps, rows int
+	db.QueryRow("SELECT COUNT(*) FROM snapshots WHERE doc_id = ?", docID).Scan(&snaps)
+	db.QueryRow("SELECT COUNT(*) FROM updates WHERE doc_id = ?", docID).Scan(&rows)
+	if snaps != 0 || rows != 1 {
+		t.Fatalf("after reject: %d snapshots (want 0), %d rows (want 1)", snaps, rows)
+	}
+}
+
+// waitForRow polls until the doc's log contains a row with the given seq.
+func waitForRow(t *testing.T, db *sql.DB, docID string, seq int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var n int
+		db.QueryRow("SELECT COUNT(*) FROM updates WHERE doc_id = ? AND seq = ?", docID, seq).Scan(&n)
+		if n == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("row seq %d never appeared", seq)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// splitBundle parses [uvarint len][part]... into parts.
+func splitBundle(t *testing.T, data []byte) [][]byte {
+	t.Helper()
+	var parts [][]byte
+	for i := 0; i < len(data); {
+		n, w := binary.Uvarint(data[i:])
+		if w <= 0 {
+			t.Fatal("bad bundle framing")
+		}
+		i += w
+		parts = append(parts, data[i:i+int(n)])
+		i += int(n)
+	}
+	return parts
 }
 
 func TestViewerCannotWrite(t *testing.T) {
@@ -198,12 +411,10 @@ func TestViewerCannotWrite(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	readUntilSynced(t, conn)
 
-	ctx := context.Background()
-	if err := conn.Write(ctx, websocket.MessageBinary, []byte{1}); err != nil {
-		t.Fatal(err)
-	}
-	// Server must close the connection with a policy violation.
-	ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Presence from a viewer is fine; a doc write must close the connection.
+	sendTyped(t, conn, msgAwareness, []byte{5})
+	sendTyped(t, conn, msgDoc, []byte{1})
+	ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, _, err := conn.Read(ctx2)
 	if err == nil {

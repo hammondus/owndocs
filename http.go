@@ -23,6 +23,10 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS) http.Handler {
 	mux.HandleFunc("PATCH /api/docs/{id}", requireAuth(db, handleRenameDoc(db)))
 	mux.HandleFunc("DELETE /api/docs/{id}", requireAuth(db, handleDeleteDoc(db, h)))
 
+	mux.HandleFunc("POST /api/docs/{id}/snapshot", requireAuth(db, handleSnapshotUpload(db)))
+	mux.HandleFunc("GET /api/docs/{id}/verify-bundle", requireAuth(db, handleVerifyBundle(db)))
+	mux.HandleFunc("POST /api/docs/{id}/verify", requireAuth(db, handleSnapshotVerdict(db)))
+
 	mux.HandleFunc("GET /ws/{id}", requireAuth(db, h.handleWS()))
 
 	mux.Handle("GET /", staticHandler(staticFS))

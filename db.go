@@ -9,7 +9,7 @@ import (
 
 // Schema v1. The `updates` table is the source of truth for document content:
 // an append-only log of opaque, length-prefixed Yjs update batches. The server
-// never parses them. `snapshots` and `history_segments` arrive in phase 2.
+// never parses them.
 const schemaV1 = `
 CREATE TABLE users (
 	id         INTEGER PRIMARY KEY,
@@ -51,6 +51,36 @@ CREATE TABLE updates (
 );
 `
 
+// Schema v2: snapshot-as-cache compaction (see DESIGN-DECISIONS.md).
+// documents.last_seq becomes the authoritative sequence counter — MAX(seq)
+// on `updates` stops working once verified rows are archived away.
+// `snapshots` holds client-produced merged states (pending until a later
+// load verifies them); `history_segments` holds gzipped, archived ranges of
+// the update log — never auto-deleted.
+const schemaV2 = `
+ALTER TABLE documents ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0;
+UPDATE documents SET last_seq = COALESCE((SELECT MAX(seq) FROM updates WHERE doc_id = documents.id), 0);
+
+CREATE TABLE snapshots (
+	doc_id     TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+	last_seq   INTEGER NOT NULL,
+	data       BLOB NOT NULL,
+	sha256     BLOB NOT NULL,
+	state      TEXT NOT NULL CHECK (state IN ('pending','verified')),
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (doc_id, last_seq)
+);
+
+CREATE TABLE history_segments (
+	doc_id     TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+	start_seq  INTEGER NOT NULL,
+	end_seq    INTEGER NOT NULL,
+	data       BLOB NOT NULL,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (doc_id, start_seq)
+);
+`
+
 func openDB(path string) (*sql.DB, error) {
 	// _pragma values apply per-connection; busy_timeout is belt-and-braces
 	// since MaxOpenConns(1) already serializes everything through one
@@ -73,12 +103,16 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
-	if v >= 1 {
-		return nil
+	for ver, schema := range []string{schemaV1, schemaV2} {
+		if v > ver {
+			continue
+		}
+		if _, err := db.Exec(schema); err != nil {
+			return fmt.Errorf("apply schema v%d: %w", ver+1, err)
+		}
+		if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", ver+1)); err != nil {
+			return err
+		}
 	}
-	if _, err := db.Exec(schemaV1); err != nil {
-		return fmt.Errorf("apply schema v1: %w", err)
-	}
-	_, err := db.Exec("PRAGMA user_version = 1")
-	return err
+	return nil
 }

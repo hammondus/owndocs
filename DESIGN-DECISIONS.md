@@ -438,9 +438,14 @@ displayed text just changes, which is exactly Google's behaviour, achieved
 with zero rewrite transactions and no concurrent-rewrite hazards. A
 reference to a deleted row/col displays and evaluates as `#REF!`, like
 everyone else. Ranges store their two endpoint ids and therefore grow and
-shrink naturally as rows are inserted or deleted between them. `$` absolute
-markers are parsed and round-tripped but have no semantics until fill/paste
-exists (they only matter when copying formulas).
+shrink naturally as rows are inserted or deleted between them. ~~`$`
+absolute markers are parsed and round-tripped but have no semantics until
+fill/paste exists.~~ Superseded: `$` now has full meaning (see Copy/paste
+and fill). The flags are stored on the id ref itself (`@$rid.$cid`) — the
+first implementation dropped them at the storage boundary, so `=$A$1` came
+back as `=A1`; absolute-ness is part of the reference, not decoration.
+`#REF!` is likewise a real parseable literal, so a formula whose reference
+died survives being re-committed instead of decaying to `#ERROR!`.
 
 ### Computed values are never stored
 
@@ -492,12 +497,57 @@ and clipboard behave natively where it matters. Numbers right-aligned,
 text left, like every spreadsheet since VisiCalc. Collaborator selections
 render from the same awareness channel the editor uses.
 
+### Copy/paste and fill
+
+Both are the same operation underneath — **relative reference translation**
+— and that operation is exactly the A1↔id boundary conversion the grid
+design already had. A cell's portable form is its A1 rendering at its own
+position (`getInput`); pasting it elsewhere shifts every relative component
+by the destination delta and converts back to ids. So `=A1` copied a row
+down becomes `=A2`, `=$A$1` doesn't move, and a reference pushed off the
+top or left edge becomes `#REF!`, matching Excel. Because it is one
+`setCellShifted` primitive, paste, tiled paste, fill-down, fill-up,
+fill-left/right and Cmd+D all share it and cannot disagree.
+
+Clipboard interop puts two flavours on the clipboard, the same trick
+Google Sheets uses:
+
+- `text/plain` — TSV of **displayed values**, so pasting into Excel,
+  Numbers or Sheets works.
+- `text/html` — an ordinary `<table>` of those values carrying the **raw
+  inputs** in a `data-docs-sheet` attribute, so pasting back into this app
+  keeps formulas (translated) even across tabs. Foreign HTML has no such
+  attribute and falls back to TSV-as-literals. A same-page in-memory copy
+  is kept as a fallback in case a browser strips the attribute.
+
+Riding the browser's own `copy`/`cut`/`paste` events (on the focused grid
+div) avoids the async Clipboard API and its permission prompt entirely.
+Cut marks its source and empties it only when the paste lands — so a cut
+that is never pasted changes nothing — and clearing happens *before* the
+write inside the same transaction, so a destination overlapping the source
+isn't damaged.
+
+Fill series rules: a line of two or more **plain numbers** with a constant
+step extrapolates; a single number copies (1 dragged down gives 1,1,1 —
+Excel and Sheets agree); anything else repeats cyclically with formulas
+translated. Formula *results* never count as a series, or a computed column
+would extrapolate as if it had been typed.
+
+Every bulk operation is one Yjs transaction: one update on the wire and one
+undo step. Relatedly, the UndoManager runs with `captureTimeout: 0` —
+Yjs's 500ms merge window is right for prose but wrong here, where each cell
+entry, paste and fill is a discrete act. Cell writes invalidate only the
+value cache, not the id index (a cell write can't move an id), so a large
+paste doesn't rebuild the index once per cell.
+
 ### v1 scope cuts (deliberate, recorded)
 
 Single sheet per doc (tabs need a container restructure — decide before,
 not after, people have data); no cell formatting (raw-string cell values
-can become objects later — readers accept both); no fill handle or
-copy-paste of formulas (hence `$` inert); no volatile functions
+can become objects later — readers accept both); ~~no fill handle or
+copy-paste of formulas (hence `$` inert)~~ (both shipped — see Copy/paste
+and fill; still missing: double-click-to-fill-down, date/weekday series,
+paste-special); no volatile functions
 (`TODAY`/`NOW` make clients disagree and recalc time-dependent — needs
 thought, not code); history *browsing* UI for sheets deferred (the log and
 replay already work — only the preview renderer is markdown-specific);

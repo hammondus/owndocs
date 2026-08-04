@@ -36,18 +36,24 @@ export class SheetModel {
 
     // Undo only rewinds LOCAL transactions (origin = this model), never a
     // collaborator's concurrent work — standard Yjs collaborative undo.
+    // captureTimeout 0 because Yjs otherwise merges everything within 500ms
+    // into one undo step: fine for typing prose, wrong for a spreadsheet,
+    // where each cell entry, paste and fill is a discrete act the user
+    // expects to undo one at a time.
     this.undo = new Y.UndoManager([this.rows, this.cols, this.cells, this.dims], {
       trackedOrigins: new Set([this]),
+      captureTimeout: 0,
     })
 
-    const changed = () => {
-      this._invalidate()
+    const notify = () => {
       for (const cb of this.listeners) cb()
     }
-    this.rows.observe(changed)
-    this.cols.observe(changed)
-    this.cells.observe(changed)
-    this.dims.observe(changed)
+    const structural = () => { this._invalidate(); notify() }
+    const contents = () => { this._invalidateValues(); notify() }
+    this.rows.observe(structural)
+    this.cols.observe(structural)
+    this.cells.observe(contents)
+    this.dims.observe(contents)
   }
 
   // Drop the caches derived from doc state. Yjs fires observers only at the
@@ -55,6 +61,12 @@ export class SheetModel {
   // one of them below does — they need the ids they just created) must call
   // this itself. Relying on the observer alone silently wrote cells under an
   // "undefined.undefined" key; see the guard in setCell.
+  //
+  // Split in two because a cell write can't move an id: bulk writes (paste,
+  // fill) would otherwise rebuild the whole id index once per cell.
+  _invalidateValues() {
+    this.valueCache.clear()
+  }
   _invalidate() {
     this.valueCache.clear()
     this.indexesStale = true
@@ -125,7 +137,7 @@ export class SheetModel {
       if (ref.kind !== 'id') return ref
       const row = this.rowPos.get(ref.rid), col = this.colPos.get(ref.cid)
       if (row === undefined || col === undefined) return { kind: 'dead' }
-      return { kind: 'a1', row, col, absRow: false, absCol: false }
+      return { kind: 'a1', row, col, absRow: !!ref.absRow, absCol: !!ref.absCol }
     }
     return '=' + serialize(mapRefs(ast, toA1))
   }
@@ -167,7 +179,11 @@ export class SheetModel {
           this._index()
           const toId = (ref) => {
             if (ref.kind !== 'a1') return ref
-            return { kind: 'id', rid: this.rowIds[ref.row], cid: this.colIds[ref.col] }
+            return {
+              kind: 'id',
+              rid: this.rowIds[ref.row], cid: this.colIds[ref.col],
+              absRow: !!ref.absRow, absCol: !!ref.absCol,
+            }
           }
           stored = '=' + serialize(mapRefs(ast, toId))
         }
@@ -180,7 +196,145 @@ export class SheetModel {
       // vanish from the grid.
       if (!rid || !cid) throw new Error(`setCell: cell ${r},${c} is not materialized`)
       this.cells.set(rid + '.' + cid, stored)
-      this._invalidate()
+      this._invalidateValues()
+    })
+  }
+
+  // Store `input` — A1-notation text as produced by getInput — at (r,c),
+  // shifting every RELATIVE reference by (dRow,dCol) first. This is the one
+  // operation copy/paste and fill are built on: =A1 copied a row down
+  // becomes =A2, while =$A$1 stays put. A reference pushed off the top or
+  // left edge becomes #REF!, as everywhere else.
+  setCellShifted(r, c, input, dRow, dCol) {
+    if (typeof input !== 'string' || !input.startsWith('=') || (dRow === 0 && dCol === 0)) {
+      return this.setCell(r, c, input ?? '')
+    }
+    const ast = this._ast(input.slice(1))
+    if (ast === null) return this.setCell(r, c, input) // unparseable: copy verbatim
+    const shifted = mapRefs(ast, (ref) => {
+      if (ref.kind !== 'a1') return ref
+      const row = ref.absRow ? ref.row : ref.row + dRow
+      const col = ref.absCol ? ref.col : ref.col + dCol
+      if (row < 0 || col < 0) return { kind: 'dead' }
+      return { ...ref, row, col }
+    })
+    this.setCell(r, c, '=' + serialize(shifted))
+  }
+
+  // ---- rectangles ---------------------------------------------------------
+
+  // inputs = what to store on a copy (formulas, in A1 form); values = the
+  // displayed text, which is what other applications expect on the clipboard.
+  readRect(r1, c1, r2, c2) {
+    const inputs = []
+    const values = []
+    for (let r = r1; r <= r2; r++) {
+      const irow = []
+      const vrow = []
+      for (let c = c1; c <= c2; c++) {
+        irow.push(this.getInput(r, c))
+        vrow.push(this.display(r, c).text)
+      }
+      inputs.push(irow)
+      values.push(vrow)
+    }
+    return { inputs, values }
+  }
+
+  // Write a block at (r,c), repeating it to cover `rows` x `cols` when the
+  // target area is larger (paste into a bigger selection, as in Sheets).
+  // origin = where the block was copied from, or null for foreign data with
+  // no references to translate. clear = a rect emptied first, for cut.
+  writeRect(r, c, inputs, { rows, cols, origin = null, clear = null } = {}) {
+    const h = inputs.length
+    const w = h ? inputs[0].length : 0
+    if (!h || !w) return
+    const nr = Math.max(rows || 0, h)
+    const nc = Math.max(cols || 0, w)
+    this.tx(() => {
+      // Clearing first matters: a cut region that overlaps the destination
+      // must not wipe what we are about to write into it.
+      if (clear) {
+        for (let rr = clear.r1; rr <= clear.r2; rr++) {
+          for (let cc = clear.c1; cc <= clear.c2; cc++) this.setCell(rr, cc, '')
+        }
+      }
+      for (let i = 0; i < nr; i++) {
+        for (let j = 0; j < nc; j++) {
+          const si = i % h
+          const sj = j % w
+          const dRow = origin ? r + i - (origin.r + si) : 0
+          const dCol = origin ? c + j - (origin.c + sj) : 0
+          this.setCellShifted(r + i, c + j, inputs[si][sj], dRow, dCol)
+        }
+      }
+    })
+  }
+
+  // ---- fill ---------------------------------------------------------------
+
+  // Extend `src` over `dest` (which contains src and grows it along one
+  // axis). A line of two or more plain numbers with a constant step
+  // extrapolates as a series; anything else repeats, with formulas
+  // translated relative to the cell each one came from.
+  fill(src, dest) {
+    const down = dest.r2 > src.r2
+    const up = dest.r1 < src.r1
+    const right = dest.c2 > src.c2
+    const left = dest.c1 < src.c1
+    this.tx(() => {
+      if (down || up) {
+        for (let c = src.c1; c <= src.c2; c++) {
+          const line = []
+          for (let r = src.r1; r <= src.r2; r++) line.push([r, c])
+          const targets = []
+          if (down) for (let r = src.r2 + 1; r <= dest.r2; r++) targets.push([r, c])
+          if (up) for (let r = src.r1 - 1; r >= dest.r1; r--) targets.push([r, c])
+          this._fillLine(line, targets, down)
+        }
+      }
+      if (right || left) {
+        for (let r = src.r1; r <= src.r2; r++) {
+          const line = []
+          for (let c = src.c1; c <= src.c2; c++) line.push([r, c])
+          const targets = []
+          if (right) for (let c = src.c2 + 1; c <= dest.c2; c++) targets.push([r, c])
+          if (left) for (let c = src.c1 - 1; c >= dest.c1; c--) targets.push([r, c])
+          this._fillLine(line, targets, right)
+        }
+      }
+    })
+  }
+
+  // targets are ordered nearest-first; forward = extending past the end of
+  // the source rather than before its start.
+  _fillLine(srcCells, targets, forward) {
+    if (targets.length === 0) return
+    const inputs = srcCells.map(([r, c]) => this.getInput(r, c))
+    const nums = inputs.map(numericLiteral)
+
+    // A single number copies rather than counting — matching Excel and
+    // Sheets, where 1 dragged down gives 1,1,1 and 1,2 gives 3,4,5.
+    let step = null
+    if (nums.length >= 2 && nums.every((n) => n !== null)) {
+      step = nums[1] - nums[0]
+      for (let i = 2; i < nums.length; i++) {
+        if (Math.abs(nums[i] - nums[i - 1] - step) > 1e-9) { step = null; break }
+      }
+    }
+
+    targets.forEach(([tr, tc], k) => {
+      if (step !== null) {
+        const base = forward ? nums[nums.length - 1] : nums[0]
+        const v = forward ? base + step * (k + 1) : base - step * (k + 1)
+        this.setCell(tr, tc, fmtNum(v))
+        return
+      }
+      const idx = forward
+        ? k % inputs.length
+        : inputs.length - 1 - (k % inputs.length)
+      const [sr, sc] = srcCells[idx]
+      this.setCellShifted(tr, tc, inputs[idx], tr - sr, tc - sc)
     })
   }
 
@@ -332,6 +486,17 @@ export class SheetModel {
     this._index()
     this.tx(() => this.dims.set('w.' + this.colIds[c], Math.max(24, Math.round(px))))
   }
+}
+
+// The number a cell's INPUT plainly is, or null. Formulas and
+// apostrophe-forced text never count, so a column of results doesn't get
+// extrapolated as if it were a typed-in series.
+function numericLiteral(input) {
+  if (typeof input !== 'string') return null
+  const t = input.trim()
+  if (t === '' || t.startsWith('=') || t.startsWith("'")) return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : null
 }
 
 // A literal cell: numbers and TRUE/FALSE become typed values; a leading

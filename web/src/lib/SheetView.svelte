@@ -13,6 +13,7 @@
   import { Provider } from '../provider.js'
   import { SheetModel } from '../sheet/model.js'
   import { colName } from '../sheet/engine.js'
+  import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
   import { scheduleCompaction } from '../compaction.js'
 
   let { me, doc, onBack, onShare } = $props()
@@ -47,7 +48,11 @@
   // Non-reactive interaction state (only the canvas cares, via redraws).
   let dragging = false
   let resizing = null // {c, startX, startW, curW} while dragging a col edge
+  let filling = null // {src, dest} while dragging the fill handle
+  let cutRegion = null // marked by Cut, cleared when the paste lands
+  let clipboard = null // our own last copy: {inputs, values, origin}
   let layout = null
+  let handleAt = null // fill handle position, in scroll-content coordinates
 
   const cursorColors = [
     ['#30bced', '#a8dff2'], ['#6eeb83', '#c6f7cf'], ['#fa69d1', '#fcc4ea'],
@@ -229,10 +234,43 @@
       ctx.fillText(st.user.name, screenX(o.c1) + 4, screenY(o.r1) - 7)
     }
 
+    // Cut source: marching-ants style dashes, so it's clear what will move.
+    if (cutRegion) {
+      ctx.strokeStyle = '#5f6368'
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 3])
+      ctx.strokeRect(screenX(cutRegion.c1), screenY(cutRegion.r1),
+        colX[cutRegion.c2 + 1] - colX[cutRegion.c1], rowY[cutRegion.r2 + 1] - rowY[cutRegion.r1])
+      ctx.setLineDash([])
+    }
+
     // Own selection border.
     ctx.strokeStyle = '#1565c0'
     ctx.lineWidth = 2
     ctx.strokeRect(screenX(s.c1), screenY(s.r1), colX[s.c2 + 1] - colX[s.c1], rowY[s.r2 + 1] - rowY[s.r1])
+
+    // Fill preview while dragging the handle.
+    if (filling) {
+      const d = filling.dest
+      ctx.strokeStyle = '#5f6368'
+      ctx.lineWidth = 1
+      ctx.setLineDash([3, 2])
+      ctx.strokeRect(screenX(d.c1), screenY(d.r1),
+        colX[Math.min(d.c2, C - 1) + 1] - colX[d.c1], rowY[Math.min(d.r2, R - 1) + 1] - rowY[d.r1])
+      ctx.setLineDash([])
+    }
+
+    // Fill handle: the small square at the selection's bottom-right corner.
+    // Recorded in content coordinates so mousedown can hit-test it.
+    handleAt = { x: colX[s.c2 + 1], y: rowY[s.r2 + 1] }
+    if (!readOnly) {
+      const hx = screenX(s.c2 + 1)
+      const hy = screenY(s.r2 + 1)
+      ctx.fillStyle = '#fff'
+      ctx.fillRect(hx - 4, hy - 4, 8, 8)
+      ctx.fillStyle = '#1565c0'
+      ctx.fillRect(hx - 3, hy - 3, 6, 6)
+    }
 
     // Headers last, so scrolled content disappears underneath them.
     ctx.fillStyle = '#f8f9fa'
@@ -330,6 +368,71 @@
     })
   }
 
+  // ---- clipboard ----------------------------------------------------------
+
+  // These ride the browser's own copy/cut/paste events, so Cmd+C/X/V and the
+  // context menu all work without asking for clipboard permissions. When a
+  // cell is being edited the events belong to that input, not to the grid.
+
+  function onCopy(e) {
+    if (edit) return
+    e.preventDefault()
+    const s = selRect()
+    const { inputs, values } = model.readRect(s.r1, s.c1, s.r2, s.c2)
+    clipboard = { inputs, values, origin: { r: s.r1, c: s.c1 } }
+    e.clipboardData.setData('text/plain', toTSV(values))
+    e.clipboardData.setData('text/html', toHTML(values, { inputs, origin: clipboard.origin }))
+    cutRegion = null
+    scheduleDraw()
+  }
+
+  function onCut(e) {
+    if (edit || readOnly) return
+    onCopy(e)
+    // Excel/Sheets semantics: the source empties when the paste lands, not
+    // now — so a cut that is never pasted changes nothing.
+    cutRegion = selRect()
+    scheduleDraw()
+  }
+
+  function onPaste(e) {
+    if (edit || readOnly) return
+    e.preventDefault()
+    const html = e.clipboardData.getData('text/html')
+    const text = e.clipboardData.getData('text/plain')
+
+    let inputs = null
+    let origin = null
+    const payload = readHTMLPayload(html)
+    if (payload) {
+      inputs = payload.inputs
+      origin = payload.origin
+    } else if (clipboard && text && toTSV(clipboard.values) === text) {
+      // Same-page fallback for a browser that dropped our HTML flavour:
+      // the plain text still identifies our own copy.
+      inputs = clipboard.inputs
+      origin = clipboard.origin
+    } else if (text) {
+      inputs = parseTSV(text) // foreign data: literals, nothing to translate
+    }
+    if (!inputs || !inputs.length) return
+
+    const s = selRect()
+    model.writeRect(s.r1, s.c1, inputs, {
+      rows: s.r2 - s.r1 + 1,
+      cols: s.c2 - s.c1 + 1,
+      origin,
+      clear: cutRegion,
+    })
+    cutRegion = null
+    // Select what was pasted, as every spreadsheet does.
+    const h = Math.max(inputs.length, s.r2 - s.r1 + 1)
+    const w = Math.max(inputs[0].length, s.c2 - s.c1 + 1)
+    sel = { r: s.r1, c: s.c1, r2: s.r1 + h - 1, c2: s.c1 + w - 1 }
+    publishSelection()
+    scheduleDraw()
+  }
+
   // ---- mouse --------------------------------------------------------------
 
   function gridPos(e) {
@@ -341,6 +444,20 @@
     containerEl.focus()
     const { x, y } = gridPos(e)
     const sx = containerEl.scrollLeft, sy = containerEl.scrollTop
+
+    // The fill handle sits on the selection corner and wins over everything
+    // else, since it overlaps the cell beneath it.
+    if (!readOnly && handleAt && x >= HEADER_W && y >= HEADER_H) {
+      const gx = sx + x - HEADER_W
+      const gy = sy + y - HEADER_H
+      if (Math.abs(gx - handleAt.x) <= 4 && Math.abs(gy - handleAt.y) <= 4) {
+        if (edit) commitEdit(0, 0)
+        const s = selRect()
+        filling = { src: s, dest: s }
+        e.preventDefault()
+        return
+      }
+    }
 
     if (y < HEADER_H && x >= HEADER_W) {
       // Column header: near a column edge starts a resize, else selects the
@@ -384,17 +501,65 @@
       scheduleDraw()
       return
     }
-    if (!dragging) return
+    if (filling) {
+      const { x, y } = gridPos(e)
+      const r = rowAt(containerEl.scrollTop + Math.max(y, HEADER_H) - HEADER_H)
+      const c = colAt(containerEl.scrollLeft + Math.max(x, HEADER_W) - HEADER_W)
+      const s = filling.src
+      // Fill runs along one axis only: whichever the pointer left furthest.
+      const dr = r > s.r2 ? r - s.r2 : r < s.r1 ? r - s.r1 : 0
+      const dc = c > s.c2 ? c - s.c2 : c < s.c1 ? c - s.c1 : 0
+      filling.dest = Math.abs(dr) >= Math.abs(dc)
+        ? { ...s, r1: Math.min(s.r1, r), r2: Math.max(s.r2, r) }
+        : { ...s, c1: Math.min(s.c1, c), c2: Math.max(s.c2, c) }
+      scheduleDraw()
+      return
+    }
+    if (!dragging) {
+      updateCursor(e)
+      return
+    }
     const { x, y } = gridPos(e)
     const r = rowAt(containerEl.scrollTop + Math.max(y, HEADER_H) - HEADER_H)
     const c = colAt(containerEl.scrollLeft + Math.max(x, HEADER_W) - HEADER_W)
     setSelection(r, c, true)
   }
 
+  // Cursor hints: crosshair over the fill handle, resize arrows over a
+  // column edge. Cheap, and without them neither affordance is discoverable.
+  function updateCursor(e) {
+    if (!canvasEl || !layout || readOnly) return
+    const { x, y } = gridPos(e)
+    if (x < 0 || y < 0 || x > canvasEl.clientWidth || y > canvasEl.clientHeight) return
+    const gx = containerEl.scrollLeft + x - HEADER_W
+    const gy = containerEl.scrollTop + y - HEADER_H
+    let cursor = 'cell'
+    if (x >= HEADER_W && y >= HEADER_H && handleAt &&
+        Math.abs(gx - handleAt.x) <= 4 && Math.abs(gy - handleAt.y) <= 4) {
+      cursor = 'crosshair'
+    } else if (y < HEADER_H && x >= HEADER_W) {
+      const c = colAt(gx)
+      cursor = layout.colX[c + 1] - gx < 5 || (gx - layout.colX[c] < 5 && c > 0) ? 'col-resize' : 'default'
+    } else if (x < HEADER_W || y < HEADER_H) {
+      cursor = 'default'
+    }
+    canvasEl.style.cursor = cursor
+  }
+
   function onMouseUp() {
     if (resizing) {
       model.setColWidth(resizing.c, resizing.curW)
       resizing = null
+      scheduleDraw()
+    }
+    if (filling) {
+      const { src, dest } = filling
+      filling = null
+      if (dest.r1 !== src.r1 || dest.r2 !== src.r2 || dest.c1 !== src.c1 || dest.c2 !== src.c2) {
+        model.fill(src, dest)
+        sel = { r: dest.r1, c: dest.c1, r2: dest.r2, c2: dest.c2 }
+        publishSelection()
+      }
       scheduleDraw()
     }
     dragging = false
@@ -415,6 +580,21 @@
       e.preventDefault()
       const base = e.shiftKey ? { r: sel.r2, c: sel.c2 } : { r: sel.r, c: sel.c }
       setSelection(base.r + move[0], base.c + move[1], e.shiftKey)
+      return
+    }
+    // Cmd/Ctrl+D fills the selection down from its top row — the standard
+    // shortcut, and the keyboard route to what the fill handle does.
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') {
+      e.preventDefault()
+      if (readOnly) return
+      const s = selRect()
+      if (s.r2 > s.r1) model.fill({ ...s, r2: s.r1 }, s)
+      return
+    }
+    if (e.key === 'Escape' && cutRegion) {
+      e.preventDefault()
+      cutRegion = null
+      scheduleDraw()
       return
     }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
@@ -559,6 +739,9 @@
   onmousedown={onMouseDown}
   ondblclick={onDblClick}
   onkeydown={onKeyDown}
+  oncopy={onCopy}
+  oncut={onCut}
+  onpaste={onPaste}
 >
   <div class="spacer" style="width:{totalW}px; height:{totalH}px"></div>
   <canvas bind:this={canvasEl}></canvas>

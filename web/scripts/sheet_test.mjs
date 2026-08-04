@@ -4,6 +4,7 @@
 import * as Y from 'yjs'
 import { parseFormula, serialize, evaluate, isErr, fmtNum, colName, parseColName } from '../src/sheet/engine.js'
 import { SheetModel } from '../src/sheet/model.js'
+import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../src/sheet/clipboard.js'
 
 let failures = 0
 function eq(got, want, what) {
@@ -226,6 +227,211 @@ function syncBoth(d1, d2) {
   eq(a.rowCount(), before + 2, 'concurrent row inserts both kept')
   eq(b.rowCount(), a.rowCount(), 'row order converged')
   eq(a.rows.toArray().join(), b.rows.toArray().join(), 'identical row id order')
+}
+
+// ---- clipboard serialization ----------------------------------------------
+
+{
+  const grid = [['a', 'b'], ['with\ttab', 'with\nnewline'], ['say "hi"', '']]
+  eq(parseTSV(toTSV(grid)), grid, 'TSV round-trips tabs, newlines and quotes')
+  eq(parseTSV('1\t2\n3\t4'), [['1', '2'], ['3', '4']], 'plain TSV parses')
+  eq(parseTSV('1\t2\n'), [['1', '2']], 'trailing newline adds no phantom row')
+  eq(parseTSV('a'), [['a']], 'single field')
+
+  const payload = { inputs: [['=A1+1', "it's"]], origin: { r: 2, c: 3 } }
+  const html = toHTML([['2', "it's"]], payload)
+  eq(readHTMLPayload(html), payload, 'HTML payload round-trips')
+  eq(readHTMLPayload('<table><tr><td>1</td></tr></table>'), null, 'foreign HTML yields no payload')
+  eq(readHTMLPayload(''), null, 'empty HTML yields no payload')
+  // Chrome wraps pasted HTML in a document with fragment markers.
+  eq(readHTMLPayload(`<html><body><!--StartFragment-->${html}<!--EndFragment--></body></html>`),
+    payload, 'payload survives the browser wrapping it')
+}
+
+// ---- absolute references ---------------------------------------------------
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '5')
+  m.setCell(1, 0, '3')
+  m.setCell(2, 2, '=$A$1+A2')
+  eq(m.getInput(2, 2), '=$A$1+A2', 'absolute markers round-trip through storage')
+  eq(val(m, 2, 2), 8, 'mixed absolute/relative evaluates')
+  m.insertRows(0)
+  eq(m.getInput(3, 2), '=$A$2+A3', 'absolute refs still track identity on insert')
+  eq(val(m, 3, 2), 8, 'and the value is unchanged by the insert')
+}
+
+{
+  // A dead reference must survive being re-committed, not decay to #ERROR!.
+  const m = newModel()
+  m.setCell(0, 0, '1')
+  m.setCell(1, 0, '=A1+1')
+  m.deleteRows(0)
+  const shown = m.getInput(0, 0)
+  eq(shown, '=#REF!+1', 'dead ref displays')
+  m.setCell(0, 0, shown)
+  eq(val(m, 0, 0), '#REF!', 're-committing a #REF! formula keeps it a #REF!')
+}
+
+// ---- copy / paste ----------------------------------------------------------
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '1')
+  m.setCell(1, 0, '2')
+  m.setCell(2, 0, '=SUM(A1:A2)')
+  const { inputs, values } = m.readRect(0, 0, 2, 0)
+  eq(values, [['1'], ['2'], ['3']], 'copy takes displayed values for other apps')
+  eq(inputs, [['1'], ['2'], ['=SUM(A1:A2)']], 'copy takes A1-form inputs for ourselves')
+
+  // Paste one column right: relative refs follow.
+  m.writeRect(0, 1, inputs, { origin: { r: 0, c: 0 } })
+  eq(m.getInput(2, 1), '=SUM(B1:B2)', 'pasted formula shifts relative refs')
+  eq(val(m, 2, 1), 3, 'pasted formula computes from its new column')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '10')
+  m.setCell(1, 0, '=$A$1*2')
+  const { inputs } = m.readRect(1, 0, 1, 0)
+  m.writeRect(5, 3, inputs, { origin: { r: 1, c: 0 } })
+  eq(m.getInput(5, 3), '=$A$1*2', 'absolute refs survive a paste unmoved')
+  eq(val(m, 5, 3), 20, 'and still point at the original cell')
+}
+
+{
+  // A relative ref pushed off the sheet becomes #REF!, as in Excel.
+  const m = newModel()
+  m.setCell(5, 5, '=A1')
+  const { inputs } = m.readRect(5, 5, 5, 5)
+  m.writeRect(0, 0, inputs, { origin: { r: 5, c: 5 } })
+  eq(val(m, 0, 0), '#REF!', 'reference shifted off the top-left is #REF!')
+}
+
+{
+  // Pasting a single cell into a larger selection tiles it.
+  const m = newModel()
+  m.setCell(0, 0, 'x')
+  const { inputs } = m.readRect(0, 0, 0, 0)
+  m.writeRect(2, 2, inputs, { rows: 2, cols: 3, origin: { r: 0, c: 0 } })
+  eq([val(m, 2, 2), val(m, 3, 4), val(m, 2, 4)], ['x', 'x', 'x'], 'paste tiles across a bigger selection')
+}
+
+{
+  // Foreign data (no origin) pastes as literals, no translation attempted.
+  const m = newModel()
+  m.writeRect(0, 0, parseTSV('1\t2\nhello\t=A1+1'))
+  eq([val(m, 0, 0), val(m, 1, 0)], [1, 'hello'], 'external TSV pastes as literals')
+  eq(val(m, 1, 1), 2, 'a formula in external data still parses at its landing spot')
+}
+
+{
+  // Cut: the source clears, and an overlapping destination is not damaged.
+  const m = newModel()
+  m.setCell(0, 0, 'a')
+  m.setCell(1, 0, 'b')
+  const { inputs } = m.readRect(0, 0, 1, 0)
+  m.writeRect(1, 0, inputs, { origin: { r: 0, c: 0 }, clear: { r1: 0, c1: 0, r2: 1, c2: 0 } })
+  eq([val(m, 0, 0), val(m, 1, 0), val(m, 2, 0)], [null, 'a', 'b'], 'cut clears the source but not the overlap')
+}
+
+// ---- fill handle -----------------------------------------------------------
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '1')
+  m.setCell(1, 0, '3')
+  m.fill({ r1: 0, c1: 0, r2: 1, c2: 0 }, { r1: 0, c1: 0, r2: 4, c2: 0 })
+  eq([val(m, 2, 0), val(m, 3, 0), val(m, 4, 0)], [5, 7, 9], 'two numbers extrapolate the step')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '7')
+  m.fill({ r1: 0, c1: 0, r2: 0, c2: 0 }, { r1: 0, c1: 0, r2: 3, c2: 0 })
+  eq([val(m, 1, 0), val(m, 3, 0)], [7, 7], 'a single number copies rather than counting')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, 'Mon')
+  m.setCell(1, 0, 'Tue')
+  m.fill({ r1: 0, c1: 0, r2: 1, c2: 0 }, { r1: 0, c1: 0, r2: 5, c2: 0 })
+  eq([val(m, 2, 0), val(m, 3, 0), val(m, 4, 0)], ['Mon', 'Tue', 'Mon'], 'text repeats cyclically')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '2')
+  m.setCell(1, 0, '4')
+  m.setCell(0, 1, '=A1*10')
+  m.fill({ r1: 0, c1: 1, r2: 0, c2: 1 }, { r1: 0, c1: 1, r2: 1, c2: 1 })
+  eq(m.getInput(1, 1), '=A2*10', 'filled formula shifts down')
+  eq(val(m, 1, 1), 40, 'and recomputes from its own row')
+}
+
+{
+  // Filling upward runs the series backwards.
+  const m = newModel()
+  m.setCell(3, 0, '10')
+  m.setCell(4, 0, '20')
+  m.fill({ r1: 3, c1: 0, r2: 4, c2: 0 }, { r1: 1, c1: 0, r2: 4, c2: 0 })
+  eq([val(m, 2, 0), val(m, 1, 0)], [0, -10], 'fill up extrapolates backwards')
+}
+
+{
+  // Filling right across columns.
+  const m = newModel()
+  m.setCell(0, 0, '5')
+  m.setCell(0, 1, '10')
+  m.fill({ r1: 0, c1: 0, r2: 0, c2: 1 }, { r1: 0, c1: 0, r2: 0, c2: 3 })
+  eq([val(m, 0, 2), val(m, 0, 3)], [15, 20], 'fill right extrapolates')
+}
+
+{
+  // A column of formula results must not be mistaken for a typed series.
+  const m = newModel()
+  m.setCell(0, 0, '1')
+  m.setCell(1, 0, '2')
+  m.setCell(0, 1, '=A1')
+  m.setCell(1, 1, '=A2')
+  m.fill({ r1: 0, c1: 1, r2: 1, c2: 1 }, { r1: 0, c1: 1, r2: 2, c2: 1 })
+  eq(m.getInput(2, 1), '=A3', 'formulas fill as formulas, not as an extrapolated series')
+}
+
+{
+  // Empty source cells clear their targets rather than writing "undefined".
+  const m = newModel()
+  m.setCell(0, 0, 'keep')
+  m.setCell(2, 0, 'gone')
+  m.fill({ r1: 1, c1: 0, r2: 1, c2: 0 }, { r1: 1, c1: 0, r2: 2, c2: 0 })
+  eq([val(m, 0, 0), val(m, 2, 0)], ['keep', null], 'filling from an empty cell clears targets')
+}
+
+{
+  // Bulk edits must land as ONE Yjs transaction: one update on the wire and
+  // one step for undo. Per-cell transactions would flood the log and make
+  // undoing a paste a 40-press exercise.
+  const d = new Y.Doc()
+  const m = new SheetModel(d)
+  let updates = 0
+  d.on('update', () => updates++)
+
+  const grid = Array.from({ length: 20 }, (_, i) => [String(i), `=A${i + 1}*2`])
+  m.writeRect(0, 0, grid)
+  eq(updates, 1, 'a 40-cell paste is a single update')
+
+  updates = 0
+  m.fill({ r1: 0, c1: 0, r2: 1, c2: 0 }, { r1: 0, c1: 0, r2: 30, c2: 0 })
+  eq(updates, 1, 'a fill is a single update')
+
+  m.undo.undo()
+  eq(val(m, 25, 0), null, 'undo reverts the whole fill at once')
+  eq(val(m, 19, 1), 38, 'and leaves the earlier paste alone')
+  m.undo.undo()
+  eq(val(m, 19, 1), null, 'a second undo reverts the whole paste')
 }
 
 // ---- A1 helpers -----------------------------------------------------------

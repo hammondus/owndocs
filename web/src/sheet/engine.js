@@ -98,11 +98,26 @@ function tokenize(src) {
       continue
     }
     if (c === '@') {
-      const m = /^@([a-z0-9]+)\.([a-z0-9]+)/.exec(src.slice(i))
+      // A `$` before a component marks it absolute, exactly as in A1 — the
+      // flags have to survive storage or copy/paste couldn't honour them.
+      const m = /^@(\$?)([a-z0-9]+)\.(\$?)([a-z0-9]+)/.exec(src.slice(i))
       if (!m) throw new Error('bad reference')
-      toks.push({ t: 'ref', ref: { kind: 'id', rid: m[1], cid: m[2] } })
+      toks.push({ t: 'ref', ref: {
+        kind: 'id', rid: m[2], cid: m[4],
+        absRow: m[1] === '$', absCol: m[3] === '$',
+      } })
       i += m[0].length
       continue
+    }
+    if (c === '#') {
+      // #REF! is a real literal, not just a rendering: a formula whose
+      // reference died must survive being re-typed or re-committed.
+      if (src.slice(i, i + 5).toUpperCase() === '#REF!') {
+        toks.push({ t: 'ref', ref: { kind: 'dead' } })
+        i += 5
+        continue
+      }
+      throw new Error('unknown error literal')
     }
     if (/[A-Za-z_$]/.test(c)) {
       const m = /^[$A-Za-z0-9_.]+/.exec(src.slice(i))
@@ -269,7 +284,9 @@ function refText(ref) {
   if (ref.kind === 'a1') {
     return (ref.absCol ? '$' : '') + colName(ref.col) + (ref.absRow ? '$' : '') + (ref.row + 1)
   }
-  if (ref.kind === 'id') return `@${ref.rid}.${ref.cid}`
+  if (ref.kind === 'id') {
+    return `@${ref.absRow ? '$' : ''}${ref.rid}.${ref.absCol ? '$' : ''}${ref.cid}`
+  }
   return '#REF!' // kind 'dead'
 }
 

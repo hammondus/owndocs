@@ -74,6 +74,37 @@ const val = (m, r, c) => {
   eq(val(m, 0, 0), null, 'untouched cell is empty')
 }
 
+// Regression (2026-08-05, user-reported "first edit into a cell doesn't
+// take"): the canvas redraws constantly and each draw refreshes the id
+// index, so the index was fresh-but-not-flagged-stale when setCell
+// materialized new rows. Yjs defers observers to the end of a transaction,
+// so the index rebuild never happened and the write landed under
+// "undefined.undefined" — invisible, and the edit appeared to vanish.
+{
+  const m = newModel()
+  m.colWidth(0) // what a redraw does: refreshes the index
+  m.setCell(3, 2, 'x')
+  eq(val(m, 3, 2), 'x', 'first edit into an unmaterialized cell sticks')
+  eq([...m.cells.keys()].some((k) => k.includes('undefined')), false, 'no undefined-keyed orphan written')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '2')
+  m.display(0, 0) // refreshes the index
+  m.setCell(1, 0, '=A1*3') // materializes row 1 inside the same transaction
+  eq(val(m, 1, 0), 6, 'first formula into a new row resolves and sticks')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '1')
+  m.colWidth(0) // refresh, then widen a column past the materialized area
+  m.setColWidth(4, 150)
+  eq(m.colWidth(4), 150, 'resizing an unmaterialized column sticks')
+  eq([...m.dims.keys()].some((k) => k.includes('undefined')), false, 'no undefined-keyed dimension')
+}
+
 {
   const m = newModel()
   m.setCell(0, 0, '42')

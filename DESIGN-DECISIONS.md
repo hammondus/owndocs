@@ -508,6 +508,22 @@ a text serialization is chosen (likely CSV alongside the .md files).
 
 ## Incidents
 
+- **2026-08-05, first cell edit silently discarded (sheets).** User report:
+  "most times the first time doesn't take; I have to enter it twice."
+  `SheetModel` caches the row/col id index and invalidated it from Yjs
+  observers — but **observers fire at the end of a transaction**, and
+  `setCell` materializes rows and then reads that index back *inside* the
+  same transaction. With the index fresh-but-not-flagged-stale (the canvas
+  redraws constantly, and every redraw refreshes it), the rebuild was
+  skipped and the value was written under the key `"undefined.undefined"`:
+  invisible to every reader, so the edit appeared to vanish. The retry
+  worked because the first attempt had materialized the row. Fix:
+  `_invalidate()` called by mutators at the point of mutation (not only by
+  observers), plus a guard that throws instead of writing an undefined key —
+  the failure mode was silent data loss, which must never be quiet again.
+  Node tests missed it because only a redraw-style read leaves the index in
+  the fatal state; regression tests now reproduce that interleaving.
+
 - **2026-08-04, corrupt update row.** During the full-state-resync death
   loop (see Reconnect resync), one 524,002-byte row was stored whose payload
   is the truncated prefix of a resync-style update — internally consistent

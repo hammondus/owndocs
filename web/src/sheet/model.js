@@ -41,14 +41,23 @@ export class SheetModel {
     })
 
     const changed = () => {
-      this.valueCache.clear()
-      this.indexesStale = true
+      this._invalidate()
       for (const cb of this.listeners) cb()
     }
     this.rows.observe(changed)
     this.cols.observe(changed)
     this.cells.observe(changed)
     this.dims.observe(changed)
+  }
+
+  // Drop the caches derived from doc state. Yjs fires observers only at the
+  // END of a transaction, so a mutator that reads its own writes back (every
+  // one of them below does — they need the ids they just created) must call
+  // this itself. Relying on the observer alone silently wrote cells under an
+  // "undefined.undefined" key; see the guard in setCell.
+  _invalidate() {
+    this.valueCache.clear()
+    this.indexesStale = true
   }
 
   // Fires on any change, local or remote. v1 makes no attempt to say WHAT
@@ -90,6 +99,7 @@ export class SheetModel {
       while (this.rows.length <= r) this.rows.push([newId()])
       while (this.cols.length <= c) this.cols.push([newId()])
     })
+    this._invalidate()
   }
 
   // ---- cell input ---------------------------------------------------------
@@ -130,6 +140,7 @@ export class SheetModel {
       const rid = this.rowIds[r], cid = this.colIds[c]
       if (rid && cid && this.cells.has(rid + '.' + cid)) {
         this.tx(() => this.cells.delete(rid + '.' + cid))
+        this._invalidate()
       }
       return
     }
@@ -160,13 +171,16 @@ export class SheetModel {
           }
           stored = '=' + serialize(mapRefs(ast, toId))
         }
-      } else {
-        this.ensureSize(r, c)
-        this._index()
       }
       this.ensureSize(r, c)
       this._index()
-      this.cells.set(this.rowIds[r] + '.' + this.colIds[c], stored)
+      const rid = this.rowIds[r], cid = this.colIds[c]
+      // Loud rather than silent: writing under an undefined id would store
+      // the value where nothing ever reads it, and the edit would just
+      // vanish from the grid.
+      if (!rid || !cid) throw new Error(`setCell: cell ${r},${c} is not materialized`)
+      this.cells.set(rid + '.' + cid, stored)
+      this._invalidate()
     })
   }
 
@@ -258,6 +272,7 @@ export class SheetModel {
       this.ensureSize(at - 1, 0)
       this.rows.insert(Math.min(at, this.rows.length), Array.from({ length: n }, newId))
     })
+    this._invalidate()
   }
 
   insertCols(at, n = 1) {
@@ -265,6 +280,7 @@ export class SheetModel {
       this.ensureSize(0, at - 1)
       this.cols.insert(Math.min(at, this.cols.length), Array.from({ length: n }, newId))
     })
+    this._invalidate()
   }
 
   deleteRows(at, n = 1) {
@@ -280,6 +296,7 @@ export class SheetModel {
       }
       for (const id of ids) this.dims.delete('h.' + id)
     })
+    this._invalidate()
   }
 
   deleteCols(at, n = 1) {
@@ -293,6 +310,7 @@ export class SheetModel {
       }
       for (const id of ids) this.dims.delete('w.' + id)
     })
+    this._invalidate()
   }
 
   // ---- dimensions ---------------------------------------------------------

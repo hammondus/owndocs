@@ -33,6 +33,10 @@
   let edit = $state(null)
   let totalW = $state(0)
   let totalH = $state(0)
+  // Bumped on every model change. The model isn't $state (it's a plain
+  // module class), so anything derived FROM it needs this to know when to
+  // recompute — without it the formula bar ignores collaborators' edits.
+  let revision = $state(0)
 
   let containerEl, canvasEl
   // $state because the overlay input mounts and unmounts with {#if edit}:
@@ -72,7 +76,10 @@
     })
     publishSelection()
 
-    unobserve = model.onChange(scheduleDraw)
+    unobserve = model.onChange(() => {
+      revision++
+      scheduleDraw()
+    })
 
     const ro = new ResizeObserver(scheduleDraw)
     ro.observe(containerEl)
@@ -477,9 +484,14 @@
   // cell. $derived recomputes whenever sel/edit (or a redraw bump) change.
   let cellName = $derived(colName(sel.c) + (sel.r + 1))
 
-  function formulaBarValue() {
+  // While editing, the bar mirrors the in-progress text; otherwise it shows
+  // the selected cell's stored input. Reading `revision` is what makes it
+  // follow remote changes.
+  let barValue = $derived.by(() => {
+    revision
     return edit ? edit.value : model ? model.getInput(sel.r, sel.c) : ''
-  }
+  })
+
   function onFormulaBarInput(e) {
     if (readOnly) return
     if (!edit) edit = { r: sel.r, c: sel.c, value: '' }
@@ -528,7 +540,7 @@
 <div class="formula-bar">
   <span class="cell-name">{cellName}</span>
   <input
-    value={formulaBarValue()}
+    value={barValue}
     oninput={onFormulaBarInput}
     onkeydown={onInputKeyDown}
     readonly={readOnly}

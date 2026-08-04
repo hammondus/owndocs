@@ -46,13 +46,14 @@ const (
 )
 
 type hub struct {
-	db    *sql.DB
-	mu    sync.Mutex
-	rooms map[string]*room
+	db      *sql.DB
+	origins []string // extra accepted websocket origins (dev server); nil = same-origin only
+	mu      sync.Mutex
+	rooms   map[string]*room
 }
 
-func newHub(db *sql.DB) *hub {
-	return &hub{db: db, rooms: make(map[string]*room)}
+func newHub(db *sql.DB, origins []string) *hub {
+	return &hub{db: db, origins: origins, rooms: make(map[string]*room)}
 }
 
 type room struct {
@@ -491,7 +492,8 @@ func (h *hub) handleWS() http.HandlerFunc {
 			jsonError(w, http.StatusNotFound, "not found")
 			return
 		}
-		conn, err := websocket.Accept(w, r, nil) // default options reject cross-origin
+		// Same-origin enforced by default; h.origins adds the vite dev server.
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.origins})
 		if err != nil {
 			return
 		}

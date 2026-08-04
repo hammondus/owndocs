@@ -19,7 +19,10 @@ import (
 	"time"
 )
 
-//go:embed web/static
+// all: includes dotfiles, so the tracked .gitkeep keeps the embed path
+// valid on a fresh clone before the first `make js`.
+//
+//go:embed all:web/static
 var embeddedStatic embed.FS
 
 func main() {
@@ -27,6 +30,7 @@ func main() {
 	dbPath := flag.String("db", "data/docs.db", "sqlite database path")
 	staticDir := flag.String("static", "", "serve UI from this directory instead of the embedded copy (dev)")
 	signup := flag.String("signup", "open", "account creation: open or closed (close before exposing to the internet)")
+	allowOrigin := flag.String("allow-origin", "", "extra websocket origin to accept, e.g. http://localhost:5173 for the vite dev server")
 	flag.Parse()
 	if *signup != "open" && *signup != "closed" {
 		log.Fatalf("-signup must be open or closed, got %q", *signup)
@@ -52,7 +56,11 @@ func main() {
 		}
 	}
 
-	hub := newHub(db)
+	var origins []string
+	if *allowOrigin != "" {
+		origins = append(origins, *allowOrigin)
+	}
+	hub := newHub(db, origins)
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           routes(db, hub, staticFS, *signup == "open"),

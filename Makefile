@@ -6,8 +6,10 @@ BIN := docs
 build: js
 	go build -o $(BIN) .
 
+# Clear previous build output by hand (rather than vite's emptyOutDir) so
+# static/.gitkeep survives — it keeps the go:embed path valid on fresh clones.
 js:
-	cd web && npm install --no-fund --no-audit && npm run build
+	cd web && npm install --no-fund --no-audit && rm -rf static/assets static/index.html && npm run build
 
 test:
 	go vet ./... && go test ./...
@@ -24,7 +26,7 @@ release: js
 
 clean:
 	rm -f $(BIN)
-	rm -rf dist web/static/demo.js
+	rm -rf dist web/static/assets web/static/index.html
 
 docker-build:
 	docker compose build

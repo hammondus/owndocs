@@ -40,15 +40,19 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen bool) http.Handler {
 	return mux
 }
 
-// staticHandler serves the UI. Cache policy is set here, at the chokepoint.
-// Everything is no-cache (store but always revalidate) for now: app.js is
-// unhashed and changes every build — max-age let browsers run a stale
-// bundle for up to an hour after a rebuild. Switch assets to
-// public/immutable when the Vite build introduces content-hashed names.
+// staticHandler serves the UI. Cache policy is set here, at the chokepoint:
+// vite writes content-hashed files under /assets/, so those URLs name their
+// bytes and are immutable; everything else (index.html) is no-cache — store
+// but always revalidate, since the HTML carries the hashed asset URLs and
+// serving it stale would defeat the hashing.
 func staticHandler(staticFS fs.FS) http.Handler {
 	fileServer := http.FileServerFS(staticFS)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache")
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		fileServer.ServeHTTP(w, r)
 	})
 }

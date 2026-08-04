@@ -1,0 +1,46 @@
+/* Global styles. Shell layout lives here plus everything CodeMirror-related:
+   CM renders its own DOM outside Svelte components, so its classes (cm-*,
+   md-*) can't use Svelte's scoped styles and must be global. */
+
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0 auto; max-width: 52rem; padding: 1rem; }
+h1 { font-size: 1.2rem; }
+fieldset { border: 1px solid #8884; border-radius: 6px; margin-bottom: 1rem; }
+input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; }
+.err { color: #c33; }
+
+/* editor chrome */
+.toolbar { display: flex; gap: .25rem; margin: .5rem 0; flex-wrap: wrap; }
+.toolbar button { min-width: 2.2rem; padding: .25rem .4rem; border: 1px solid #8884;
+                  border-radius: 4px; background: transparent; cursor: pointer; }
+.toolbar button:hover { background: #8882; }
+.cm-editor { border: 1px solid #8884; border-radius: 6px; height: 72vh; font-size: 1rem; }
+.cm-editor.cm-focused { outline: none; border-color: #888a; }
+.cm-scroller { line-height: 1.6; font-family: inherit; }
+.cm-content { padding: 1rem; }
+
+/* live preview styling — classes attached by editor.js decorations */
+.md-strong { font-weight: 700; }
+.md-em { font-style: italic; }
+.md-strike { text-decoration: line-through; }
+.md-code { font-family: ui-monospace, monospace; font-size: .9em;
+           background: #8882; border-radius: 3px; padding: 0 .2em; }
+.md-link { color: #4a8fdd; text-decoration: underline; }
+.md-dim { opacity: .45; }
+.md-heading { font-weight: 700; }
+.md-h1 { font-size: 1.7em; }
+.md-h2 { font-size: 1.4em; }
+.md-h3 { font-size: 1.2em; }
+.md-h4, .md-h5, .md-h6 { font-size: 1.05em; }
+.md-blockquote { border-left: 3px solid #8886; padding-left: .6rem; opacity: .85; }
+.md-codeblock { font-family: ui-monospace, monospace; font-size: .9em; background: #8881; }
+
+/* remote cursors (y-codemirror.next) */
+.cm-ySelectionCaret { position: relative; border-left: 1px solid; margin-left: -1px; }
+.cm-ySelectionCaretDot { border-radius: 50%; position: absolute; width: .4em; height: .4em;
+                         top: -.2em; left: -.2em; background: inherit; }
+.cm-ySelectionInfo { position: absolute; top: -1.4em; left: -1px; font-size: .7em;
+                     font-family: system-ui, sans-serif; font-style: normal; font-weight: normal;
+                     line-height: normal; user-select: none; color: #000; padding: 0 .3em;
+                     border-radius: 3px; white-space: nowrap; opacity: 0; transition: opacity .3s; }
+.cm-ySelectionCaret:hover > .cm-ySelectionInfo { opacity: 1; }

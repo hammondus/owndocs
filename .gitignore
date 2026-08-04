@@ -2,4 +2,5 @@
 /dist/
 /data/
 web/node_modules/
-web/static/app.js
+web/static/*
+!web/static/.gitkeep

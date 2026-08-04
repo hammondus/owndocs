@@ -308,14 +308,16 @@ enforcement is server-side, not hidden UI. Share URLs use hash routing
 or Referer headers; the fragment survives the login flow for signed-out
 recipients.
 
-### Static assets: everything no-cache until content-hashed
+### Static assets: hashed + immutable via Vite
 
-The bundle (`app.js`) is unhashed and changes every build; `max-age` let
-browsers run a stale bundle for up to an hour after a rebuild, which made
-debugging incoherent (old client code against a new server). Deviation from
-the usual "unhashed assets get ~1h" policy is deliberate and temporary:
-switch to `public, max-age=31536000, immutable` when the Vite build
-introduces content-hashed asset names.
+~~Interim policy: everything no-cache, because the esbuild bundle was
+unhashed and `max-age` let browsers run a stale bundle for up to an hour
+after a rebuild.~~ Resolved by the Svelte shell migration: Vite emits
+content-hashed files under `/assets/`, served
+`public, max-age=31536000, immutable`; `index.html` stays `no-cache` since
+it carries the hashed URLs. Dev loop: `npm run dev` (vite, hot reload)
+proxies API+WS to the Go server, which needs
+`-allow-origin http://localhost:5173` for the websocket origin check.
 
 ### Version history: the archived update log *is* the history
 

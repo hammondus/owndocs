@@ -162,6 +162,20 @@ function toggleInline(marker) {
   }
 }
 
+// Dispatch line-prefix changes, keeping the cursor on the right side of any
+// insertion. Without the explicit mapping (assoc 1 = "after insertions"), a
+// cursor sitting exactly at the insert point — the blank-line case — lands
+// to the LEFT of the prefix it just asked for.
+function dispatchKeepingCursor(view, changes) {
+  const cs = view.state.changes(changes)
+  const sel = view.state.selection.main
+  view.dispatch({
+    changes: cs,
+    selection: { anchor: cs.mapPos(sel.anchor, 1), head: cs.mapPos(sel.head, 1) },
+  })
+  view.focus()
+}
+
 // Set (or toggle off) an ATX heading level on every selected line.
 function setHeading(level) {
   return (view) => {
@@ -177,8 +191,7 @@ function setHeading(level) {
       changes.push({ from: ln.from, to: ln.from + cur.length, insert })
       pos = ln.to + 1
     }
-    view.dispatch({ changes })
-    view.focus()
+    dispatchKeepingCursor(view, changes)
     return true
   }
 }
@@ -200,8 +213,7 @@ function toggleLinePrefix(prefix) {
         ? { from: ln.from, to: ln.from + prefix.length }
         : { from: ln.from, insert: prefix }
     )
-    view.dispatch({ changes })
-    view.focus()
+    dispatchKeepingCursor(view, changes)
     return true
   }
 }

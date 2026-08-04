@@ -27,6 +27,23 @@ func TestSessionize(t *testing.T) {
 		t.Fatalf("bad bucketing: %+v", s)
 	}
 
+	// Nonstop editing: points 30s apart never trip the gap rule, but the
+	// duration cap must still cut sessions at sessionMax.
+	long := []seqPoint{}
+	total := int64(sessionMax.Seconds()) * 2
+	for at, seq := int64(0), int64(1); at <= total; at, seq = at+30, seq+1 {
+		long = append(long, seqPoint{seq: seq, at: base + at})
+	}
+	s = sessionize(long)
+	if len(s) < 2 || len(s) > 4 {
+		t.Fatalf("1h nonstop editing bucketed into %d sessions, want ~3", len(s))
+	}
+	for _, sess := range s {
+		if sess.Ended-sess.Started > int64(sessionMax.Seconds())+30 {
+			t.Fatalf("session exceeds duration cap: %+v", sess)
+		}
+	}
+
 	// A coarse point stands alone and breaks the surrounding session.
 	s = sessionize([]seqPoint{
 		{seq: 5, at: base, coarse: true},

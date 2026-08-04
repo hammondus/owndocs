@@ -10,12 +10,17 @@ import (
 )
 
 // Version history. Browseable points are DERIVED from row timestamps at
-// query time, not stored: rows whose gaps stay within sessionGap form one
-// "session", and each session is one point. The rule is a constant we can
-// tune freely — changing it re-buckets history retroactively at zero cost.
+// query time, not stored, so both rules below re-bucket all history
+// retroactively when tuned. A session closes when either fires:
+//   - sessionGap: a pause this long is a natural boundary ("they stopped")
+//   - sessionMax: nonstop editing gets a forced boundary anyway, so a
+//     marathon never collapses into one giant unbrowsable point
 // The server only reads timestamps and sequence numbers; document content
 // stays opaque (replay assembly is byte concatenation, applied client-side).
-const sessionGap = 5 * time.Minute
+const (
+	sessionGap = 5 * time.Minute
+	sessionMax = 30 * time.Minute
+)
 
 type historySession struct {
 	EndSeq  int64 `json:"end_seq"`
@@ -96,8 +101,9 @@ func collectPoints(db *sql.DB, docID string) ([]seqPoint, error) {
 	return points, rows.Err()
 }
 
-// sessionize buckets points into sessions: a gap over sessionGap (or a
-// coarse point, which stands alone) closes the current session.
+// sessionize buckets points into sessions. A session closes on a pause
+// longer than sessionGap, on total duration passing sessionMax, or at a
+// coarse point (which stands alone).
 func sessionize(points []seqPoint) []historySession {
 	sessions := []historySession{}
 	var cur *historySession
@@ -107,7 +113,9 @@ func sessionize(points []seqPoint) []historySession {
 			cur = nil
 			continue
 		}
-		if cur == nil || p.at-cur.Ended > int64(sessionGap.Seconds()) {
+		paused := cur != nil && p.at-cur.Ended > int64(sessionGap.Seconds())
+		overlong := cur != nil && p.at-cur.Started > int64(sessionMax.Seconds())
+		if cur == nil || paused || overlong {
 			sessions = append(sessions, historySession{EndSeq: p.seq, Started: p.at, Ended: p.at, Rows: 1})
 			cur = &sessions[len(sessions)-1]
 			continue

@@ -331,9 +331,9 @@ never rewritten.
 Implementation (phase: version history):
 
 - **Browseable points are derived at query time**, never stored: rows whose
-  timestamps sit within 5 minutes of each other form one "session"; each
-  session is one point. The rule is a constant (`sessionGap`) — tuning it
-  re-buckets all history retroactively for free.
+  timestamps sit within 5 minutes of each other form one "session" (capped
+  at 30 minutes, so nonstop editing still gets boundaries); each session is
+  one point. Both rules are constants (`sessionGap`, `sessionMax`) — tuning re-buckets all history retroactively for free.
 - **Archiving preserves row metadata**: each segment carries a JSON row
   index of (seq, timestamp, byte offset), so sessions survive compaction
   and replay can cut mid-segment. Pre-index segments degrade to one coarse

@@ -2,7 +2,7 @@
 // live preview — the document stays plain markdown; styling is a decoration
 // layer over the syntax tree, and marker characters (**, #, `…) are hidden
 // unless the selection touches the construct they belong to.
-import { EditorView, keymap, ViewPlugin, Decoration } from '@codemirror/view'
+import { EditorView, keymap, ViewPlugin, Decoration, WidgetType } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { syntaxTree } from '@codemirror/language'
@@ -15,6 +15,71 @@ import * as Y from 'yjs'
 const hide = Decoration.replace({})
 const mark = (cls) => Decoration.mark({ class: cls })
 const line = (cls) => Decoration.line({ class: cls })
+
+// ---- widgets: checkboxes and images ---------------------------------------
+
+// Replaces a `[ ]` / `[x]` task marker with a real checkbox. Clicking is
+// handled by the mousedown handler in mountEditor (widgets are inert DOM;
+// the edit must go through a CodeMirror transaction so it syncs and undoes
+// like typing). eq() lets CodeMirror keep the DOM node when nothing changed.
+class CheckboxWidget extends WidgetType {
+  constructor(checked) {
+    super()
+    this.checked = checked
+  }
+  eq(other) {
+    return other.checked === this.checked
+  }
+  toDOM() {
+    const input = document.createElement('input')
+    input.type = 'checkbox'
+    input.className = 'md-task-checkbox'
+    input.checked = this.checked
+    return input
+  }
+  ignoreEvent() {
+    return false // let our mousedown handler see clicks
+  }
+}
+
+// Renders `![alt](url)` as the actual image. Clicking it places the cursor
+// there (CodeMirror's default for widgets), which reveals the raw markdown.
+class ImageWidget extends WidgetType {
+  constructor(url, alt) {
+    super()
+    this.url = url
+    this.alt = alt
+  }
+  eq(other) {
+    return other.url === this.url && other.alt === this.alt
+  }
+  toDOM(view) {
+    const img = document.createElement('img')
+    img.className = 'md-image'
+    img.src = this.url
+    img.alt = this.alt
+    // The image loads (or fails) after layout; tell CodeMirror to re-measure
+    // line heights when its real size is known.
+    img.onload = () => view.requestMeasure()
+    img.onerror = () => {
+      img.replaceWith(brokenImage(this.alt || this.url))
+      view.requestMeasure()
+    }
+    return img
+  }
+}
+
+function brokenImage(label) {
+  const span = document.createElement('span')
+  span.className = 'md-image-broken'
+  span.textContent = `⚠ image: ${label}`
+  return span
+}
+
+// Only render sources that can't execute anything.
+function safeImageURL(url) {
+  return /^(https?:|data:image\/)/i.test(url)
+}
 
 const inlineMarks = {
   StrongEmphasis: mark('md-strong'),
@@ -57,6 +122,28 @@ function buildDecorations(view, from, to) {
         const heading = name.match(/^ATXHeading([1-6])$/)
         if (heading) {
           addLines(node.from, node.from, 'md-heading md-h' + heading[1])
+          return
+        }
+        if (name === 'TaskMarker') {
+          // `[ ]` / `[x]` becomes a checkbox unless the cursor is on it.
+          if (!selectionTouches(state, node.from, node.to)) {
+            const checked = /x/i.test(state.sliceDoc(node.from, node.to))
+            decos.push(Decoration.replace({ widget: new CheckboxWidget(checked) }).range(node.from, node.to))
+          }
+          return
+        }
+        if (name === 'Image') {
+          // Whole `![alt](url)` becomes the image unless the cursor is
+          // inside it. Returning false skips the child nodes: the replace
+          // range must not contain other decorations.
+          if (!selectionTouches(state, node.from, node.to)) {
+            const src = state.sliceDoc(node.from, node.to)
+            const m = src.match(/^!\[(.*?)\]\((\S*?)(?:\s+"[^"]*")?\)$/s)
+            if (m && safeImageURL(m[2])) {
+              decos.push(Decoration.replace({ widget: new ImageWidget(m[2], m[1]) }).range(node.from, node.to))
+              return false
+            }
+          }
           return
         }
         if (name in inlineMarks) {
@@ -231,6 +318,39 @@ function insertLink(view) {
   return true
 }
 
+// Same shape as insertLink, with the image prefix.
+function insertImage(view) {
+  const { state } = view
+  const { from, to } = state.selection.main
+  const text = state.sliceDoc(from, to)
+  view.dispatch({
+    changes: { from, to, insert: `![${text}]()` },
+    selection: { anchor: from + text.length + 4 },
+  })
+  view.focus()
+  return true
+}
+
+// Clicking a rendered checkbox flips the character in the source — an
+// ordinary edit, so it syncs to collaborators and undoes like typing.
+// posAtDOM gives the widget's position, where the doc text is `[ ]`/`[x]`.
+function handleCheckboxClick(event, view) {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement) || !target.classList.contains('md-task-checkbox')) {
+    return false
+  }
+  event.preventDefault() // the transaction drives the rendering, not the input
+  if (view.state.readOnly) {
+    return true
+  }
+  const pos = view.posAtDOM(target)
+  const marker = view.state.sliceDoc(pos, pos + 3)
+  if (marker[0] !== '[') return true
+  const checked = /x/i.test(marker[1])
+  view.dispatch({ changes: { from: pos + 1, to: pos + 2, insert: checked ? ' ' : 'x' } })
+  return true
+}
+
 export const toolbarCommands = [
   { label: 'B', title: 'Bold (⌘B)', run: toggleInline('**') },
   { label: 'I', title: 'Italic (⌘I)', run: toggleInline('*') },
@@ -240,8 +360,10 @@ export const toolbarCommands = [
   { label: 'H2', title: 'Heading 2', run: setHeading(2) },
   { label: 'H3', title: 'Heading 3', run: setHeading(3) },
   { label: '•', title: 'Bullet list', run: toggleLinePrefix('- ') },
+  { label: '☑', title: 'Task list', run: toggleLinePrefix('- [ ] ') },
   { label: '❝', title: 'Quote', run: toggleLinePrefix('> ') },
   { label: '🔗', title: 'Link (⌘K)', run: insertLink },
+  { label: '🖼', title: 'Image', run: insertImage },
 ]
 
 const formatKeymap = [
@@ -259,6 +381,7 @@ export function mountEditor({ parent, ytext, awareness, readOnly }) {
     keymap.of([...yUndoManagerKeymap, ...formatKeymap, ...defaultKeymap]),
     markdown({ base: markdownLanguage }),
     livePreview,
+    EditorView.domEventHandlers({ mousedown: handleCheckboxClick }),
     EditorView.lineWrapping,
     yCollab(ytext, awareness, { undoManager }),
   ]

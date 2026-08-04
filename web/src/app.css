@@ -35,6 +35,10 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
 .md-blockquote { border-left: 3px solid #8886; padding-left: .6rem; opacity: .85; }
 .md-codeblock { font-family: ui-monospace, monospace; font-size: .9em; background: #8881; }
 .md-task-checkbox { margin: 0 .35em 0 0; vertical-align: middle; cursor: pointer; }
+.md-table { border-collapse: collapse; margin: .3em 0; cursor: default; }
+.md-table th, .md-table td { border: 1px solid #8885; padding: .25em .6em; }
+.md-table th { background: #8881; }
+.md-table-src { font-family: ui-monospace, monospace; font-size: .9em; }
 .md-image { max-width: 100%; max-height: 60vh; border-radius: 4px; vertical-align: bottom; }
 .md-image-broken { color: #c33; font-size: .85em; border: 1px dashed #c336; border-radius: 3px; padding: 0 .3em; }
 

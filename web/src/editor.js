@@ -9,6 +9,7 @@ import { syntaxTree } from '@codemirror/language'
 import { defaultKeymap } from '@codemirror/commands'
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 import * as Y from 'yjs'
+import { parseTableData } from './table.js'
 
 // ---- live preview ---------------------------------------------------------
 
@@ -74,6 +75,46 @@ function brokenImage(label) {
   span.className = 'md-image-broken'
   span.textContent = `⚠ image: ${label}`
   return span
+}
+
+// Renders a whole markdown table as an HTML table (a block widget spanning
+// the table's lines). Cells are plain text for now — inline styling inside
+// cells still shows raw markdown; a later pass can render it. Clicking
+// anywhere in the widget places the cursor there, which reveals the source.
+class TableWidget extends WidgetType {
+  constructor(data) {
+    super()
+    this.data = data
+    this.key = JSON.stringify(data) // cheap deep-equality for eq()
+  }
+  eq(other) {
+    return other.key === this.key
+  }
+  toDOM() {
+    const table = document.createElement('table')
+    table.className = 'md-table'
+    const alignOf = (i) => this.data.aligns[i] || 'left'
+    const addRow = (parent, cells, tag) => {
+      const tr = document.createElement('tr')
+      // Pad to the widest row so ragged markdown still renders rectangular.
+      const width = Math.max(this.data.header.length, ...this.data.rows.map((r) => r.length))
+      for (let i = 0; i < width; i++) {
+        const cell = document.createElement(tag)
+        cell.textContent = cells[i] || ''
+        cell.style.textAlign = alignOf(i)
+        tr.append(cell)
+      }
+      parent.append(tr)
+    }
+    const thead = table.createTHead()
+    addRow(thead, this.data.header, 'th')
+    const tbody = table.createTBody()
+    for (const row of this.data.rows) addRow(tbody, row, 'td')
+    return table
+  }
+  ignoreEvent() {
+    return false // let CodeMirror turn clicks into cursor placement
+  }
 }
 
 // Only render sources that can't execute anything.
@@ -157,6 +198,27 @@ function buildDecorations(view, from, to) {
             if (name === 'HeaderMark' && state.sliceDoc(end, end + 1) === ' ') end++
             if (end > node.from) decos.push(hide.range(node.from, end))
           }
+          return
+        }
+        if (name === 'Table') {
+          if (!selectionTouches(state, node.from, node.to)) {
+            // Replace the table's full lines with the rendered widget.
+            // block:true is required for a widget standing in for whole
+            // lines; returning false skips the children so the replaced
+            // range contains no other decorations.
+            const from = state.doc.lineAt(node.from).from
+            const to = state.doc.lineAt(node.to).to
+            const data = parseTableData(node.node, (a, b) => state.sliceDoc(a, b))
+            decos.push(Decoration.replace({ widget: new TableWidget(data), block: true }).range(from, to))
+            return false
+          }
+          // Revealed for editing: monospace the source lines so the pipes
+          // and columns line up while you type.
+          addLines(node.from, node.to, 'md-table-src')
+          return
+        }
+        if (name === 'TableDelimiter') {
+          decos.push(mark('md-dim').range(node.from, node.to))
           return
         }
         if (name === 'Blockquote') {
@@ -318,6 +380,20 @@ function insertLink(view) {
   return true
 }
 
+// Insert a 2x2 table skeleton on the line after the cursor, with the
+// cursor parked in the first header cell.
+function insertTable(view) {
+  const { state } = view
+  const line = state.doc.lineAt(state.selection.main.head)
+  const skeleton = '\n| Column | Column |\n| ------ | ------ |\n|        |        |\n'
+  view.dispatch({
+    changes: { from: line.to, insert: skeleton },
+    selection: { anchor: line.to + 3 },
+  })
+  view.focus()
+  return true
+}
+
 // Same shape as insertLink, with the image prefix.
 function insertImage(view) {
   const { state } = view
@@ -364,6 +440,7 @@ export const toolbarCommands = [
   { label: '❝', title: 'Quote', run: toggleLinePrefix('> ') },
   { label: '🔗', title: 'Link (⌘K)', run: insertLink },
   { label: '🖼', title: 'Image', run: insertImage },
+  { label: '⊞', title: 'Table', run: insertTable },
 ]
 
 const formatKeymap = [

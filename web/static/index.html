@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docs</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { margin: 0 auto; max-width: 48rem; padding: 1rem; }
+  h1 { font-size: 1.2rem; }
+  fieldset { border: 1px solid #8884; border-radius: 6px; margin-bottom: 1rem; }
+  input, button { font: inherit; padding: .35rem .5rem; margin: .15rem 0; }
+  ul#doclist { list-style: none; padding: 0; }
+  ul#doclist li { display: flex; gap: .5rem; align-items: baseline; padding: .25rem 0; }
+  ul#doclist a { flex: 1; }
+  #editor { display: none; }
+  #ta { width: 100%; height: 60vh; font: 1rem/1.5 ui-monospace, monospace; box-sizing: border-box; }
+  #status { font-size: .85rem; opacity: .7; }
+  .err { color: #c33; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<h1>docs — phase 1 sync demo</h1>
+
+<div id="authview">
+  <fieldset>
+    <legend>Sign in</legend>
+    <form id="loginform">
+      <input name="email" type="email" placeholder="email" required>
+      <input name="password" type="password" placeholder="password" required>
+      <button>Sign in</button>
+    </form>
+  </fieldset>
+  <fieldset>
+    <legend>Sign up</legend>
+    <form id="signupform">
+      <input name="name" placeholder="name" required>
+      <input name="email" type="email" placeholder="email" required>
+      <input name="password" type="password" placeholder="password (min 8)" required>
+      <button>Create account</button>
+    </form>
+  </fieldset>
+  <p id="autherr" class="err"></p>
+</div>
+
+<div id="listview" class="hidden">
+  <p>Signed in as <span id="who"></span> — <a href="#" id="logout">sign out</a></p>
+  <form id="createform">
+    <input name="title" placeholder="new document title">
+    <button>Create</button>
+  </form>
+  <ul id="doclist"></ul>
+</div>
+
+<div id="editor">
+  <p><a href="#" id="back">← documents</a> <strong id="doctitle"></strong> <span id="status"></span></p>
+  <textarea id="ta" spellcheck="false"></textarea>
+</div>
+
+<script src="/demo.js"></script>
+</body>
+</html>

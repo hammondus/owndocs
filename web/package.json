@@ -1,0 +1,13 @@
+{
+  "name": "docs-web",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/demo.js --bundle --format=iife --outfile=static/demo.js"
+  },
+  "dependencies": {
+    "yjs": "^13.6.20"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

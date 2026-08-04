@@ -396,6 +396,116 @@ docx is excluded.
 
 ---
 
+## Sheets
+
+Same collaboration engine, same opaque-blob server: a sheet is just a Y.Doc
+with a different internal shape, synced through the unchanged provider and
+compacted/versioned by the unchanged machinery. Everything below is
+client-side.
+
+### Grid identity: stable row/col ids, not coordinates
+
+The CRDT-killer in spreadsheets is concurrent structural edits: if cells are
+keyed by position (`row3:col2`), inserting a row means rewriting every key
+below it — a huge transaction that conflicts disastrously with any
+concurrent edit. Instead:
+
+- `rows` / `cols` are Y.Arrays of random short ids. Inserting a row is a
+  one-element array insert; Yjs merges concurrent inserts the same way it
+  merges concurrent text typing.
+- `cells` is a Y.Map keyed `rowId.colId`, value = the raw input string.
+  Cells never move; only the order arrays do. Per-cell last-writer-wins is
+  the right granularity (merging keystrokes *within* one cell is not worth
+  the complexity — Google doesn't either).
+- Deleting a row deletes its id and its cells in one transaction. A
+  concurrent edit to a deleted cell resurfaces as an orphan (id no longer
+  in the array) — invisible and harmless, cleaned by history compaction of
+  the map itself. Never auto-resurrected.
+
+Rows/cols are **materialized lazily**: a fresh sheet's arrays are empty (no
+seeding — two clients seeding 50 rows on first open would merge into 100),
+and the grid displays a virtual minimum size. Touching a cell materializes
+ids up to its position. Two clients materializing concurrently merge into
+extra rows — both sides' data kept, nothing lost; rare and acceptable.
+
+### Formulas: A1 at the edges, stable ids inside
+
+Stored formulas reference ids (`@r1a2b3.c9d8e7`), not positions. The user
+types and sees A1 notation; conversion happens at the boundary (commit
+parses A1 → ids; display renders ids → current A1). Why: a reference tracks
+*cell identity*, so inserting rows never rewrites a single formula — the
+displayed text just changes, which is exactly Google's behaviour, achieved
+with zero rewrite transactions and no concurrent-rewrite hazards. A
+reference to a deleted row/col displays and evaluates as `#REF!`, like
+everyone else. Ranges store their two endpoint ids and therefore grow and
+shrink naturally as rows are inserted or deleted between them. `$` absolute
+markers are parsed and round-tripped but have no semantics until fill/paste
+exists (they only matter when copying formulas).
+
+### Computed values are never stored
+
+Only raw input strings live in the doc. Every client computes formula
+results locally: one source of truth, no stored-value/formula skew, nothing
+for the (content-blind) server to compute, and history/replay reproduce
+exact results by construction. This is also what forces scripting client-
+side, which we independently want (see below).
+
+### Engine: hand-rolled, ~20 functions, registry-based
+
+Tokenizer + Pratt parser + evaluator, no dependencies (a formula parser is
+a few hundred auditable lines; a library would bring its own value model).
+Excel compatibility quirks are followed where users would notice
+(`-2^2 = 4`: unary minus binds tighter than `^`; `^` is left-associative)
+and deviated from where Excel is silly: circular references are a proper
+`#CYCLE!` error, not a warning-and-zero. `IF` evaluates only the taken
+branch. Functions live in a plain name→fn registry so scripts can later
+register custom ones.
+
+Recalculation (v1): any doc change clears the whole computed-value cache;
+values recompute lazily on demand (render pulls visible cells; watchers
+pull their ranges), memoized per pass, with cycle detection via an
+in-progress mark. Deliberately naive — trivially correct under concurrent
+edits, no dirty-propagation bugs — and fast enough until sheets get big.
+The upgrade path (reverse-dependency dirty sets) is contained inside the
+model and changes no interfaces.
+
+### Model is a library; the grid is one consumer
+
+`sheet/model.js` (Yjs mapping, A1↔id translation, recalc, transactions,
+`watchRange`) has no DOM and no Svelte. The canvas grid consumes it through
+the same API a chart or a script bridge will later: this is the provision
+agreed for graphs and scripting — ranges are subscribable by *anything*,
+writes are transactional (a script setting 1000 cells is one update), and
+the future `objects` / `scripts` containers are named in the doc layout.
+Scripting itself stays unbuilt until the model API has been exercised;
+plan of record: sandboxed-iframe execution in the browser, plus a headless
+Sobek runner as "just another client" for scheduled scripts and the
+line-by-line debugger.
+
+### Rendering: canvas, virtualized
+
+A DOM grid dies at tens of thousands of cells; every serious web
+spreadsheet paints on canvas. One canvas draws only the visible window
+(native scrollbars via a sized spacer div, canvas stuck in the corner);
+editing is a real `<input>` overlaid on the active cell, so IME, selection
+and clipboard behave natively where it matters. Numbers right-aligned,
+text left, like every spreadsheet since VisiCalc. Collaborator selections
+render from the same awareness channel the editor uses.
+
+### v1 scope cuts (deliberate, recorded)
+
+Single sheet per doc (tabs need a container restructure — decide before,
+not after, people have data); no cell formatting (raw-string cell values
+can become objects later — readers accept both); no fill handle or
+copy-paste of formulas (hence `$` inert); no volatile functions
+(`TODAY`/`NOW` make clients disagree and recalc time-dependent — needs
+thought, not code); history *browsing* UI for sheets deferred (the log and
+replay already work — only the preview renderer is markdown-specific);
+CSV/xlsx export later; the git exporter keeps skipping `kind=sheet` until
+a text serialization is chosen (likely CSV alongside the .md files).
+
+---
+
 ## Incidents
 
 - **2026-08-04, corrupt update row.** During the full-state-resync death

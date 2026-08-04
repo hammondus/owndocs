@@ -7,6 +7,7 @@
   import AuthView from './lib/AuthView.svelte'
   import DocList from './lib/DocList.svelte'
   import EditorView from './lib/EditorView.svelte'
+  import SheetView from './lib/SheetView.svelte'
   import ShareView from './lib/ShareView.svelte'
   import HistoryView from './lib/HistoryView.svelte'
 
@@ -95,7 +96,11 @@
   <!-- #key destroys and recreates the editor when the doc changes, so a
        stale CodeMirror/provider from the previous doc can never leak. -->
   {#key route.doc.id}
-    <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
+    {#if route.doc.kind === 'sheet'}
+      <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} />
+    {:else}
+      <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
+    {/if}
   {/key}
 {:else if route.view === 'share'}
   <ShareView doc={route.doc} onBack={showList} />

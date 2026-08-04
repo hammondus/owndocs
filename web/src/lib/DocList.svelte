@@ -8,6 +8,7 @@
 
   let docs = $state([])
   let newTitle = $state('')
+  let newKind = $state('doc')
 
   onMount(load)
 
@@ -19,7 +20,7 @@
     event.preventDefault()
     const doc = await api('/api/docs', {
       method: 'POST',
-      body: JSON.stringify({ title: newTitle }),
+      body: JSON.stringify({ title: newTitle, kind: newKind }),
     })
     newTitle = ''
     onOpen(doc)
@@ -40,6 +41,10 @@
 <form onsubmit={createDoc}>
   <!-- bind:value keeps the input and the newTitle variable in sync both ways -->
   <input placeholder="new document title" bind:value={newTitle} />
+  <select bind:value={newKind}>
+    <option value="doc">doc</option>
+    <option value="sheet">sheet</option>
+  </select>
   <button>Create</button>
 </form>
 
@@ -49,6 +54,7 @@
   {#each docs as doc (doc.id)}
     <li>
       <a href={'#doc=' + doc.id} onclick={(e) => { e.preventDefault(); onOpen(doc) }}>{doc.title}</a>
+      <span class="kind">{doc.kind}</span>
       {doc.role}
       {#if doc.role === 'owner'}
         <button onclick={() => onShare(doc)}>share</button>
@@ -73,5 +79,12 @@
   }
   li a {
     flex: 1;
+  }
+  .kind {
+    font-size: 0.75rem;
+    opacity: 0.6;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    padding: 0 4px;
   }
 </style>

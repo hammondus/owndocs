@@ -81,6 +81,21 @@ CREATE TABLE history_segments (
 );
 `
 
+// Schema v3: share links. Tokens are capability bearer secrets, stored as
+// SHA-256 like session tokens — a leaked db must not grant access. The
+// plaintext token is returned once at creation; lost links are revoked and
+// regenerated, never retrieved.
+const schemaV3 = `
+CREATE TABLE share_links (
+	id         INTEGER PRIMARY KEY,
+	doc_id     TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+	token_hash BLOB NOT NULL UNIQUE,
+	role       TEXT NOT NULL CHECK (role IN ('editor','viewer')),
+	created_by INTEGER NOT NULL REFERENCES users(id),
+	created_at INTEGER NOT NULL
+);
+`
+
 func openDB(path string) (*sql.DB, error) {
 	// _pragma values apply per-connection; busy_timeout is belt-and-braces
 	// since MaxOpenConns(1) already serializes everything through one
@@ -103,7 +118,7 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
-	for ver, schema := range []string{schemaV1, schemaV2} {
+	for ver, schema := range []string{schemaV1, schemaV2, schemaV3} {
 		if v > ver {
 			continue
 		}

@@ -71,6 +71,7 @@ type client struct {
 	conn   *websocket.Conn
 	send   chan []byte // typed messages; closed by the room on eviction
 	role   string
+	userID int64
 	synced []byte // the synced control message, prepared at join time
 }
 
@@ -127,6 +128,27 @@ func (h *hub) closeRoom(docID string) {
 	}
 	rm.clients = map[*client]struct{}{}
 	rm.awareness = map[*client][]byte{}
+	rm.mu.Unlock()
+}
+
+// evictUser disconnects a user's live connections to a document — called
+// when their role is revoked or changed, so enforcement is immediate rather
+// than deferred to the next reconnect.
+func (h *hub) evictUser(docID string, userID int64) {
+	h.mu.Lock()
+	rm := h.rooms[docID]
+	h.mu.Unlock()
+	if rm == nil {
+		return
+	}
+	rm.mu.Lock()
+	for c := range rm.clients {
+		if c.userID == userID {
+			delete(rm.clients, c)
+			delete(rm.awareness, c)
+			close(c.send)
+		}
+	}
 	rm.mu.Unlock()
 }
 
@@ -475,7 +497,7 @@ func (h *hub) handleWS() http.HandlerFunc {
 		}
 		conn.SetReadLimit(maxUpdateSize)
 
-		c := &client{conn: conn, role: role}
+		c := &client{conn: conn, role: role, userID: u.ID}
 		var rm *room
 		for range 3 { // retry: the room can be deleted between lookup and join
 			rm = h.room(docID)

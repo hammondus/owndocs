@@ -152,8 +152,12 @@ func currentUser(r *http.Request) *user {
 	return u
 }
 
-func handleSignup(db *sql.DB) http.HandlerFunc {
+func handleSignup(db *sql.DB, open bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !open {
+			jsonError(w, http.StatusForbidden, "signup is closed on this instance")
+			return
+		}
 		var in struct {
 			Email    string `json:"email"`
 			Name     string `json:"name"`

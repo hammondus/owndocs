@@ -290,8 +290,23 @@ Implementation details worth knowing: session tokens are stored as SHA-256
 hashes (a leaked db doesn't leak live sessions); CSRF protection is the
 `Content-Type: application/json` requirement on mutating endpoints (a
 cross-origin form can't send that without a CORS preflight) plus
-`coder/websocket`'s default same-origin check on upgrade; signup is currently
-open — gate or invite-code it before exposing an instance to the internet.
+`coder/websocket`'s default same-origin check on upgrade; signup is gated by
+the `-signup=open|closed` flag — close it before exposing an instance to the
+internet (sharing-by-email requires existing accounts, so onboard the team
+while open, then close).
+
+Sharing (phase: sharing UI): invite-by-email grants editor/viewer to
+existing accounts; only owners mutate shares and nothing can change or
+remove the owner. Share links are capability tokens stored as SHA-256 like
+sessions — the plaintext appears exactly once at creation; lost links are
+revoked and re-minted, never retrieved. Redeeming grants the link's role but
+only ever upgrades (viewer→editor); revoking a link stops future
+redemptions without clawing back roles already granted. Revoking or
+downgrading a person evicts their live WebSocket connections immediately —
+enforcement is server-side, not hidden UI. Share URLs use hash routing
+(`/#share=<token>`, `/#doc=<id>`) so the token never appears in server logs
+or Referer headers; the fragment survives the login flow for signed-out
+recipients.
 
 ### Static assets: everything no-cache until content-hashed
 

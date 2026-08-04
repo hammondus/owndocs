@@ -91,9 +91,34 @@
 
 <div id="editorview" class="hidden">
   <p><a href="#" id="back">← documents</a> <strong id="doctitle"></strong>
+     <a href="#" id="sharebtn" class="hidden">share</a>
      <span id="connstatus"></span><span id="presence"></span></p>
   <div id="toolbar"></div>
   <div id="editor"></div>
+</div>
+
+<div id="shareview" class="hidden">
+  <p><a href="#" id="shareback">← back</a> Sharing <strong id="sharetitle"></strong></p>
+  <fieldset>
+    <legend>People</legend>
+    <ul id="sharelist"></ul>
+    <form id="shareform">
+      <input name="email" type="email" placeholder="email of existing account" required>
+      <select name="role"><option value="editor">editor</option><option value="viewer">viewer</option></select>
+      <button>Add</button>
+    </form>
+    <p id="shareerr" class="err"></p>
+  </fieldset>
+  <fieldset>
+    <legend>Share links</legend>
+    <ul id="linklist"></ul>
+    <p>
+      <button id="mklink-viewer">New viewer link</button>
+      <button id="mklink-editor">New editor link</button>
+    </p>
+    <p id="newlink" class="hidden">Copy it now — it is shown only once:<br>
+      <input id="newlinkurl" readonly size="50"> <button id="copylink">copy</button></p>
+  </fieldset>
 </div>
 
 <script src="/app.js"></script>

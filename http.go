@@ -8,10 +8,10 @@ import (
 	"strings"
 )
 
-func routes(db *sql.DB, h *hub, staticFS fs.FS) http.Handler {
+func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen bool) http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("POST /api/signup", handleSignup(db))
+	mux.HandleFunc("POST /api/signup", handleSignup(db, signupOpen))
 	mux.HandleFunc("POST /api/login", handleLogin(db))
 	mux.HandleFunc("POST /api/logout", handleLogout(db))
 	mux.HandleFunc("GET /api/me", requireAuth(db, handleMe()))
@@ -20,6 +20,14 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS) http.Handler {
 	mux.HandleFunc("POST /api/docs", requireAuth(db, handleCreateDoc(db)))
 	mux.HandleFunc("PATCH /api/docs/{id}", requireAuth(db, handleRenameDoc(db)))
 	mux.HandleFunc("DELETE /api/docs/{id}", requireAuth(db, handleDeleteDoc(db, h)))
+
+	mux.HandleFunc("GET /api/docs/{id}/shares", requireAuth(db, handleListShares(db)))
+	mux.HandleFunc("POST /api/docs/{id}/shares", requireAuth(db, handleAddShare(db, h)))
+	mux.HandleFunc("DELETE /api/docs/{id}/shares/{uid}", requireAuth(db, handleRemoveShare(db, h)))
+	mux.HandleFunc("POST /api/docs/{id}/links", requireAuth(db, handleCreateLink(db)))
+	mux.HandleFunc("GET /api/docs/{id}/links", requireAuth(db, handleListLinks(db)))
+	mux.HandleFunc("DELETE /api/docs/{id}/links/{lid}", requireAuth(db, handleDeleteLink(db)))
+	mux.HandleFunc("POST /api/share/redeem", requireAuth(db, handleRedeemLink(db)))
 
 	mux.HandleFunc("POST /api/docs/{id}/snapshot", requireAuth(db, handleSnapshotUpload(db)))
 	mux.HandleFunc("GET /api/docs/{id}/verify-bundle", requireAuth(db, handleVerifyBundle(db)))

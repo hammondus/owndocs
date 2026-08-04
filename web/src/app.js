@@ -28,9 +28,9 @@ let me = null
 let session = null // current editor session: {provider, view, doc}
 
 function show(view) {
-  $('authview').classList.toggle('hidden', view !== 'auth')
-  $('listview').classList.toggle('hidden', view !== 'list')
-  $('editorview').classList.toggle('hidden', view !== 'editor')
+  for (const v of ['authview', 'listview', 'editorview', 'shareview']) {
+    $(v).classList.toggle('hidden', v !== view + 'view')
+  }
 }
 
 async function showList() {
@@ -45,17 +45,103 @@ async function showList() {
     a.href = '#'
     a.textContent = d.title
     a.onclick = (e) => { e.preventDefault(); openDoc(d) }
-    const del = document.createElement('button')
-    del.textContent = 'delete'
-    del.onclick = async () => {
-      if (!confirm(`Delete "${d.title}"?`)) return
-      await api(`/api/docs/${d.id}`, { method: 'DELETE' })
-      showList()
+    li.append(a, document.createTextNode(d.role))
+    if (d.role === 'owner') {
+      const share = document.createElement('button')
+      share.textContent = 'share'
+      share.onclick = () => showShare(d)
+      const del = document.createElement('button')
+      del.textContent = 'delete'
+      del.onclick = async () => {
+        if (!confirm(`Delete "${d.title}"?`)) return
+        await api(`/api/docs/${d.id}`, { method: 'DELETE' })
+        showList()
+      }
+      li.append(share, del)
     }
-    li.append(a, document.createTextNode(d.role), del)
     ul.append(li)
   }
+  location.hash = ''
   show('list')
+}
+
+// ---- sharing --------------------------------------------------------------
+
+async function showShare(d) {
+  closeEditor()
+  $('sharetitle').textContent = d.title
+  $('shareerr').textContent = ''
+  $('newlink').classList.add('hidden')
+  $('shareback').onclick = (e) => { e.preventDefault(); showList() }
+
+  const renderPeople = async () => {
+    const shares = await api(`/api/docs/${d.id}/shares`)
+    const ul = $('sharelist')
+    ul.replaceChildren()
+    for (const s of shares) {
+      const li = document.createElement('li')
+      li.append(document.createTextNode(`${s.name} <${s.email}> — ${s.role}`))
+      if (s.role !== 'owner') {
+        const rm = document.createElement('button')
+        rm.textContent = 'remove'
+        rm.onclick = async () => {
+          await api(`/api/docs/${d.id}/shares/${s.user_id}`, { method: 'DELETE' })
+          renderPeople()
+        }
+        li.append(rm)
+      }
+      ul.append(li)
+    }
+  }
+  const renderLinks = async () => {
+    const links = await api(`/api/docs/${d.id}/links`)
+    const ul = $('linklist')
+    ul.replaceChildren()
+    for (const l of links) {
+      const li = document.createElement('li')
+      const when = new Date(l.created_at * 1000).toLocaleString()
+      li.append(document.createTextNode(`${l.role} link, created ${when} `))
+      const rm = document.createElement('button')
+      rm.textContent = 'revoke'
+      rm.onclick = async () => {
+        await api(`/api/docs/${d.id}/links/${l.id}`, { method: 'DELETE' })
+        renderLinks()
+      }
+      li.append(rm)
+      ul.append(li)
+    }
+  }
+
+  $('shareform').onsubmit = async (e) => {
+    e.preventDefault()
+    const f = new FormData(e.target)
+    try {
+      await api(`/api/docs/${d.id}/shares`, {
+        method: 'POST',
+        body: JSON.stringify({ email: f.get('email'), role: f.get('role') }),
+      })
+      e.target.reset()
+      $('shareerr').textContent = ''
+      renderPeople()
+    } catch (err) {
+      $('shareerr').textContent = err.message
+    }
+  }
+  const mklink = (role) => async () => {
+    const l = await api(`/api/docs/${d.id}/links`, { method: 'POST', body: JSON.stringify({ role }) })
+    $('newlinkurl').value = `${location.origin}/#share=${l.token}`
+    $('newlink').classList.remove('hidden')
+    renderLinks()
+  }
+  $('mklink-viewer').onclick = mklink('viewer')
+  $('mklink-editor').onclick = mklink('editor')
+  $('copylink').onclick = () => {
+    navigator.clipboard?.writeText($('newlinkurl').value)
+    $('newlinkurl').select()
+  }
+
+  await Promise.all([renderPeople(), renderLinks()])
+  show('share')
 }
 
 function openDoc(d) {
@@ -98,6 +184,9 @@ function openDoc(d) {
 
   session = { provider, view, doc }
   $('doctitle').textContent = d.title
+  $('sharebtn').classList.toggle('hidden', d.role !== 'owner')
+  $('sharebtn').onclick = (e) => { e.preventDefault(); showShare(d) }
+  location.hash = 'doc=' + d.id
   show('editor')
 }
 
@@ -128,7 +217,33 @@ function boot() {
   }
   $('back').onclick = (e) => { e.preventDefault(); showList() }
 
-  api('/api/me').then((u) => { me = u; showList() }).catch(() => show('auth'))
+  api('/api/me').then((u) => { me = u; return afterAuth() }).catch(() => show('auth'))
+}
+
+// Route on the location hash once signed in: #share=<token> redeems a share
+// link, #doc=<id> reopens a document (survives refresh), else the list.
+async function afterAuth() {
+  const hash = new URLSearchParams(location.hash.slice(1))
+  if (hash.get('share')) {
+    try {
+      const d = await api('/api/share/redeem', {
+        method: 'POST',
+        body: JSON.stringify({ token: hash.get('share') }),
+      })
+      openDoc(d)
+      return
+    } catch (err) {
+      alert(err.message) // invalid/revoked link; fall through to the list
+    }
+  } else if (hash.get('doc')) {
+    const docs = await api('/api/docs')
+    const d = docs.find((x) => x.id === hash.get('doc'))
+    if (d) {
+      openDoc(d)
+      return
+    }
+  }
+  showList()
 }
 
 async function submitAuth(e, path) {
@@ -137,7 +252,9 @@ async function submitAuth(e, path) {
   try {
     me = await api(path, { method: 'POST', body: JSON.stringify(Object.fromEntries(f)) })
     $('autherr').textContent = ''
-    showList()
+    // afterAuth, not showList: a share link opened while signed out must be
+    // redeemed right after signing in — the hash survives the auth flow.
+    afterAuth()
   } catch (err) {
     $('autherr').textContent = err.message
   }

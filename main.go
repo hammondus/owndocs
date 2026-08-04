@@ -26,7 +26,11 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8484", "listen address")
 	dbPath := flag.String("db", "data/docs.db", "sqlite database path")
 	staticDir := flag.String("static", "", "serve UI from this directory instead of the embedded copy (dev)")
+	signup := flag.String("signup", "open", "account creation: open or closed (close before exposing to the internet)")
 	flag.Parse()
+	if *signup != "open" && *signup != "closed" {
+		log.Fatalf("-signup must be open or closed, got %q", *signup)
+	}
 
 	if dir := filepath.Dir(*dbPath); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -51,7 +55,7 @@ func main() {
 	hub := newHub(db)
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           routes(db, hub, staticFS),
+		Handler:           routes(db, hub, staticFS, *signup == "open"),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

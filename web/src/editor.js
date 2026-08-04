@@ -3,9 +3,9 @@
 // layer over the syntax tree, and marker characters (**, #, `…) are hidden
 // unless the selection touches the construct they belong to.
 import { EditorView, keymap, ViewPlugin, Decoration, WidgetType } from '@codemirror/view'
-import { EditorState } from '@codemirror/state'
+import { EditorState, StateField } from '@codemirror/state'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
-import { syntaxTree } from '@codemirror/language'
+import { syntaxTree, ensureSyntaxTree } from '@codemirror/language'
 import { defaultKeymap } from '@codemirror/commands'
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 import * as Y from 'yjs'
@@ -201,19 +201,11 @@ function buildDecorations(view, from, to) {
           return
         }
         if (name === 'Table') {
-          if (!selectionTouches(state, node.from, node.to)) {
-            // Replace the table's full lines with the rendered widget.
-            // block:true is required for a widget standing in for whole
-            // lines; returning false skips the children so the replaced
-            // range contains no other decorations.
-            const from = state.doc.lineAt(node.from).from
-            const to = state.doc.lineAt(node.to).to
-            const data = parseTableData(node.node, (a, b) => state.sliceDoc(a, b))
-            decos.push(Decoration.replace({ widget: new TableWidget(data), block: true }).range(from, to))
-            return false
-          }
-          // Revealed for editing: monospace the source lines so the pipes
-          // and columns line up while you type.
+          // The rendered-table widget itself comes from tableDecorations
+          // below — CodeMirror forbids block decorations from view plugins.
+          // Here we only style the revealed (cursor-inside) case: monospace
+          // the source lines so the pipes and columns line up while typing.
+          if (!selectionTouches(state, node.from, node.to)) return false
           addLines(node.from, node.to, 'md-table-src')
           return
         }
@@ -245,6 +237,38 @@ function buildDecorations(view, from, to) {
 // per scroll changed line heights mid-measure and made CodeMirror's layout
 // loop oscillate ("Viewport failed to stabilize") on large documents.
 const OVERSCAN = 4000
+
+// Table widgets are block decorations (they stand in for whole lines), and
+// CodeMirror only accepts those from a StateField — a view plugin providing
+// them throws "Block decorations may not be specified via plugins". The
+// field recomputes on any doc or selection change, over the whole document
+// (tables are rare; ensureSyntaxTree gives the parser a small budget to
+// finish far-away regions).
+function buildTableDecorations(state) {
+  const decos = []
+  const tree = ensureSyntaxTree(state, state.doc.length, 50) || syntaxTree(state)
+  tree.iterate({
+    enter(node) {
+      if (node.name !== 'Table') return
+      if (selectionTouches(state, node.from, node.to)) return false
+      const from = state.doc.lineAt(node.from).from
+      const to = state.doc.lineAt(node.to).to
+      const data = parseTableData(node.node, (a, b) => state.sliceDoc(a, b))
+      decos.push(Decoration.replace({ widget: new TableWidget(data), block: true }).range(from, to))
+      return false
+    },
+  })
+  return Decoration.set(decos, true)
+}
+
+const tableDecorations = StateField.define({
+  create: buildTableDecorations,
+  update(value, tr) {
+    if (tr.docChanged || tr.selection) return buildTableDecorations(tr.state)
+    return value
+  },
+  provide: (field) => EditorView.decorations.from(field),
+})
 
 const livePreview = ViewPlugin.fromClass(
   class {
@@ -458,6 +482,7 @@ export function mountEditor({ parent, ytext, awareness, readOnly }) {
     keymap.of([...yUndoManagerKeymap, ...formatKeymap, ...defaultKeymap]),
     markdown({ base: markdownLanguage }),
     livePreview,
+    tableDecorations,
     EditorView.domEventHandlers({ mousedown: handleCheckboxClick }),
     EditorView.lineWrapping,
     yCollab(ytext, awareness, { undoManager }),

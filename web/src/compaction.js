@@ -34,6 +34,7 @@ async function uploadSnapshot(docId, doc, lastSeq) {
     headers: { 'Content-Type': 'application/octet-stream' },
     body: snap,
   })
+  console.log(`compaction: uploaded snapshot covering seq ${lastSeq} (${snap.length} bytes)`)
 }
 
 // Verify-bundle layout: [uvarint len][A][uvarint len][B][uvarint 8][seq be64]
@@ -67,6 +68,7 @@ async function verifyPending(docId) {
   }
   if (dominates(svB, svA)) {
     await verdict(docId, lastSeq, true)
+    console.log(`compaction: verified snapshot at seq ${lastSeq}; covered rows archived`)
   } else {
     // B is missing content that the log has. The bundle is read in one
     // transaction and sequence numbers are monotonic, so this cannot be a

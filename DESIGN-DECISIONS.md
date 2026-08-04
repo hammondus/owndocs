@@ -328,6 +328,25 @@ any past state is reconstructable by replaying the log to that point.
 "Restore" is a new update that overwrites current state — history itself is
 never rewritten.
 
+Implementation (phase: version history):
+
+- **Browseable points are derived at query time**, never stored: rows whose
+  timestamps sit within 5 minutes of each other form one "session"; each
+  session is one point. The rule is a constant (`sessionGap`) — tuning it
+  re-buckets all history retroactively for free.
+- **Archiving preserves row metadata**: each segment carries a JSON row
+  index of (seq, timestamp, byte offset), so sessions survive compaction
+  and replay can cut mid-segment. Pre-index segments degrade to one coarse
+  point at their end — addressability is only as fine as what was recorded.
+- **Replay is server-side byte assembly, client-side reconstruction**: the
+  server concatenates frames up to a seq (it still never reads content);
+  the client replays them into a fresh Y.Doc and previews read-only.
+- **Restore is an ordinary collaborative edit**: one transaction replacing
+  current text with the previewed state, delivered through a normal
+  provider connection — it syncs to live collaborators, is undoable, and
+  itself appears in history. Pinning a name flushes the room first so the
+  label lands on the very latest edit.
+
 ### Import/export
 
 xlsx via `excelize` (mature, justified). Doc export is now trivial: the

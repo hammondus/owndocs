@@ -9,7 +9,7 @@
   import { mountEditor, toolbarCommands } from '../editor.js'
   import { scheduleCompaction } from '../compaction.js'
 
-  let { me, doc, onBack, onShare } = $props()
+  let { me, doc, onBack, onShare, onHistory } = $props()
 
   let status = $state('connecting…')
   let peerCount = $state(1)
@@ -65,6 +65,7 @@
   {#if doc.role === 'owner'}
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}
+  <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
   <span class="status">{status}</span>
   {#if peerCount > 1}
     <span class="status">{peerCount} online</span>

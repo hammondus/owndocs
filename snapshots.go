@@ -6,12 +6,21 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
 )
+
+// rowIndexEntry locates one archived update row inside a segment's
+// decompressed bytes. Serialized as JSON in history_segments.row_index.
+type rowIndexEntry struct {
+	Seq int64 `json:"s"`
+	At  int64 `json:"t"`
+	Off int   `json:"o"`
+}
 
 // Compaction endpoints (see DESIGN-DECISIONS.md). The snapshot is a cache;
 // the update log is the source of truth. Clients post merged snapshots,
@@ -254,18 +263,21 @@ func handleSnapshotVerdict(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Archive the covered rows as one gzipped segment.
-		rows, err := tx.Query("SELECT seq, data FROM updates WHERE doc_id = ? AND seq <= ? ORDER BY seq", docID, in.LastSeq)
+		// Archive the covered rows as one gzipped segment, with a row index
+		// (seq, timestamp, byte offset) so version history can still find
+		// session boundaries and cut mid-segment after archiving.
+		rows, err := tx.Query("SELECT seq, data, created_at FROM updates WHERE doc_id = ? AND seq <= ? ORDER BY seq", docID, in.LastSeq)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
 		var startSeq, endSeq int64
 		var raw []byte
+		var index []rowIndexEntry
 		for rows.Next() {
-			var seq int64
+			var seq, at int64
 			var data []byte
-			if err := rows.Scan(&seq, &data); err != nil {
+			if err := rows.Scan(&seq, &data, &at); err != nil {
 				rows.Close()
 				jsonError(w, http.StatusInternalServerError, "db error")
 				return
@@ -274,6 +286,7 @@ func handleSnapshotVerdict(db *sql.DB) http.HandlerFunc {
 				startSeq = seq
 			}
 			endSeq = seq
+			index = append(index, rowIndexEntry{Seq: seq, At: at, Off: len(raw)})
 			raw = append(raw, data...)
 		}
 		rows.Close()
@@ -282,8 +295,13 @@ func handleSnapshotVerdict(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		if startSeq > 0 {
-			if _, err := tx.Exec("INSERT INTO history_segments (doc_id, start_seq, end_seq, data, created_at) VALUES (?,?,?,?,?)",
-				docID, startSeq, endSeq, gzipBytes(raw), time.Now().Unix()); err != nil {
+			indexJSON, err := json.Marshal(index)
+			if err != nil {
+				jsonError(w, http.StatusInternalServerError, "encode error")
+				return
+			}
+			if _, err := tx.Exec("INSERT INTO history_segments (doc_id, start_seq, end_seq, data, created_at, row_index) VALUES (?,?,?,?,?,?)",
+				docID, startSeq, endSeq, gzipBytes(raw), time.Now().Unix(), string(indexJSON)); err != nil {
 				jsonError(w, http.StatusInternalServerError, "db error")
 				return
 			}

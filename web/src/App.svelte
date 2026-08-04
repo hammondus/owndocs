@@ -8,6 +8,7 @@
   import DocList from './lib/DocList.svelte'
   import EditorView from './lib/EditorView.svelte'
   import ShareView from './lib/ShareView.svelte'
+  import HistoryView from './lib/HistoryView.svelte'
 
   // $state makes a variable reactive: assigning to it re-renders whatever
   // reads it. `me` is the signed-in user (null = signed out).
@@ -68,6 +69,10 @@
     route = { view: 'share', doc }
   }
 
+  function openHistory(doc) {
+    route = { view: 'history', doc }
+  }
+
   async function signedIn(user) {
     me = user
     await afterAuth()
@@ -90,8 +95,10 @@
   <!-- #key destroys and recreates the editor when the doc changes, so a
        stale CodeMirror/provider from the previous doc can never leak. -->
   {#key route.doc.id}
-    <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} />
+    <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
   {/key}
 {:else if route.view === 'share'}
   <ShareView doc={route.doc} onBack={showList} />
+{:else if route.view === 'history'}
+  <HistoryView doc={route.doc} onBack={() => openDoc(route.doc)} />
 {/if}

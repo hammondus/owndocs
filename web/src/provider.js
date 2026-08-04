@@ -10,6 +10,8 @@ import {
   removeAwarenessStates,
 } from 'y-protocols/awareness'
 
+import { iterFrames } from './frames.js'
+
 const MSG_DOC = 0
 const MSG_AWARENESS = 1
 
@@ -17,22 +19,6 @@ const MSG_AWARENESS = 1
 // Sending anything bigger gets the connection closed (1009) — and must
 // never be retried blindly, or the reconnect loop becomes self-sustaining.
 const MAX_WS_UPDATE = 15 * 1024 * 1024
-
-// Server->client batches: repeated [uvarint len][bytes].
-function* iterFrames(buf) {
-  let i = 0
-  while (i < buf.length) {
-    let len = 0, shift = 0
-    for (;;) {
-      const b = buf[i++]
-      len |= (b & 0x7f) << shift
-      if ((b & 0x80) === 0) break
-      shift += 7
-    }
-    yield buf.subarray(i, i + len)
-    i += len
-  }
-}
 
 export class Provider {
   constructor(doc, docId, { onStatus = () => {}, onSynced = () => {}, wsUrl } = {}) {

@@ -4,6 +4,7 @@
 // replaying two independent reconstructions and comparing state vectors.
 import * as Y from 'yjs'
 import * as decoding from 'lib0/decoding'
+import { iterFrames } from './frames.js'
 
 const TAIL_ROWS_LIMIT = 100
 const TAIL_BYTES_LIMIT = 128 * 1024
@@ -95,21 +96,6 @@ function replay(bundle) {
   const doc = new Y.Doc()
   for (const update of iterFrames(bundle)) Y.applyUpdate(doc, update)
   return doc
-}
-
-function* iterFrames(buf) {
-  let i = 0
-  while (i < buf.length) {
-    let len = 0, shift = 0
-    for (;;) {
-      const b = buf[i++]
-      len |= (b & 0x7f) << shift
-      if ((b & 0x80) === 0) break
-      shift += 7
-    }
-    yield buf.subarray(i, i + len)
-    i += len
-  }
 }
 
 function splitParts(buf) {

@@ -132,6 +132,18 @@ func (h *hub) closeRoom(docID string) {
 	rm.mu.Unlock()
 }
 
+// flushDoc forces any buffered updates for a document into SQLite — used
+// when a version is pinned mid-typing so the name lands on the very latest
+// sequence number.
+func (h *hub) flushDoc(docID string) {
+	h.mu.Lock()
+	rm := h.rooms[docID]
+	h.mu.Unlock()
+	if rm != nil {
+		rm.flush()
+	}
+}
+
 // evictUser disconnects a user's live connections to a document — called
 // when their role is revoked or changed, so enforcement is immediate rather
 // than deferred to the next reconnect.

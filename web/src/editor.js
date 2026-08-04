@@ -476,6 +476,26 @@ const formatKeymap = [
 
 // ---- editor construction --------------------------------------------------
 
+// Read-only standalone editor for previewing a historical state: same
+// markdown rendering (live preview, widgets, tables), no collaboration.
+export function mountPreview({ parent, content }) {
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: content,
+      extensions: [
+        markdown({ base: markdownLanguage }),
+        livePreview,
+        tableDecorations,
+        EditorView.lineWrapping,
+        EditorState.readOnly.of(true),
+        EditorView.editable.of(false),
+      ],
+    }),
+    parent,
+  })
+  return view
+}
+
 export function mountEditor({ parent, ytext, awareness, readOnly }) {
   const undoManager = new Y.UndoManager(ytext)
   const extensions = [

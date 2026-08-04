@@ -81,6 +81,23 @@ CREATE TABLE history_segments (
 );
 `
 
+// Schema v4: version history. `versions` pins user-chosen names to sequence
+// numbers. history_segments.row_index preserves per-row (seq, time, byte
+// offset) through archiving as JSON — without it, archived history loses
+// the boundaries needed for browseable points and mid-segment replay.
+// Segments archived before v4 have NULL and degrade to one coarse point.
+const schemaV4 = `
+CREATE TABLE versions (
+	id         INTEGER PRIMARY KEY,
+	doc_id     TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+	seq        INTEGER NOT NULL,
+	name       TEXT NOT NULL,
+	created_by INTEGER NOT NULL REFERENCES users(id),
+	created_at INTEGER NOT NULL
+);
+ALTER TABLE history_segments ADD COLUMN row_index TEXT;
+`
+
 // Schema v3: share links. Tokens are capability bearer secrets, stored as
 // SHA-256 like session tokens — a leaked db must not grant access. The
 // plaintext token is returned once at creation; lost links are revoked and
@@ -118,7 +135,7 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
-	for ver, schema := range []string{schemaV1, schemaV2, schemaV3} {
+	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4} {
 		if v > ver {
 			continue
 		}

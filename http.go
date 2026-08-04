@@ -34,6 +34,11 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen, dev bool) http.Handl
 	mux.HandleFunc("DELETE /api/docs/{id}/links/{lid}", requireAuth(db, handleDeleteLink(db)))
 	mux.HandleFunc("POST /api/share/redeem", requireAuth(db, handleRedeemLink(db)))
 
+	mux.HandleFunc("GET /api/docs/{id}/history", requireAuth(db, handleListHistory(db)))
+	mux.HandleFunc("GET /api/docs/{id}/replay", requireAuth(db, handleReplay(db)))
+	mux.HandleFunc("POST /api/docs/{id}/versions", requireAuth(db, handleCreateVersion(db, h)))
+	mux.HandleFunc("DELETE /api/docs/{id}/versions/{vid}", requireAuth(db, handleDeleteVersion(db)))
+
 	mux.HandleFunc("POST /api/docs/{id}/snapshot", requireAuth(db, handleSnapshotUpload(db)))
 	mux.HandleFunc("GET /api/docs/{id}/verify-bundle", requireAuth(db, handleVerifyBundle(db)))
 	mux.HandleFunc("POST /api/docs/{id}/verify", requireAuth(db, handleSnapshotVerdict(db)))

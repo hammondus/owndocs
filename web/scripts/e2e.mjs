@@ -176,7 +176,44 @@ const docE = new Y.Doc()
 const pE = mkProvider(docE, docId)
 await waitFor(() => pE.syncCount >= 1, 'E sync')
 assert(docE.getText('text').toString().startsWith('post-compaction edit. '), 'edits after compaction persist')
+
+// Version history: pin the current state, edit past it, replay back to the
+// pin (spanning the archived segment), then restore.
+const textAtPin = docE.getText('text').toString()
+const pin = await (await api(`/api/docs/${docId}/versions`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ name: 'e2e-pin' }),
+})).json()
+assert(pin.seq >= 1, `version pinned at seq ${pin.seq}`)
+
+docE.getText('text').insert(0, 'AFTER-PIN. ')
+await sleep(1500) // flush
 pE.destroy()
+
+const replayBytes = new Uint8Array(await (await api(`/api/docs/${docId}/replay?to_seq=${pin.seq}`)).arrayBuffer())
+const replayed = new Y.Doc()
+for (const u of iterFrames(replayBytes)) Y.applyUpdate(replayed, u)
+assert(replayed.getText('text').toString() === textAtPin, 'replay to pin reproduces pinned text')
+
+// Restore = one collaborative transaction replacing content with the old
+// state; a fresh client must then see the pinned text again.
+const docR = new Y.Doc()
+const pR = mkProvider(docR, docId)
+await waitFor(() => pR.syncCount >= 1, 'restore client sync')
+docR.transact(() => {
+  const t = docR.getText('text')
+  t.delete(0, t.length)
+  t.insert(0, textAtPin)
+})
+await sleep(1500)
+pR.destroy()
+
+const docF = new Y.Doc()
+const pF = mkProvider(docF, docId)
+await waitFor(() => pF.syncCount >= 1, 'post-restore sync')
+assert(docF.getText('text').toString() === textAtPin, 'restore returns document to pinned text')
+pF.destroy()
 
 console.log('\nALL PASS')
 process.exit(0)

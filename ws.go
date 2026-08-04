@@ -35,7 +35,11 @@ const (
 )
 
 const (
-	maxUpdateSize = 1 << 20 // per-message read limit
+	// Per-message read limit. A paste arrives as ONE Yjs update, and the
+	// reconnect resync sends the full document state as one message, so this
+	// must comfortably exceed any realistic document size. 1 MiB proved too
+	// small the first time someone pasted a large text.
+	maxUpdateSize = 16 << 20
 	flushInterval = time.Second
 	sendQueueSize = 256
 	pingInterval  = 30 * time.Second // keeps proxies from idling the socket out

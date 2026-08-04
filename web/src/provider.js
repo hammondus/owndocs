@@ -30,14 +30,16 @@ function* iterFrames(buf) {
 }
 
 export class Provider {
-  constructor(doc, docId, { onStatus = () => {}, onSynced = () => {} } = {}) {
+  constructor(doc, docId, { onStatus = () => {}, onSynced = () => {}, wsUrl } = {}) {
     this.doc = doc
     this.docId = docId
+    this.wsUrl = wsUrl // override for non-browser use (tests); default from location
     this.awareness = new Awareness(doc)
     this.onStatus = onStatus
     this.onSynced = onSynced
     this.stopped = false
     this.backoff = 500
+    this.resyncNeeded = false
 
     this._onUpdate = (update, origin) => {
       if (origin !== this) this._send(MSG_DOC, update)
@@ -54,7 +56,7 @@ export class Provider {
     // Tell peers we're gone on tab close; hard crashes fall back to the
     // awareness protocol's 30s timeout (known wart, see design doc).
     this._unload = () => removeAwarenessStates(this.awareness, [doc.clientID], 'unload')
-    window.addEventListener('beforeunload', this._unload)
+    if (typeof window !== 'undefined') window.addEventListener('beforeunload', this._unload)
 
     this.connect()
   }
@@ -69,8 +71,12 @@ export class Provider {
 
   connect() {
     if (this.stopped) return
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${proto}://${location.host}/ws/${this.docId}`)
+    let url = this.wsUrl
+    if (!url) {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+      url = `${proto}://${location.host}/ws/${this.docId}`
+    }
+    const ws = new WebSocket(url)
     ws.binaryType = 'arraybuffer'
     this.ws = ws
     this.onStatus('connecting…')
@@ -79,6 +85,15 @@ export class Provider {
       if (typeof ev.data === 'string') {
         const msg = JSON.parse(ev.data)
         if (msg.type === 'synced') {
+          // A dropped connection may have swallowed local updates the server
+          // never received — there's no per-update ack to know which. After
+          // the replay lands, push our full state once; Yjs updates are
+          // idempotent, so the server-side log grows a redundant row and
+          // compaction reclaims it later. Correctness over log elegance.
+          if (this.resyncNeeded) {
+            this.resyncNeeded = false
+            this._send(MSG_DOC, Y.encodeStateAsUpdate(this.doc))
+          }
           this.onStatus('synced')
           this.onSynced(msg)
         }
@@ -101,6 +116,7 @@ export class Provider {
     }
     ws.onclose = () => {
       if (this.stopped) return
+      this.resyncNeeded = true
       this.onStatus('disconnected, retrying…')
       setTimeout(() => this.connect(), this.backoff)
       this.backoff = Math.min(this.backoff * 2, 10000)
@@ -109,7 +125,7 @@ export class Provider {
 
   destroy() {
     this.stopped = true
-    window.removeEventListener('beforeunload', this._unload)
+    if (typeof window !== 'undefined') window.removeEventListener('beforeunload', this._unload)
     removeAwarenessStates(this.awareness, [this.doc.clientID], 'destroy')
     this.awareness.off('update', this._onAwareness)
     this.doc.off('update', this._onUpdate)

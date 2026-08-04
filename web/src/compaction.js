@@ -10,6 +10,11 @@ const TAIL_BYTES_LIMIT = 128 * 1024
 
 export function scheduleCompaction({ docId, doc, role, synced }) {
   if (role !== 'owner' && role !== 'editor') return
+  const snapInfo = synced.snapshot_state ? `; snapshot seq ${synced.snapshot_seq} ${synced.snapshot_state}` : ''
+  console.log(
+    `compaction: tail ${synced.tail_rows} rows / ${synced.tail_bytes} bytes ` +
+    `(thresholds ${TAIL_ROWS_LIMIT} rows / ${TAIL_BYTES_LIMIT} bytes)${snapInfo}`
+  )
   if (synced.snapshot_state === 'pending') {
     setTimeout(() => verifyPending(docId).catch((e) => console.warn('verify failed:', e)), 2000)
   } else if (synced.tail_rows > TAIL_ROWS_LIMIT || synced.tail_bytes > TAIL_BYTES_LIMIT) {

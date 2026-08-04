@@ -1,18 +1,27 @@
 // End-to-end check of the sync + compaction flow against a running server,
-// using real Yjs documents over the real wire protocol. Covers everything
-// the Go tests can't: actual CRDT convergence and the snapshot/verify cycle
-// with genuine Yjs payloads. Run: node scripts/e2e.mjs [base-url]
+// using the REAL client Provider (src/provider.js) over the real wire
+// protocol. Covers what the Go tests can't: actual CRDT convergence, the
+// large-paste path, reconnect resync, and the snapshot/verify cycle with
+// genuine Yjs payloads. Run: node scripts/e2e.mjs [base-url]
 //
 // Not wired into `make test` because it needs a running server; it's a dev
 // tool for validating protocol changes.
 import * as Y from 'yjs'
-import WebSocket from 'ws'
+import WS from 'ws'
+import { Provider } from '../src/provider.js'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:8484'
-const MSG_DOC = 0
-const MSG_AWARENESS = 1
+const WS_BASE = BASE.replace(/^http/, 'ws')
 
 let cookie = ''
+
+// The browser sends the session cookie implicitly; in node we inject it by
+// shimming the WebSocket global the Provider constructs.
+globalThis.WebSocket = class extends WS {
+  constructor(url) {
+    super(url, { headers: { cookie } })
+  }
+}
 
 async function api(path, opts = {}) {
   const res = await fetch(BASE + path, {
@@ -40,47 +49,20 @@ function* iterFrames(buf) {
   }
 }
 
-// Minimal node-side provider speaking protocol v2.
-function connect(docId, doc) {
-  const url = BASE.replace(/^http/, 'ws') + '/ws/' + docId
-  const ws = new WebSocket(url, { headers: { cookie } })
-  ws.binaryType = 'arraybuffer'
-  const synced = new Promise((resolve) => {
-    ws.on('message', (data, isBinary) => {
-      if (!isBinary) {
-        const msg = JSON.parse(data.toString())
-        if (msg.type === 'synced') resolve(msg)
-        return
-      }
-      const u8 = new Uint8Array(data)
-      if (u8[0] === MSG_DOC) {
-        for (const update of iterFrames(u8.subarray(1))) Y.applyUpdate(doc, update, 'remote')
-      }
-    })
+function mkProvider(doc, docId) {
+  const p = new Provider(doc, docId, {
+    wsUrl: `${WS_BASE}/ws/${docId}`,
+    onSynced: (msg) => {
+      p.lastSynced = msg
+      p.syncCount = (p.syncCount || 0) + 1
+    },
   })
-  const onUpdate = (update, origin) => {
-    if (origin === 'remote' || ws.readyState !== WebSocket.OPEN) return
-    const msg = new Uint8Array(1 + update.length)
-    msg[0] = MSG_DOC
-    msg.set(update, 1)
-    ws.send(msg)
-  }
-  doc.on('update', onUpdate)
-  const open = new Promise((resolve, reject) => {
-    ws.on('open', resolve)
-    ws.on('error', reject)
-  })
-  return {
-    ws,
-    open,
-    synced,
-    close: () => new Promise((resolve) => { ws.on('close', resolve); doc.off('update', onUpdate); ws.close() }),
-  }
+  return p
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-async function waitFor(cond, what, timeoutMs = 5000) {
+async function waitFor(cond, what, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs
   while (!cond()) {
     if (Date.now() > deadline) throw new Error('timeout waiting for ' + what)
@@ -111,31 +93,45 @@ console.log('doc:', docId)
 
 // Two live clients converge in both directions.
 const docA = new Y.Doc(), docB = new Y.Doc()
-const a = connect(docId, docA)
-await a.open
-await a.synced
-const b = connect(docId, docB)
-await b.open
-await b.synced
+const pA = mkProvider(docA, docId)
+await waitFor(() => pA.syncCount >= 1, 'A initial sync')
+const pB = mkProvider(docB, docId)
+await waitFor(() => pB.syncCount >= 1, 'B initial sync')
 
 docA.getText('text').insert(0, 'hello from A. ')
 await waitFor(() => docB.getText('text').toString().includes('hello from A'), 'A -> B sync')
-docB.getText('text').insert(docB.getText('text').length, 'and B was here.')
+docB.getText('text').insert(docB.getText('text').length, 'and B was here. ')
 await waitFor(() => docA.getText('text').toString().includes('B was here'), 'B -> A sync')
+assert(docA.getText('text').toString() === docB.getText('text').toString(), 'A and B converged')
+
+// Large paste: thousands of lines land as ONE update; must survive the trip.
+const paste = ('lorem ipsum dolor sit amet, consectetur adipiscing elit\n').repeat(40000) // ~2.2 MB
+docA.getText('text').insert(0, paste)
+await waitFor(() => docB.getText('text').length >= paste.length, 'large paste A -> B', 15000)
+assert(docA.getText('text').toString() === docB.getText('text').toString(), '2MB paste converged')
+
+// Reconnect resync: kill A's socket, edit while disconnected, reconnect.
+// The offline edit must reach B via the full-state resync — before this
+// existed, updates sent into a dead socket were silently lost.
+pA.ws.close()
+docA.getText('text').insert(0, 'OFFLINE-EDIT. ')
+await waitFor(() => docB.getText('text').toString().includes('OFFLINE-EDIT'), 'offline edit resynced to B', 15000)
+assert(true, 'reconnect resync delivers offline edits')
+
 const finalText = docA.getText('text').toString()
-assert(finalText === docB.getText('text').toString(), 'A and B converged')
+await waitFor(() => docB.getText('text').toString() === finalText, 'final convergence')
 
 // Disconnect; the room flushes; a fresh client replays from the log.
-await a.close()
-await b.close()
-await sleep(1200)
+pA.destroy()
+pB.destroy()
+await sleep(1500)
 
 const docC = new Y.Doc()
-const c = connect(docId, docC)
-await c.open
-const syncedC = await c.synced
+const pC = mkProvider(docC, docId)
+await waitFor(() => pC.syncCount >= 1, 'C sync')
 assert(docC.getText('text').toString() === finalText, 'replay from log matches')
-assert(syncedC.last_seq >= 1, 'log advanced to seq ' + syncedC.last_seq)
+const syncedC = pC.lastSynced
+assert(syncedC.tail_bytes > 128 * 1024, `tail is over the byte threshold (${syncedC.tail_bytes})`)
 
 // Compaction: upload a real snapshot, verify via the bundle, confirm archive.
 const snap = Y.encodeStateAsUpdate(docC)
@@ -154,10 +150,8 @@ const replayDoc = (part) => {
   for (const u of iterFrames(part)) Y.applyUpdate(d, u)
   return d
 }
-const fromLog = replayDoc(parts[0])
-const fromSnap = replayDoc(parts[1])
-assert(fromLog.getText('text').toString() === finalText, 'bundle A (log) replays correctly')
-assert(fromSnap.getText('text').toString() === finalText, 'bundle B (snapshot) replays correctly')
+assert(replayDoc(parts[0]).getText('text').toString() === finalText, 'bundle A (log) replays correctly')
+assert(replayDoc(parts[1]).getText('text').toString() === finalText, 'bundle B (snapshot) replays correctly')
 
 await api(`/api/docs/${docId}/verify`, {
   method: 'POST',
@@ -165,25 +159,24 @@ await api(`/api/docs/${docId}/verify`, {
   body: JSON.stringify({ last_seq: syncedC.last_seq, ok: true }),
 })
 console.log('ok: snapshot verified + rows archived')
-await c.close()
+pC.destroy()
 
-// A fresh client now loads snapshot-first and still sees the right text,
-// and new edits keep flowing on top of it.
+// A fresh client now loads snapshot-first, still sees the right text, and
+// new edits keep flowing on top of it.
 const docD = new Y.Doc()
-const d = connect(docId, docD)
-await d.open
-const syncedD = await d.synced
-assert(syncedD.snapshot_state === 'verified', 'joins report verified snapshot')
+const pD = mkProvider(docD, docId)
+await waitFor(() => pD.syncCount >= 1, 'D sync')
+assert(pD.lastSynced.snapshot_state === 'verified', 'joins report verified snapshot')
 assert(docD.getText('text').toString() === finalText, 'post-compaction replay matches')
 docD.getText('text').insert(0, 'post-compaction edit. ')
-await sleep(1200) // let it flush
-await d.close()
+await sleep(1500) // let it flush
+pD.destroy()
 
 const docE = new Y.Doc()
-const e = connect(docId, docE)
-await e.open
-await e.synced
+const pE = mkProvider(docE, docId)
+await waitFor(() => pE.syncCount >= 1, 'E sync')
 assert(docE.getText('text').toString().startsWith('post-compaction edit. '), 'edits after compaction persist')
-await e.close()
+pE.destroy()
 
 console.log('\nALL PASS')
+process.exit(0)

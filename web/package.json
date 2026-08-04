@@ -1,6 +1,7 @@
 {
   "name": "docs-web",
   "private": true,
+  "type": "module",
   "scripts": {
     "build": "esbuild src/app.js --bundle --minify --format=iife --outfile=static/app.js"
   },

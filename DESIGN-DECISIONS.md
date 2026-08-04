@@ -231,6 +231,16 @@ crash a peer's cursor lingers until the awareness protocol's 30s timeout;
 clean closes broadcast removal via beforeunload. Viewers may send awareness
 but their doc writes close the connection.
 
+**Reconnect resync**: there is no per-update ack, so after a dropped
+connection the client cannot know which of its updates the server received.
+On every reconnect, once the replay lands, the client pushes its full state
+as one update. Yjs updates are idempotent, so the cost is a redundant log
+row that compaction later reclaims — correctness over log elegance. This
+also sets the message size ceiling: the server's per-message read limit is
+16 MiB because a resync (or a large paste, which arrives as ONE update)
+carries a whole document; the original 1 MiB limit broke the first big
+paste.
+
 Joining holds the room lock across the log read and client registration, so
 no update can slip between "read the log" and "start receiving broadcasts".
 Slow consumers are evicted rather than buffered without bound — the client

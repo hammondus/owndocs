@@ -247,6 +247,18 @@ instead of letting the server close the connection — a deliberate hard
 ceiling on single-edit size rather than a retry loop. Close codes are
 surfaced in the client status line for diagnosability.
 
+**Protocol version gate**: clients dial `/ws/{id}?v=2`; anything else is
+refused at upgrade with 426. Added after a real incident (2026-08-04): the
+server cannot validate opaque payloads, so its only defense against a stale
+tab speaking an older framing is to refuse the conversation entirely. Bump
+the version on any wire-format change.
+
+**Defensive decode on the client**: one undecodable frame is skipped (loudly)
+rather than aborting the rest of the replay, and a client that saw one never
+uploads or verifies snapshots that session — a doc that missed frames must
+not launder its partial state into a snapshot. Server-side, `tools/inspect`
+verifies snapshot checksums and row framing across the whole database.
+
 Joining holds the room lock across the log read and client registration, so
 no update can slip between "read the log" and "start receiving broadcasts".
 Slow consumers are evicted rather than buffered without bound — the client
@@ -306,6 +318,22 @@ document *is* markdown, and HTML export is a render of it. See Scope for why
 docx is excluded.
 
 ---
+
+## Incidents
+
+- **2026-08-04, corrupt update row.** During the full-state-resync death
+  loop (see Reconnect resync), one 524,002-byte row was stored whose payload
+  is the truncated prefix of a resync-style update — internally consistent
+  framing, undecodable content. Forensics (`tools/inspect` + Yjs replay of
+  every stored frame): all other bytes intact, and the log replayed without
+  the bad row produced *identical* text to the live client's snapshot, so no
+  user content was lost — the resync's content had already arrived via live
+  updates. Row quarantined to `data/quarantine-row150-corrupt.bin` and
+  deleted. Exact truncation mechanism unproven (candidates: abnormal-close
+  edge in the websocket read path; browser-side send abort). Mitigations:
+  diff resync removed the producer of huge resyncs; protocol version gate;
+  client-side defensive decode + compaction lockout. The log-is-truth design
+  did its job: worst case was a fallback and a forensic session, not loss.
 
 ## Open questions
 

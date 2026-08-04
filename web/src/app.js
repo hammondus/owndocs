@@ -63,7 +63,10 @@ function openDoc(d) {
   const ytext = doc.getText('text')
   const provider = new Provider(doc, d.id, {
     onStatus: (s) => { $('connstatus').textContent = s },
-    onSynced: (synced) => scheduleCompaction({ docId: d.id, doc, role: d.role, synced }),
+    onSynced: (synced) => {
+      if (provider.corrupted) return // never snapshot/verify from a doc that missed frames
+      scheduleCompaction({ docId: d.id, doc, role: d.role, synced })
+    },
   })
 
   const [color, colorLight] = cursorColors[doc.clientID % cursorColors.length]

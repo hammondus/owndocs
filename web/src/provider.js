@@ -45,6 +45,7 @@ export class Provider {
     this.stopped = false
     this.backoff = 500
     this.resyncNeeded = false
+    this.corrupted = false // saw an undecodable doc frame; blocks compaction
 
     this._onUpdate = (update, origin) => {
       if (origin !== this) this._send(MSG_DOC, update)
@@ -88,7 +89,10 @@ export class Provider {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
       url = `${proto}://${location.host}/ws/${this.docId}`
     }
-    const ws = new WebSocket(url)
+    // Protocol version: the server rejects mismatches at upgrade, so a
+    // stale tab running an old bundle can never write misframed messages
+    // into the log (which is how one corrupt row got stored).
+    const ws = new WebSocket(url + '?v=2')
     ws.binaryType = 'arraybuffer'
     this.ws = ws
     this.onStatus('connecting…')
@@ -124,11 +128,25 @@ export class Provider {
       const body = u8.subarray(1)
       if (u8[0] === MSG_DOC) {
         for (const update of iterFrames(body)) {
-          Y.applyUpdate(this.doc, update, this)
+          // One undecodable frame must not abort the rest of the replay —
+          // and a client that hit one must never upload a snapshot, since
+          // its doc may be missing that frame's content (`corrupted` is
+          // checked before compaction is scheduled).
+          try {
+            Y.applyUpdate(this.doc, update, this)
+          } catch (e) {
+            this.corrupted = true
+            console.error(`docs: undecodable ${update.length}-byte frame in doc ${this.docId} — skipped; compaction disabled this session. Run tools/inspect on the server db.`, e)
+            continue
+          }
           if (replayFrames) replayFrames.push(update)
         }
       } else if (u8[0] === MSG_AWARENESS) {
-        applyAwarenessUpdate(this.awareness, body, this)
+        try {
+          applyAwarenessUpdate(this.awareness, body, this)
+        } catch (e) {
+          console.warn('docs: undecodable awareness update — skipped', e)
+        }
       }
     }
     ws.onopen = () => {

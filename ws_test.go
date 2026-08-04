@@ -69,11 +69,29 @@ func dialWS(t *testing.T, srv *httptest.Server, c *http.Client, docID string) *w
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, srv.URL+"/ws/"+docID, &websocket.DialOptions{HTTPClient: c})
+	conn, _, err := websocket.Dial(ctx, srv.URL+"/ws/"+docID+"?v=2", &websocket.DialOptions{HTTPClient: c})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return conn
+}
+
+func TestOldProtocolRejected(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	docID := createDoc(t, srv, alice)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// No ?v=2: a stale tab running an old bundle must be refused at upgrade,
+	// before it can write misframed messages into the log.
+	_, res, err := websocket.Dial(ctx, srv.URL+"/ws/"+docID, &websocket.DialOptions{HTTPClient: alice})
+	if err == nil {
+		t.Fatal("expected dial without protocol version to fail")
+	}
+	if res != nil && res.StatusCode != http.StatusUpgradeRequired {
+		t.Fatalf("status = %d, want 426", res.StatusCode)
+	}
 }
 
 type syncedMsg struct {
@@ -433,7 +451,7 @@ func TestNoAccessNoWS(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, res, err := websocket.Dial(ctx, srv.URL+"/ws/"+docID, &websocket.DialOptions{HTTPClient: mallory})
+	_, res, err := websocket.Dial(ctx, srv.URL+"/ws/"+docID+"?v=2", &websocket.DialOptions{HTTPClient: mallory})
 	if err == nil {
 		t.Fatal("expected dial to fail for user without permission")
 	}

@@ -457,6 +457,13 @@ func (h *hub) handleWS() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
 		docID := r.PathValue("id")
+		// Protocol version gate: a stale tab running an old bundle speaks a
+		// different framing; letting it write would corrupt the log (it did,
+		// once). Reject at upgrade so old clients fail loudly and harmlessly.
+		if r.URL.Query().Get("v") != "2" {
+			jsonError(w, http.StatusUpgradeRequired, "client protocol out of date — reload the page")
+			return
+		}
 		role, err := roleFor(h.db, docID, u.ID)
 		if err != nil || role == "" {
 			jsonError(w, http.StatusNotFound, "not found")

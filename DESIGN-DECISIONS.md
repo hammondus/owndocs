@@ -120,15 +120,37 @@ merge without coordination.
 
 ## Frontend
 
-### Editor: ProseMirror direct, no TipTap
+### Editor: markdown-native via CodeMirror 6 (supersedes ProseMirror)
 
-Never hand-roll contenteditable — IME input, selection quirks, and paste
-sanitisation are a decade-deep minefield. ProseMirror is the auditable choice:
-small modular core, we define the schema, framework-agnostic. TipTap is a
-convenience wrapper over ProseMirror; in a non-React stack its main advantage
-(first-party React/Hocuspocus glue) is worthless, so we skip the wrapper tax.
-Collaboration via `y-prosemirror`; undo via Yjs's selective undo manager
-(undoes your edits only — the behaviour users expect).
+~~Original decision: rich-text model via ProseMirror (no TipTap wrapper),
+collaboration via `y-prosemirror`.~~ Superseded 2026-08-04: the requirement is
+Obsidian-style live markdown editing — type markdown source, rendered in
+place as you type, syntax markers revealed when the cursor enters a span.
+That experience comes from the document *model*, not the renderer: the doc
+must stay plain markdown text with rendering as a decoration layer, which is
+CodeMirror 6 territory (Obsidian itself is CM6), not ProseMirror's structured
+node tree.
+
+Consequences, mostly simplifying:
+
+- Shared type is plain `Y.Text` instead of `Y.XmlFragment` — the simplest
+  CRDT case. Collaboration + remote cursors via `y-codemirror.next`
+  (maintained, first-party-adjacent). Undo via `Y.UndoManager` (selective:
+  undoes your edits only).
+- Export is the document itself; markdown portability (Obsidian, git) free.
+- The live-preview decoration layer is ours to build on CM6's incremental
+  `lezer-markdown` syntax tree: style spans, hide marker characters unless
+  the selection overlaps the node. Inline styles/headings/code/links are the
+  tractable core; images and checkboxes are widget decorations; tables are
+  the deep end (widget when cursor outside, raw text inside) and come last.
+- Toolbar "syntactic sugar": formatting buttons are canned text edits
+  (bold = toggle-wrap selection in `**`) dispatched through the normal
+  editing pipeline, so they collaborate, undo, and keybind for free.
+
+Accepted costs: no rich-text ceiling (font sizes, colours, WYSIWYG table
+manipulation, image resize), and collaborators see markdown syntax while
+editing near it. For a self-hosted instance whose users are markdown-literate
+this is a fit, not a compromise.
 
 ### Sheets grid: hand-rolled virtualized canvas
 
@@ -148,9 +170,9 @@ drift, at the cost of no server-computed values for exports/API.
 
 ### Framework: Svelte 5 + Vite, no SvelteKit SSR
 
-The two hard components (ProseMirror, canvas grid) are imperative libraries
+The two hard components (CodeMirror, canvas grid) are imperative libraries
 that want to own their DOM. React fights that (refs, effect hooks, firewalling
-PM state out of the render cycle); Svelte compiles away and hands over real
+editor state out of the render cycle); Svelte compiles away and hands over real
 DOM nodes, which is exactly what mounting ProseMirror or a canvas wants. Yjs
 events wire straight into runes. React's real advantage — ecosystem breadth —
 is nearly worthless here because the hard parts are hand-rolled regardless.
@@ -229,8 +251,9 @@ never rewritten.
 
 ### Import/export
 
-xlsx via `excelize` (mature, justified). Docs export as Markdown/HTML. See
-Scope for why docx is excluded.
+xlsx via `excelize` (mature, justified). Doc export is now trivial: the
+document *is* markdown, and HTML export is a render of it. See Scope for why
+docx is excluded.
 
 ---
 

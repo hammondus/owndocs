@@ -1,6 +1,6 @@
 // Phase 1 demo: prove Yjs sync over the Go relay with a plain textarea.
 // The provider here is the permanent client-side sync core; the textarea
-// binding is throwaway (ProseMirror replaces it in phase 2).
+// binding is throwaway (CodeMirror replaces it in phase 2).
 import * as Y from 'yjs'
 
 // ---- wire protocol helpers (matches ws.go) --------------------------------

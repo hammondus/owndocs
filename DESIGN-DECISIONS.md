@@ -347,6 +347,47 @@ Implementation (phase: version history):
   itself appears in history. Pinning a name flushes the room first so the
   label lands on the very latest edit.
 
+### Git exporter: a headless client, not a server feature
+
+`web/scripts/exporter.mjs` mirrors named versions into a git repo — one
+commit per pin, oldest first. It is deliberately **just another client**:
+it logs in with an ordinary account, polls `/api/docs` + `/history`, fetches
+`/replay?to_seq=<pin>`, rebuilds the Y.Doc locally and commits the markdown.
+Zero server changes, so the server still never reads document content, and
+the exporter only sees docs its account has (at least) viewer access to —
+git visibility is governed by the existing sharing model, nothing new.
+
+Choices worth recording:
+
+- **Named versions are the commit points.** Pinning a version *means* "this
+  is a commit"; sessions stay browseable in-app only. An exporter that
+  committed every session would bury the meaningful states in noise.
+- **Polling over WebSocket push.** A pin is a deliberate, occasional act; a
+  60s poll (configurable, `--once` for cron) is simpler than keeping a live
+  socket per doc, and the exporter needs no realtime anything.
+- **HTTP-only via the replay endpoint** — no Provider, no `ws` dep; the only
+  non-stdlib dependency is `yjs` itself, already present.
+- **State (`.docs-export.json`) is committed into the export repo**: maps
+  doc id → last exported version id + path. A clone of the repo can continue
+  exporting, and every export commit is guaranteed non-empty.
+- **Filenames are `slug(title)-<6-char doc-id>.md`** — same-title docs never
+  collide, retitles show up as renames (handled via the state file's
+  remembered path). Trailers `Docs-Doc:`/`Docs-Version:` tie each commit
+  back to its source.
+- **Git metadata mirrors doc history**: author = whoever pinned (synthetic
+  `@docs.invalid` email — users have no public email), author/committer
+  dates = pin time. Committer identity is passed with `-c` per invocation;
+  the exporter never writes repo config.
+- **Append-only, like everything else**: deleting a named version in-app
+  removes the label but never rewrites exported git history.
+- Credentials come from `DOCS_EMAIL`/`DOCS_PASSWORD` env vars, not argv
+  (argv is visible in `ps`).
+
+Verified by `web/scripts/exporter_e2e.mjs` (needs a running server, like
+`e2e.mjs`): pins through the real WebSocket pipeline, then asserts commit
+count, per-commit content, ordering, author, trailers, idempotent rerun,
+and retitle-as-rename.
+
 ### Import/export
 
 xlsx via `excelize` (mature, justified). Doc export is now trivial: the

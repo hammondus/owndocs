@@ -476,8 +476,9 @@ model and changes no interfaces.
 
 ### Model is a library; the grid is one consumer
 
-`sheet/model.js` (Yjs mapping, A1↔id translation, recalc, transactions,
-`watchRange`) has no DOM and no Svelte. The canvas grid consumes it through
+`sheet/model.js` (`Workbook` + `SheetModel`: Yjs mapping, A1↔id and
+name↔id translation, recalc, transactions, `watchRange`) has no DOM and no
+Svelte. The canvas grid consumes it through
 the same API a chart or a script bridge will later: this is the provision
 agreed for graphs and scripting — ranges are subscribable by *anything*,
 writes are transactional (a script setting 1000 cells is one update), and
@@ -540,10 +541,61 @@ entry, paste and fill is a discrete act. Cell writes invalidate only the
 value cache, not the id index (a cell write can't move an id), so a large
 paste doesn't rebuild the index once per cell.
 
+### Multiple sheets: adopt the old containers, don't migrate
+
+Tabs were done early and deliberately, because a container restructure is
+the one change that gets *more* expensive with every day of real data.
+Formatting and charts are additive and can land on a stable shape at any
+time; this could not.
+
+The trick that made it free: **the first sheet keeps the bare top-level
+container names** (`rows`, `cols`, `cells`, `dims`), and additional sheets
+use `s.<id>.rows` and so on. A document written before tabs existed is
+therefore *already* a one-sheet workbook — nothing is copied, nothing is
+rewritten, and there is no migration transaction that two clients could
+run concurrently and duplicate. `sheets` (a Y.Array of ids) and
+`sheetNames` (a Y.Map) stay empty until a second tab is created, at which
+point the implicit first sheet is materialized into the list.
+
+Consequences worth recording:
+
+- **Duplicate first-sheet entries are expected, not a bug.** Two clients
+  adding a second tab at once each materialize the implicit first one, so
+  the array can legitimately hold it twice. The reader dedupes rather than
+  trying to repair the array — no coordination, no lost tabs.
+- **Removing a tab unlinks it but leaves its containers.** Undo is then a
+  one-entry insert rather than a replay of every cell, and formulas
+  pointing into it come back to life intact. Yjs tombstones mean deleting
+  the cells would not reclaim the space it appears to anyway.
+- **One undo stack for the workbook** (`UndoManager.addToScope` as sheets
+  are instantiated): Cmd+Z should undo the user's last action wherever it
+  happened, not per-tab.
+- **Caches move to the workbook.** A cross-sheet formula makes every sheet
+  interdependent, so the value cache and the in-progress set used for
+  cycle detection are workbook-wide and keyed `sheetId/rid.cid`. A cycle
+  that runs out to another sheet and back is caught exactly like a local
+  one. The row/column id index stays per-sheet.
+
+### Cross-sheet references
+
+Same boundary trick as everything else: **stored by id, displayed by
+name.** `Sheet2!A1` is stored as `@<sheetid>!<rowid>.<colid>`, so renaming
+a tab changes what every formula *displays* without rewriting a single
+stored byte — the same property row/column ids give for inserts. A
+reference into a removed tab is `#REF!`, and a range names its sheet once
+(`Sheet2!A1:A5`) so it can never straddle two sheets. Sheet names are
+quoted when bare text would be ambiguous — spaces, or a name that looks
+like a cell reference (`'A1'!A1`).
+
+Writing `=Sheet2!C5` materializes that sheet up to C5, exactly as an
+in-sheet forward reference does; otherwise the reference would be born
+dead on an empty sheet.
+
 ### v1 scope cuts (deliberate, recorded)
 
-Single sheet per doc (tabs need a container restructure — decide before,
-not after, people have data); no cell formatting (raw-string cell values
+~~Single sheet per doc (tabs need a container restructure — decide before,
+not after, people have data)~~ (shipped — see Multiple sheets; still
+missing: tab reordering by drag, moving/copying a sheet); no cell formatting (raw-string cell values
 can become objects later — readers accept both); ~~no fill handle or
 copy-paste of formulas (hence `$` inert)~~ (both shipped — see Copy/paste
 and fill; still missing: double-click-to-fill-down, date/weekday series,

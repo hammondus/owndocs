@@ -70,7 +70,18 @@ export function parseColName(s) {
 // Reference forms the tokenizer understands:
 //   A1 style:  $?letters$?digits        (what users type and see)
 //   id style:  @rowid.colid             (what gets stored — see model.js)
+// Either may carry a sheet: `Sheet2!A1` / `'My Sheet'!A1` when typed,
+// `@sheetid!rowid.colid` when stored. No sheet means "this sheet".
 const A1_RE = /^(\$?)([A-Za-z]{1,3})(\$?)([1-9][0-9]*)$/
+const A1_HEAD_RE = /^(\$?)([A-Za-z]{1,3})(\$?)([1-9][0-9]*)/
+
+function a1Ref(m, sheet) {
+  return {
+    kind: 'a1', sheet,
+    col: parseColName(m[2]), row: Number(m[4]) - 1,
+    absCol: m[1] === '$', absRow: m[3] === '$',
+  }
+}
 
 function tokenize(src) {
   const toks = []
@@ -100,13 +111,31 @@ function tokenize(src) {
     if (c === '@') {
       // A `$` before a component marks it absolute, exactly as in A1 — the
       // flags have to survive storage or copy/paste couldn't honour them.
-      const m = /^@(\$?)([a-z0-9]+)\.(\$?)([a-z0-9]+)/.exec(src.slice(i))
+      const m = /^@(?:([a-z0-9]+)!)?(\$?)([a-z0-9]+)\.(\$?)([a-z0-9]+)/.exec(src.slice(i))
       if (!m) throw new Error('bad reference')
       toks.push({ t: 'ref', ref: {
-        kind: 'id', rid: m[2], cid: m[4],
-        absRow: m[1] === '$', absCol: m[3] === '$',
+        kind: 'id', sheet: m[1], rid: m[3], cid: m[5],
+        absRow: m[2] === '$', absCol: m[4] === '$',
       } })
       i += m[0].length
+      continue
+    }
+    if (c === "'") {
+      // A quoted sheet name, which is only meaningful before `!`. Cell text
+      // never reaches the parser (a leading apostrophe forces a literal in
+      // the model), so there is no ambiguity here.
+      let name = '', j = i + 1
+      for (; j < src.length; j++) {
+        if (src[j] === "'") {
+          if (src[j + 1] === "'") { name += "'"; j++ } // '' escapes a quote
+          else break
+        } else name += src[j]
+      }
+      if (j >= src.length || src[j + 1] !== '!') throw new Error('bad sheet reference')
+      const m = A1_HEAD_RE.exec(src.slice(j + 2))
+      if (!m) throw new Error('bad reference after sheet name')
+      toks.push({ t: 'ref', ref: a1Ref(m, name) })
+      i = j + 2 + m[0].length
       continue
     }
     if (c === '#') {
@@ -123,13 +152,18 @@ function tokenize(src) {
       const m = /^[$A-Za-z0-9_.]+/.exec(src.slice(i))
       const word = m[0]
       i += word.length
+      // An unquoted sheet name: the word before a `!` names a sheet, and
+      // what follows is the reference within it.
+      if (src[i] === '!') {
+        const rm = A1_HEAD_RE.exec(src.slice(i + 1))
+        if (!rm) throw new Error('bad reference after sheet name')
+        toks.push({ t: 'ref', ref: a1Ref(rm, word) })
+        i += 1 + rm[0].length
+        continue
+      }
       const a1 = A1_RE.exec(word)
       if (a1) {
-        toks.push({ t: 'ref', ref: {
-          kind: 'a1',
-          col: parseColName(a1[2]), row: Number(a1[4]) - 1,
-          absCol: a1[1] === '$', absRow: a1[3] === '$',
-        } })
+        toks.push({ t: 'ref', ref: a1Ref(a1, undefined) })
       } else if (word.toUpperCase() === 'TRUE' || word.toUpperCase() === 'FALSE') {
         toks.push({ t: 'bool', v: word.toUpperCase() === 'TRUE' })
       } else {
@@ -216,7 +250,10 @@ export function parseFormula(src) {
         next()
         const b = next()
         if (!b || b.t !== 'ref') throw new Error('bad range')
-        return { n: 'range', a: t.ref, b: b.ref }
+        // Sheet2!A1:A5 — the sheet named once applies to both endpoints, so
+        // a range can never straddle two sheets.
+        const end = b.ref.sheet === undefined ? { ...b.ref, sheet: t.ref.sheet } : b.ref
+        return { n: 'range', a: t.ref, b: end }
       }
       return { n: 'ref', ref: t.ref }
     }
@@ -280,12 +317,21 @@ export function collectRefs(ast, out = { cells: [], ranges: [] }) {
 
 // ---- serializer -----------------------------------------------------------
 
+// A sheet name may be written bare only if it can't be mistaken for
+// something else in a formula — otherwise it gets quoted, Excel-style.
+export function quoteSheetName(name) {
+  const bare = /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !A1_RE.test(name)
+  return bare ? name : "'" + name.replace(/'/g, "''") + "'"
+}
+
 function refText(ref) {
   if (ref.kind === 'a1') {
-    return (ref.absCol ? '$' : '') + colName(ref.col) + (ref.absRow ? '$' : '') + (ref.row + 1)
+    const cell = (ref.absCol ? '$' : '') + colName(ref.col) + (ref.absRow ? '$' : '') + (ref.row + 1)
+    return ref.sheet === undefined ? cell : quoteSheetName(ref.sheet) + '!' + cell
   }
   if (ref.kind === 'id') {
-    return `@${ref.absRow ? '$' : ''}${ref.rid}.${ref.absCol ? '$' : ''}${ref.cid}`
+    const cell = `${ref.absRow ? '$' : ''}${ref.rid}.${ref.absCol ? '$' : ''}${ref.cid}`
+    return ref.sheet === undefined ? '@' + cell : `@${ref.sheet}!${cell}`
   }
   return '#REF!' // kind 'dead'
 }
@@ -298,7 +344,16 @@ function ser(ast, parentPrec) {
     case 'str': return '"' + ast.v.replace(/"/g, '""') + '"'
     case 'bool': return ast.v ? 'TRUE' : 'FALSE'
     case 'ref': return refText(ast.ref)
-    case 'range': return refText(ast.a) + ':' + refText(ast.b)
+    case 'range': {
+      // A range with both ends gone collapses to one #REF!, as Excel shows
+      // it — "#REF!:#REF!" tells the reader nothing extra.
+      if (ast.a.kind === 'dead' && ast.b.kind === 'dead') return '#REF!'
+      // Print the sheet once: Sheet2!A1:A5, never Sheet2!A1:Sheet2!A5.
+      const end = ast.b.sheet !== undefined && ast.b.sheet === ast.a.sheet
+        ? { ...ast.b, sheet: undefined }
+        : ast.b
+      return refText(ast.a) + ':' + refText(end)
+    }
     case 'un': {
       const inner = ast.op + ser(ast.e, 6)
       return 6 < parentPrec ? '(' + inner + ')' : inner

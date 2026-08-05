@@ -1,12 +1,16 @@
-// SheetModel: the Yjs mapping and recalculation layer. No DOM, no Svelte —
-// the canvas grid is one consumer of this API; a chart or script bridge
-// later is another. See DESIGN-DECISIONS.md "Sheets".
+// Workbook + SheetModel: the Yjs mapping and recalculation layer. No DOM,
+// no Svelte — the canvas grid is one consumer of this API; a chart or
+// script bridge later is another. See DESIGN-DECISIONS.md "Sheets".
 //
 // Doc shape (all client-side convention; the server never reads it):
-//   rows:  Y.Array of row ids (order = display order)
-//   cols:  Y.Array of col ids
-//   cells: Y.Map keyed "rowId.colId" -> raw input string
-//   dims:  Y.Map keyed "w.<colId>" / "h.<rowId>" -> px size
+//   sheets:      Y.Array of sheet ids (order = tab order)
+//   sheetNames:  Y.Map sheet id -> tab name
+// and per sheet, with the FIRST sheet using the bare names so that every
+// document written before tabs existed still opens with no migration:
+//   rows  / s.<id>.rows   Y.Array of row ids (order = display order)
+//   cols  / s.<id>.cols   Y.Array of col ids
+//   cells / s.<id>.cells  Y.Map keyed "rowId.colId" -> raw input string
+//   dims  / s.<id>.dims   Y.Map keyed "w.<colId>" / "h.<rowId>" -> px size
 // Reserved for later phases: objects (charts), scripts.
 import * as Y from 'yjs'
 import { parseFormula, mapRefs, collectRefs, serialize, evaluate, isErr, ERR, fmtNum } from './engine.js'
@@ -21,40 +25,176 @@ function newId() {
 export const DEFAULT_COL_W = 100
 export const DEFAULT_ROW_H = 24
 
-export class SheetModel {
+// The first sheet's containers are the bare top-level names. Nothing is
+// migrated or copied when tabs arrive — the existing containers simply
+// become sheet one, which also means no concurrent-migration hazard.
+export const FIRST_SHEET = '1'
+
+export class Workbook {
   constructor(ydoc) {
     this.ydoc = ydoc
-    this.rows = ydoc.getArray('rows')
-    this.cols = ydoc.getArray('cols')
-    this.cells = ydoc.getMap('cells')
-    this.dims = ydoc.getMap('dims')
+    this.sheetIds = ydoc.getArray('sheets')
+    this.sheetNames = ydoc.getMap('sheetNames')
+    this.models = new Map()
     this.listeners = new Set()
-    this.valueCache = new Map() // "rid.cid" -> computed value, cleared on ANY change
-    this.astCache = new Map()   // raw formula text -> parsed AST (content-addressed)
-    this.evaluating = new Set() // cells mid-evaluation, for cycle detection
-    this.indexesStale = true
 
-    // Undo only rewinds LOCAL transactions (origin = this model), never a
-    // collaborator's concurrent work — standard Yjs collaborative undo.
+    // Caches live on the workbook, not the sheet: a formula may reach
+    // across sheets, so one edit anywhere can change a value anywhere.
+    this.valueCache = new Map() // "sheetId/rid.cid" -> computed value
+    this.astCache = new Map()   // formula text -> AST (content-addressed)
+    this.evaluating = new Set() // cells mid-evaluation, for cycle detection
+
+    // One undo stack for the whole workbook — Cmd+Z should undo the user's
+    // last action wherever it happened. Only LOCAL transactions (origin =
+    // this workbook) are rewound, never a collaborator's concurrent work.
     // captureTimeout 0 because Yjs otherwise merges everything within 500ms
-    // into one undo step: fine for typing prose, wrong for a spreadsheet,
-    // where each cell entry, paste and fill is a discrete act the user
-    // expects to undo one at a time.
-    this.undo = new Y.UndoManager([this.rows, this.cols, this.cells, this.dims], {
+    // into one step: fine for typing prose, wrong for a spreadsheet, where
+    // each cell entry, paste and fill is a discrete act.
+    this.undo = new Y.UndoManager([this.sheetIds, this.sheetNames], {
       trackedOrigins: new Set([this]),
       captureTimeout: 0,
     })
 
-    const notify = () => {
-      for (const cb of this.listeners) cb()
+    const changed = () => {
+      this.valueCache.clear()
+      this.notify()
     }
-    const structural = () => { this._invalidate(); notify() }
-    const contents = () => { this._invalidateValues(); notify() }
+    this.sheetIds.observe(changed)
+    this.sheetNames.observe(changed)
+  }
+
+  onChange(cb) {
+    this.listeners.add(cb)
+    return () => this.listeners.delete(cb)
+  }
+
+  notify() {
+    for (const cb of this.listeners) cb()
+  }
+
+  tx(fn) {
+    this.ydoc.transact(fn, this)
+  }
+
+  // The tab list. Duplicates are dropped rather than repaired: two clients
+  // adding the second sheet at once each materialize the implicit first
+  // one, so the array can legitimately contain it twice.
+  list() {
+    const seen = new Set()
+    const out = []
+    for (const id of this.sheetIds.toArray()) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push({ id, name: this.nameOf(id) })
+    }
+    if (out.length === 0) out.push({ id: FIRST_SHEET, name: this.nameOf(FIRST_SHEET) })
+    return out
+  }
+
+  nameOf(id) {
+    const n = this.sheetNames.get(id)
+    if (typeof n === 'string' && n !== '') return n
+    if (id === FIRST_SHEET) return 'Sheet1'
+    const i = this.sheetIds.toArray().indexOf(id)
+    return `Sheet${i < 0 ? '?' : i + 1}`
+  }
+
+  idByName(name) {
+    const hit = this.list().find((s) => s.name.toLowerCase() === String(name).toLowerCase())
+    return hit ? hit.id : null
+  }
+
+  sheet(id) {
+    let m = this.models.get(id)
+    if (!m) {
+      m = new SheetModel(this, id)
+      this.models.set(id, m)
+    }
+    return m
+  }
+
+  // The model for a stored sheet id, or null if that sheet is gone.
+  sheetById(id) {
+    return this.list().some((s) => s.id === id) ? this.sheet(id) : null
+  }
+
+  sheetByName(name) {
+    const id = this.idByName(name)
+    return id ? this.sheet(id) : null
+  }
+
+  addSheet(name) {
+    const id = newId()
+    this.tx(() => {
+      // Materialize the implicit first sheet before appending a second, so
+      // tab order is explicit from here on.
+      if (this.sheetIds.length === 0) this.sheetIds.push([FIRST_SHEET])
+      this.sheetIds.push([id])
+      this.sheetNames.set(id, name || `Sheet${this.sheetIds.length}`)
+    })
+    return id
+  }
+
+  renameSheet(id, name) {
+    name = String(name).trim()
+    if (name === '') return
+    this.tx(() => {
+      if (this.sheetIds.length === 0) this.sheetIds.push([FIRST_SHEET])
+      this.sheetNames.set(id, name)
+    })
+  }
+
+  // Removing a sheet unlinks it from the tab order but leaves its
+  // containers in the document: undo is then a one-entry insert rather than
+  // a replay of every cell, and formulas pointing into it can come back to
+  // life intact. Yjs keeps tombstones anyway, so deleting the cells would
+  // not reclaim the space it appears to.
+  removeSheet(id) {
+    const ids = this.list()
+    if (ids.length <= 1) return false
+    this.tx(() => {
+      if (this.sheetIds.length === 0) {
+        for (const s of ids) if (s.id !== id) this.sheetIds.push([s.id])
+        return
+      }
+      for (let i = this.sheetIds.length - 1; i >= 0; i--) {
+        if (this.sheetIds.get(i) === id) this.sheetIds.delete(i, 1)
+      }
+    })
+    return true
+  }
+}
+
+export class SheetModel {
+  constructor(workbook, id = FIRST_SHEET) {
+    this.wb = workbook
+    this.id = id
+    this.ydoc = workbook.ydoc
+    const p = id === FIRST_SHEET ? '' : `s.${id}.`
+    this.rows = this.ydoc.getArray(p + 'rows')
+    this.cols = this.ydoc.getArray(p + 'cols')
+    this.cells = this.ydoc.getMap(p + 'cells')
+    this.dims = this.ydoc.getMap(p + 'dims')
+    this.indexesStale = true
+
+    workbook.undo.addToScope([this.rows, this.cols, this.cells, this.dims])
+
+    const structural = () => { this._invalidate(); workbook.notify() }
+    const contents = () => { this._invalidateValues(); workbook.notify() }
     this.rows.observe(structural)
     this.cols.observe(structural)
     this.cells.observe(contents)
     this.dims.observe(contents)
   }
+
+  get undo() { return this.wb.undo }
+  get astCache() { return this.wb.astCache }
+  get valueCache() { return this.wb.valueCache }
+  get evaluating() { return this.wb.evaluating }
+
+  // Cache keys are workbook-wide, so a cross-sheet reference and its target
+  // can never collide.
+  _key(rid, cid) { return `${this.id}/${rid}.${cid}` }
 
   // Drop the caches derived from doc state. Yjs fires observers only at the
   // END of a transaction, so a mutator that reads its own writes back (every
@@ -72,20 +212,21 @@ export class SheetModel {
     this.indexesStale = true
   }
 
-  // Fires on any change, local or remote. v1 makes no attempt to say WHAT
-  // changed — consumers re-pull what they display (values are memoized, so
+  // Fires on any change to ANY sheet, local or remote — a cross-sheet
+  // formula makes them interdependent. v1 makes no attempt to say what
+  // changed; consumers re-pull what they display (values are memoized, so
   // this is cheaper than it sounds). watchRange exists as the future-facing
   // name for chart/script consumers; today it has the same semantics.
   onChange(cb) {
-    this.listeners.add(cb)
-    return () => this.listeners.delete(cb)
+    return this.wb.onChange(cb)
   }
   watchRange(_rect, cb) {
     return this.onChange(cb)
   }
 
+  // Origin is the workbook, so one undo stack covers every sheet.
   tx(fn) {
-    this.ydoc.transact(fn, this)
+    this.ydoc.transact(fn, this.wb)
   }
 
   // ---- id <-> position ----------------------------------------------------
@@ -135,9 +276,18 @@ export class SheetModel {
     this._index()
     const toA1 = (ref) => {
       if (ref.kind !== 'id') return ref
-      const row = this.rowPos.get(ref.rid), col = this.colPos.get(ref.cid)
+      // A reference into another sheet resolves against that sheet's ids,
+      // and dies with it if the tab was removed.
+      const m = ref.sheet === undefined ? this : this.wb.sheetById(ref.sheet)
+      if (!m) return { kind: 'dead' }
+      m._index()
+      const row = m.rowPos.get(ref.rid), col = m.colPos.get(ref.cid)
       if (row === undefined || col === undefined) return { kind: 'dead' }
-      return { kind: 'a1', row, col, absRow: !!ref.absRow, absCol: !!ref.absCol }
+      return {
+        kind: 'a1', row, col,
+        absRow: !!ref.absRow, absCol: !!ref.absCol,
+        sheet: ref.sheet === undefined ? undefined : this.wb.nameOf(ref.sheet),
+      }
     }
     return '=' + serialize(mapRefs(ast, toA1))
   }
@@ -167,22 +317,35 @@ export class SheetModel {
           // way desktop Excel does); it evaluates to #ERROR!.
         }
         if (ast !== null) {
+          // Every referenced sheet must be materialized far enough for the
+          // reference to name real ids — including this one, and including
+          // cells nobody has typed in yet (=Sheet2!Z100 has to mean
+          // something durable even if Sheet2 is empty).
           const refs = collectRefs(ast)
-          let maxR = r, maxC = c
+          const extent = new Map([['', { r, c }]])
           for (const ref of [...refs.cells, ...refs.ranges.flat()]) {
-            if (ref.kind === 'a1') {
-              maxR = Math.max(maxR, ref.row)
-              maxC = Math.max(maxC, ref.col)
-            }
+            if (ref.kind !== 'a1') continue
+            const key = ref.sheet === undefined ? '' : ref.sheet
+            const cur = extent.get(key) || { r: -1, c: -1 }
+            extent.set(key, { r: Math.max(cur.r, ref.row), c: Math.max(cur.c, ref.col) })
           }
-          this.ensureSize(maxR, maxC)
+          for (const [name, ext] of extent) {
+            const m = name === '' ? this : this.wb.sheetByName(name)
+            if (m && ext.r >= 0 && ext.c >= 0) m.ensureSize(ext.r, ext.c)
+          }
           this._index()
           const toId = (ref) => {
             if (ref.kind !== 'a1') return ref
+            const m = ref.sheet === undefined ? this : this.wb.sheetByName(ref.sheet)
+            if (!m) return { kind: 'dead' } // no such tab
+            m._index()
+            const rid = m.rowIds[ref.row], cid = m.colIds[ref.col]
+            if (!rid || !cid) return { kind: 'dead' }
             return {
-              kind: 'id',
-              rid: this.rowIds[ref.row], cid: this.colIds[ref.col],
+              kind: 'id', rid, cid,
               absRow: !!ref.absRow, absCol: !!ref.absCol,
+              // Stored by id, so renaming a tab never rewrites a formula.
+              sheet: ref.sheet === undefined ? undefined : m.id,
             }
           }
           stored = '=' + serialize(mapRefs(ast, toId))
@@ -356,13 +519,16 @@ export class SheetModel {
     this._index()
     const rid = this.rowIds[r], cid = this.colIds[c]
     if (!rid || !cid) return null
-    return this._valueByKey(rid + '.' + cid)
+    return this._valueById(rid, cid)
   }
 
-  _valueByKey(key) {
+  _valueById(rid, cid) {
+    const key = this._key(rid, cid)
     if (this.valueCache.has(key)) return this.valueCache.get(key)
+    // The in-progress set is workbook-wide, so a cycle that runs out to
+    // another sheet and back is caught just like a local one.
     if (this.evaluating.has(key)) return ERR('#CYCLE!')
-    const stored = this.cells.get(key)
+    const stored = this.cells.get(rid + '.' + cid)
     const raw = typeof stored === 'string' ? stored : stored?.v
     let value
     if (raw === undefined) {
@@ -383,24 +549,36 @@ export class SheetModel {
     return value
   }
 
+  // The sheet a stored reference points into: this one unless it names
+  // another, and null if that sheet has since been removed.
+  _target(ref) {
+    const m = ref.sheet === undefined ? this : this.wb.sheetById(ref.sheet)
+    if (m) m._index() // the position maps below are read straight after
+    return m
+  }
+
   _ctx() {
     return {
       refValue: (ref) => {
-        if (this.rowPos.get(ref.rid) === undefined || this.colPos.get(ref.cid) === undefined) {
+        const m = this._target(ref)
+        if (!m) return ERR('#REF!')
+        if (m.rowPos.get(ref.rid) === undefined || m.colPos.get(ref.cid) === undefined) {
           return ERR('#REF!')
         }
-        return this._valueByKey(ref.rid + '.' + ref.cid)
+        return m._valueById(ref.rid, ref.cid)
       },
       rangeValues: (a, b) => {
-        const r1 = this.rowPos.get(a.rid), c1 = this.colPos.get(a.cid)
-        const r2 = this.rowPos.get(b.rid), c2 = this.colPos.get(b.cid)
+        const m = this._target(a)
+        if (!m) return ERR('#REF!')
+        const r1 = m.rowPos.get(a.rid), c1 = m.colPos.get(a.cid)
+        const r2 = m.rowPos.get(b.rid), c2 = m.colPos.get(b.cid)
         if (r1 === undefined || c1 === undefined || r2 === undefined || c2 === undefined) {
           return ERR('#REF!')
         }
         const out = []
         for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++) {
           for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
-            out.push(this._valueByKey(this.rowIds[r] + '.' + this.colIds[c]))
+            out.push(m._valueById(m.rowIds[r], m.colIds[c]))
           }
         }
         return out

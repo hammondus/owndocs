@@ -11,7 +11,7 @@
   import { onMount, onDestroy, tick } from 'svelte'
   import * as Y from 'yjs'
   import { Provider } from '../provider.js'
-  import { SheetModel } from '../sheet/model.js'
+  import { Workbook, FIRST_SHEET } from '../sheet/model.js'
   import { colName } from '../sheet/engine.js'
   import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
   import { scheduleCompaction } from '../compaction.js'
@@ -39,11 +39,17 @@
   // recompute — without it the formula bar ignores collaborators' edits.
   let revision = $state(0)
 
+  // The tab list, and which sheet is showing. Both are $state so the tab
+  // bar re-renders; `model` follows activeId.
+  let tabs = $state([])
+  let activeId = $state(FIRST_SHEET)
+  let renamingId = $state(null)
+
   let containerEl, canvasEl
   // $state because the overlay input mounts and unmounts with {#if edit}:
   // bind:this writes to it each time, and reads must see the fresh element.
   let cellInputEl = $state(null)
-  let ydoc, provider, model, unobserve
+  let ydoc, provider, workbook, model, unobserve
 
   // Non-reactive interaction state (only the canvas cares, via redraws).
   let dragging = false
@@ -63,7 +69,9 @@
 
   onMount(() => {
     ydoc = new Y.Doc()
-    model = new SheetModel(ydoc)
+    workbook = new Workbook(ydoc)
+    model = workbook.sheet(activeId)
+    tabs = workbook.list()
 
     provider = new Provider(ydoc, doc.id, {
       onStatus: (s) => { status = s },
@@ -81,8 +89,12 @@
     })
     publishSelection()
 
-    unobserve = model.onChange(() => {
+    unobserve = workbook.onChange(() => {
       revision++
+      tabs = workbook.list()
+      // A collaborator can delete the sheet being looked at; fall back to
+      // the first remaining one rather than rendering a ghost.
+      if (!tabs.some((t) => t.id === activeId)) selectSheet(tabs[0].id)
       scheduleDraw()
     })
 
@@ -222,6 +234,7 @@
     for (const [clientID, st] of provider.awareness.getStates()) {
       if (clientID === ydoc.clientID || !st.sheet || !st.user) continue
       const o = st.sheet
+      if ((o.id || FIRST_SHEET) !== activeId) continue // they're on another tab
       if (o.r1 >= R || o.c1 >= C) continue
       ctx.strokeStyle = st.user.color
       ctx.lineWidth = 2
@@ -305,8 +318,10 @@
 
   // ---- selection & editing ------------------------------------------------
 
+  // Carries the sheet id: a peer editing another tab must not be drawn on
+  // this one, where their coordinates would mean something else entirely.
   function publishSelection() {
-    provider?.awareness.setLocalStateField('sheet', selRect())
+    provider?.awareness.setLocalStateField('sheet', { ...selRect(), id: activeId })
   }
 
   function setSelection(r, c, extend) {
@@ -366,6 +381,44 @@
         }
       }
     })
+  }
+
+  // ---- sheets -------------------------------------------------------------
+
+  function selectSheet(id) {
+    if (edit) commitEdit(0, 0)
+    activeId = id
+    model = workbook.sheet(id)
+    sel = { r: 0, c: 0, r2: 0, c2: 0 }
+    cutRegion = null
+    if (containerEl) {
+      containerEl.scrollTop = 0
+      containerEl.scrollLeft = 0
+    }
+    publishSelection()
+    scheduleDraw()
+  }
+
+  function addSheet() {
+    selectSheet(workbook.addSheet())
+  }
+
+  function removeSheet(id) {
+    const tab = tabs.find((t) => t.id === id)
+    if (!confirm(`Delete "${tab.name}"? Formulas pointing at it will show #REF!.`)) return
+    if (!workbook.removeSheet(id)) alert('A workbook needs at least one sheet.')
+  }
+
+  // Renaming is an inline input on the tab itself; commit on blur or Enter.
+  function startRename(id) {
+    if (readOnly) return
+    renamingId = id
+  }
+
+  function commitRename(e, id) {
+    const name = e.target.value.trim()
+    if (name) workbook.renameSheet(id, name)
+    renamingId = null
   }
 
   // ---- clipboard ----------------------------------------------------------
@@ -681,6 +734,13 @@
 
   // Position of the overlay input, in scroll-content coordinates (it lives
   // inside the scroll container, so it moves with the grid naturally).
+  // A Svelte "action": a function run when the element is created. This is
+  // the idiomatic way to touch a DOM node right after it mounts.
+  function focusOnMount(node) {
+    node.focus()
+    node.select()
+  }
+
   function editStyle() {
     if (!edit || !layout) return 'display:none'
     const { colX, rowY } = layout
@@ -756,6 +816,49 @@
   {/if}
 </div>
 
+<div class="tabs">
+  {#each tabs as tab (tab.id)}
+    {#if renamingId === tab.id}
+      <!-- autofocus is right here: the input exists only because the user
+           just double-clicked this tab to rename it. -->
+      <input
+        class="tab-rename"
+        value={tab.name}
+        onblur={(e) => commitRename(e, tab.id)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter') e.target.blur()
+          if (e.key === 'Escape') { renamingId = null }
+        }}
+        use:focusOnMount
+      />
+    {:else}
+      <button
+        class="tab"
+        class:active={tab.id === activeId}
+        onclick={() => selectSheet(tab.id)}
+        ondblclick={() => startRename(tab.id)}
+        title={readOnly ? tab.name : 'Double-click to rename'}
+      >
+        {tab.name}
+        {#if !readOnly && tabs.length > 1}
+          <!-- A span, not a nested button: buttons cannot nest. -->
+          <span
+            class="tab-x"
+            role="button"
+            tabindex="-1"
+            title="Delete sheet"
+            onclick={(e) => { e.stopPropagation(); removeSheet(tab.id) }}
+            onkeydown={(e) => { if (e.key === 'Enter') removeSheet(tab.id) }}
+          >×</span>
+        {/if}
+      </button>
+    {/if}
+  {/each}
+  {#if !readOnly}
+    <button class="tab add" onclick={addSheet} title="Add sheet">+</button>
+  {/if}
+</div>
+
 <style>
   .toolbar {
     display: flex;
@@ -781,10 +884,53 @@
     font: 13px monospace;
     padding: 3px 6px;
   }
+  .tabs {
+    display: flex;
+    gap: 2px;
+    align-items: stretch;
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    padding: 4px 10px;
+    border: 1px solid #d0d1d3;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    background: #f8f9fa;
+    cursor: pointer;
+  }
+  .tab.active {
+    background: #fff;
+    font-weight: 600;
+    box-shadow: inset 0 -2px 0 #1565c0;
+  }
+  .tab-x {
+    opacity: 0.45;
+    padding: 0 2px;
+    line-height: 1;
+  }
+  .tab-x:hover {
+    opacity: 1;
+    color: #c62828;
+  }
+  .tab.add {
+    font-weight: 600;
+  }
+  .tab-rename {
+    font-size: 0.85rem;
+    padding: 4px 8px;
+    width: 8rem;
+    border: 1px solid #1565c0;
+    border-radius: 0 0 4px 4px;
+  }
   .grid {
     position: relative;
     overflow: auto;
-    height: calc(100vh - 170px);
+    height: calc(100vh - 200px);
     border: 1px solid #d0d1d3;
     outline: none;
     background: #fff;

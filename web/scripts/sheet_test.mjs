@@ -3,7 +3,7 @@
 // Run from web/: node scripts/sheet_test.mjs
 import * as Y from 'yjs'
 import { parseFormula, serialize, evaluate, isErr, fmtNum, colName, parseColName } from '../src/sheet/engine.js'
-import { SheetModel } from '../src/sheet/model.js'
+import { Workbook, SheetModel, FIRST_SHEET } from '../src/sheet/model.js'
 import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../src/sheet/clipboard.js'
 
 let failures = 0
@@ -58,8 +58,8 @@ for (const src of ['A1+B1*2', '(A1+B1)*2', '-A1^2', 'SUM(A1:B2,3)', 'IF(A1>1,"y"
 
 // ---- model: single doc ----------------------------------------------------
 
-function newModel() {
-  return new SheetModel(new Y.Doc())
+function newModel(ydoc = new Y.Doc()) {
+  return new Workbook(ydoc).sheet(FIRST_SHEET)
 }
 const val = (m, r, c) => {
   const v = m.getValue(r, c)
@@ -203,7 +203,7 @@ function syncBoth(d1, d2) {
 
 {
   const dA = new Y.Doc(), dB = new Y.Doc()
-  const a = new SheetModel(dA), b = new SheetModel(dB)
+  const a = newModel(dA), b = newModel(dB)
   a.setCell(0, 0, '1')
   a.setCell(1, 0, '2')
   a.setCell(2, 0, '=SUM(A1:A2)')
@@ -415,7 +415,7 @@ function syncBoth(d1, d2) {
   // one step for undo. Per-cell transactions would flood the log and make
   // undoing a paste a 40-press exercise.
   const d = new Y.Doc()
-  const m = new SheetModel(d)
+  const m = newModel(d)
   let updates = 0
   d.on('update', () => updates++)
 
@@ -432,6 +432,127 @@ function syncBoth(d1, d2) {
   eq(val(m, 19, 1), 38, 'and leaves the earlier paste alone')
   m.undo.undo()
   eq(val(m, 19, 1), null, 'a second undo reverts the whole paste')
+}
+
+// ---- workbook: multiple sheets ---------------------------------------------
+
+for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A$1', "'it''s'!A1"]) {
+  eq(serialize(parseFormula(src)), src, `round-trip: ${src}`)
+}
+
+{
+  // A document written before tabs existed keeps the bare container names,
+  // so it opens as sheet one with no migration and no data movement.
+  const d = new Y.Doc()
+  const legacy = newModel(d)
+  legacy.setCell(0, 0, 'old data')
+  eq(d.getArray('rows').length, 1, 'the first sheet IS the legacy top-level container')
+  eq(d.getArray('sheets').length, 0, 'and no sheet list is written until a second tab exists')
+
+  const reopened = new Workbook(d) // as a later client would see it
+  eq(reopened.list().map((s) => s.name), ['Sheet1'], 'legacy doc shows one implicit tab')
+  eq(val(reopened.sheet(FIRST_SHEET), 0, 0), 'old data', 'its data is there untouched')
+
+  reopened.addSheet('Second')
+  eq(reopened.list().map((s) => s.name), ['Sheet1', 'Second'], 'adding a tab materializes the first')
+  eq(val(reopened.sheet(FIRST_SHEET), 0, 0), 'old data', 'and still does not move the old data')
+}
+
+{
+  const wb = new Workbook(new Y.Doc())
+  const s1 = wb.sheet(FIRST_SHEET)
+  const id2 = wb.addSheet('Data')
+  const s2 = wb.sheet(id2)
+  s2.setCell(0, 0, '10')
+  s2.setCell(1, 0, '20')
+  s1.setCell(0, 0, '=SUM(Data!A1:A2)')
+  eq(val(s1, 0, 0), 30, 'cross-sheet range sums')
+  eq(s1.getInput(0, 0), '=SUM(Data!A1:A2)', 'cross-sheet formula round-trips')
+
+  const stored = s1.getRaw(0, 0)
+  wb.renameSheet(id2, 'Numbers')
+  eq(s1.getInput(0, 0), '=SUM(Numbers!A1:A2)', 'renaming a tab updates what formulas display')
+  eq(s1.getRaw(0, 0), stored, 'but does not rewrite a single stored formula')
+  eq(val(s1, 0, 0), 30, 'and does not disturb the value')
+
+  s2.insertRows(1)
+  s2.setCell(1, 0, '5')
+  eq(val(s1, 0, 0), 35, 'a row inserted in the other sheet joins the cross-sheet range')
+  eq(s1.getInput(0, 0), '=SUM(Numbers!A1:A3)', 'and the displayed range stretches')
+
+  wb.removeSheet(id2)
+  eq(val(s1, 0, 0), '#REF!', 'removing a tab kills references into it')
+  eq(s1.getInput(0, 0), '=SUM(#REF!)', 'and shows why')
+  wb.undo.undo()
+  eq(val(s1, 0, 0), 35, 'undo restores the tab with its data intact')
+}
+
+{
+  // Referring into a sheet that has no cells yet must materialize it, or
+  // the reference would be born dead.
+  const wb = new Workbook(new Y.Doc())
+  const s1 = wb.sheet(FIRST_SHEET)
+  const id = wb.addSheet('Empty')
+  s1.setCell(0, 0, '=Empty!C5')
+  eq(val(s1, 0, 0), null, 'a reference into an empty sheet is empty, not #REF!')
+  wb.sheet(id).setCell(4, 2, '42')
+  eq(val(s1, 0, 0), 42, 'and starts working once that cell is filled')
+}
+
+{
+  const wb = new Workbook(new Y.Doc())
+  const s1 = wb.sheet(FIRST_SHEET)
+  const id = wb.addSheet('My Data')
+  wb.sheet(id).setCell(0, 0, '7')
+  s1.setCell(0, 0, "='My Data'!A1")
+  eq(val(s1, 0, 0), 7, 'a quoted sheet name resolves')
+  eq(s1.getInput(0, 0), "='My Data'!A1", 'and round-trips quoted')
+  wb.renameSheet(id, 'A1')
+  eq(s1.getInput(0, 0), "='A1'!A1", 'a sheet named like a cell reference gets quoted')
+  eq(val(s1, 0, 0), 7, 'and still resolves')
+
+  s1.setCell(1, 0, '=Nope!A1')
+  eq(val(s1, 1, 0), '#REF!', 'a reference to a nonexistent tab is #REF!')
+}
+
+{
+  const wb = new Workbook(new Y.Doc())
+  const a = wb.sheet(FIRST_SHEET)
+  const b = wb.sheet(wb.addSheet('B'))
+  a.setCell(0, 0, '=B!A1')
+  b.setCell(0, 0, '=Sheet1!A1')
+  eq(val(a, 0, 0), '#CYCLE!', 'a cycle that runs through another sheet is caught')
+}
+
+{
+  const wb = new Workbook(new Y.Doc())
+  const s1 = wb.sheet(FIRST_SHEET)
+  const s2 = wb.sheet(wb.addSheet('Two'))
+  s1.setCell(0, 0, 'a')
+  s2.setCell(0, 0, 'b')
+  wb.undo.undo()
+  eq(val(s2, 0, 0), null, 'one undo stack: it rewinds the edit on the other sheet')
+  eq(val(s1, 0, 0), 'a', 'and leaves the first sheet alone')
+}
+
+{
+  // Two clients adding a second tab at once each materialize the implicit
+  // first one, so the raw array legitimately contains it twice.
+  const dA = new Y.Doc(), dB = new Y.Doc()
+  const wa = new Workbook(dA), wbb = new Workbook(dB)
+  wa.sheet(FIRST_SHEET).setCell(0, 0, 'x')
+  syncBoth(dA, dB)
+  wa.addSheet('FromA')
+  wbb.addSheet('FromB')
+  syncBoth(dA, dB)
+  eq(wa.list().length, 3, 'concurrent tab adds converge to three tabs, not four')
+  eq(wa.list().map((s) => s.id).join(), wbb.list().map((s) => s.id).join(), 'tab order agrees on both')
+  eq(val(wa.sheet(FIRST_SHEET), 0, 0), 'x', 'the first sheet keeps its data through all of it')
+}
+
+{
+  const wb = new Workbook(new Y.Doc())
+  eq(wb.removeSheet(FIRST_SHEET), false, 'the last remaining sheet cannot be removed')
 }
 
 // ---- A1 helpers -----------------------------------------------------------

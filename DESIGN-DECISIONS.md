@@ -750,6 +750,32 @@ a text serialization is chosen (likely CSV alongside the .md files).
 
 ## Incidents
 
+- **2026-08-05, two chart UX bugs, one root cause.** Both user-reported,
+  both from the same mistake: **charts are real DOM inside the grid, so
+  they share the grid's event scope and its handlers' assumptions.**
+  1. *Charts could not be moved.* The title strip was the only drag
+     handle, but a selected chart's controls fill that strip and each
+     swallows mousedown to stay clickable — leaving nothing to grab.
+  2. *Typing a chart title created a cell edit.* Keystrokes bubbled into
+     the grid's keydown handler, which called `preventDefault` and started
+     editing the cell underneath. It appeared to "work the second time"
+     only because a cell edit was by then in progress and an unrelated
+     early return bailed out.
+
+  The lesson, now enforced in `SheetView.svelte`: **a surface that owns
+  broad handlers (keydown, clipboard, dblclick) must check the event
+  source the moment real controls live inside it**, and the check must
+  name what it means — the first attempt at the guard,
+  `target !== container`, would have broken double-click-to-edit on every
+  cell, because the grid's own canvas is a child too.
+
+  The meta-lesson is about testing: neither bug was reachable by the
+  headless suite, which exercises the model and never mounts a component.
+  Interaction logic must therefore either be **extracted into a pure,
+  testable function** (as the chart drag geometry now is) or reasoned
+  through case by case before shipping. "The tests pass" says nothing
+  about anything that only exists once a browser is involved.
+
 - **2026-08-05, first cell edit silently discarded (sheets).** User report:
   "most times the first time doesn't take; I have to enter it twice."
   `SheetModel` caches the row/col id index and invalidated it from Yjs

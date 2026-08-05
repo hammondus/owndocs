@@ -27,6 +27,13 @@ func newDocID() string {
 	return strings.ToLower(docIDEnc.EncodeToString(b))
 }
 
+// roleRank orders access levels, least to most. `commenter` sits above viewer
+// because it grants a write — to the comment tables, over HTTP, never into the
+// Yjs log — and below editor, which is the first role allowed to change
+// document content. Anything comparing roles must go through this map rather
+// than test for a role by name, or adding a level silently widens access.
+var roleRank = map[string]int{"viewer": 0, "commenter": 1, "editor": 2, "owner": 3}
+
 // roleFor returns the caller's role on a document, or "" for no access.
 func roleFor(db *sql.DB, docID string, userID int64) (string, error) {
 	var role string

@@ -17,13 +17,11 @@ Decided: bodies, identity and resolved-state in SQLite; anchors as opaque
 blobs. See *Comments* for why, and for the two traps. Build order — each step
 is useful on its own:
 
-1. Schema v5 (`comments`, `comment_threads`) + `commenter` role in the
-   `permissions` CHECK constraint and `roleFor`
-2. REST endpoints, author stamped from the session — never from the request
-3. Live fanout: a third WebSocket message type alongside `0 doc, 1 awareness`
-4. Sheets UI first — anchors are just row/col ids, so no new anchor mechanism
-5. Docs UI: encoded `RelativePosition` anchors + quoted-snippet fallback
-6. Mentions and notifications; unresolved count in the document list
+1. Live fanout: a third WebSocket message type alongside `0 doc, 1 awareness`
+2. Sheets UI first — anchors are just row/col ids, so no new anchor mechanism
+3. Docs UI: encoded `RelativePosition` anchors + quoted-snippet fallback
+4. Mentions and notifications; unresolved count in the document list
+5. Share UI: offer the `commenter` role (the API takes it already)
 
 Prerequisite, and a defect in its own right: **doc restore is
 delete-all-then-insert-all**, which orphans every anchor. It needs to become

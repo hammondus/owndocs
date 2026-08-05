@@ -49,13 +49,12 @@ func gzipBytes(data []byte) []byte {
 // requireRole resolves the caller's role on the doc and 404s below the
 // minimum. Ordering: viewer < editor < owner.
 func requireRole(db *sql.DB, w http.ResponseWriter, r *http.Request, min string) (string, bool) {
-	rank := map[string]int{"viewer": 0, "editor": 1, "owner": 2}
 	role, err := roleFor(db, r.PathValue("id"), currentUser(r).ID)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "db error")
 		return "", false
 	}
-	if role == "" || rank[role] < rank[min] {
+	if role == "" || roleRank[role] < roleRank[min] {
 		jsonError(w, http.StatusNotFound, "not found")
 		return "", false
 	}

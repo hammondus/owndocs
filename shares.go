@@ -65,8 +65,8 @@ func handleAddShare(db *sql.DB, h *hub) http.HandlerFunc {
 		if !readJSON(w, r, &in) {
 			return
 		}
-		if in.Role != "editor" && in.Role != "viewer" {
-			jsonError(w, http.StatusBadRequest, "role must be editor or viewer")
+		if _, known := roleRank[in.Role]; !known || in.Role == "owner" {
+			jsonError(w, http.StatusBadRequest, "role must be editor, commenter or viewer")
 			return
 		}
 		var uid int64
@@ -152,8 +152,8 @@ func handleCreateLink(db *sql.DB) http.HandlerFunc {
 		if !readJSON(w, r, &in) {
 			return
 		}
-		if in.Role != "editor" && in.Role != "viewer" {
-			jsonError(w, http.StatusBadRequest, "role must be editor or viewer")
+		if _, known := roleRank[in.Role]; !known || in.Role == "owner" {
+			jsonError(w, http.StatusBadRequest, "role must be editor, commenter or viewer")
 			return
 		}
 		raw := make([]byte, 32)
@@ -244,8 +244,10 @@ func handleRedeemLink(db *sql.DB) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
-		grant := existing == "" ||
-			(existing == "viewer" && linkRole == "editor")
+		// A link only ever raises access. Rank-compared rather than
+		// enumerated, so redeeming a commenter link as an editor cannot
+		// demote you, and no link can touch an owner.
+		grant := existing == "" || roleRank[linkRole] > roleRank[existing]
 		if grant {
 			if _, err := db.Exec("INSERT OR REPLACE INTO permissions (doc_id, user_id, role) VALUES (?,?,?)",
 				docID, u.ID, linkRole); err != nil {

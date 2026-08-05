@@ -539,8 +539,11 @@ func (h *hub) handleWS() http.HandlerFunc {
 			}
 			switch data[0] {
 			case msgDoc:
-				// Presence is harmless from viewers; document writes are not.
-				if c.role == "viewer" {
+				// Presence is harmless from anyone with access; document
+				// writes are not. Commenters are below editor here on
+				// purpose — a comment is an HTTP write to its own tables,
+				// never an update in the log.
+				if roleRank[c.role] < roleRank["editor"] {
 					conn.Close(websocket.StatusPolicyViolation, "read-only access")
 					rm.leave(c)
 					return

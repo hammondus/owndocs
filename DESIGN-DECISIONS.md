@@ -1093,6 +1093,34 @@ code rather than assumed:
   into deleted text degrade. Store the quoted snippet alongside the anchor,
   so an unresolvable comment shows as a visible orphan rather than vanishing.
 
+Implementation notes (schema v5 + the REST layer):
+
+- **One `roleRank` map, in `docs_api.go`.** Adding a level between viewer and
+  editor turned every `role == "viewer"` test into a latent hole — the socket
+  check in particular, which must reject a commenter exactly as hard. It is
+  now a rank comparison in all three places (`requireRole`, the `msgDoc`
+  branch, share-link redemption), and the map's comment says so, because the
+  next role added will be someone else's problem.
+- **Share-link redemption became rank-based** rather than the enumerated
+  `viewer && editor` case it was. With three grantable roles the enumeration
+  would have needed every pair; the rank comparison expresses the actual rule,
+  which is "a link raises access and never lowers it".
+- **The author is not a field.** No request body has one — `readJSON` uses
+  `DisallowUnknownFields`, so a client that sends `author_id` gets a 400
+  rather than having it quietly ignored. That is the difference from the
+  in-doc design stated as code.
+- **Edit and delete diverge on purpose.** A document owner may delete anyone's
+  comment (moderation) but may not edit one: rewriting words that stay under
+  someone else's name is forgery. Only the author edits.
+- **A thread never exists empty.** Opening one writes the thread and its first
+  comment in a single transaction, and deleting the last comment deletes the
+  thread — so no reader has to render an anchor with nothing attached.
+- **Migration**: widening a CHECK constraint means rebuilding the table, so
+  `permissions` and `share_links` are copied through a new table and dropped.
+  Nothing points *at* either, so no `foreign_keys` toggle is needed.
+  `db_test.go` migrates a *populated* v4 database, because every other test
+  starts empty and would pass even if the copy dropped every row.
+
 ---
 
 ## Incidents

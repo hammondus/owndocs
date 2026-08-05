@@ -173,7 +173,12 @@ func handleCreateThread(db *sql.DB, h *hub) http.HandlerFunc {
 			return
 		}
 		h.notifyComments(r.PathValue("id"))
-		writeJSON(w, http.StatusOK, commentThread{ID: tid, Anchor: in.Anchor, CreatedBy: uid, CreatedAt: now})
+		// Comments explicitly empty rather than nil: the list endpoint returns
+		// [] for a thread with no replies, and a client should not have to
+		// handle null from one route and [] from the other.
+		writeJSON(w, http.StatusOK, commentThread{
+			ID: tid, Anchor: in.Anchor, CreatedBy: uid, CreatedAt: now, Comments: []comment{},
+		})
 	}
 }
 

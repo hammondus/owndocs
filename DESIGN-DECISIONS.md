@@ -1148,6 +1148,33 @@ bookkeeping to find out. No protocol version bump — the client demultiplexes
 with an `if/else if` chain and ignores unknown types, so a tab on the previous
 v2 bundle sees nothing rather than breaking.
 
+### Comments on sheets: the anchor is already there
+
+Sheet comments needed no anchor mechanism at all, which is why they went
+first. `model.js` keys cells by stable row/col ids, so an anchor is
+`{k:'cell', sheet, row, col, quote}` — the same identity formula references
+and chart ranges use, and it follows inserts and deletes for the same reason
+they do. The `k` field is an envelope so the document anchor (`k:'text'`, a
+pair of encoded RelativePositions) can share the column.
+
+- **The panel knows nothing about sheets.** It takes threads, a `label(thread)`
+  function and callbacks, so the docs UI can reuse it whole.
+- **Markers are drawn per visible cell, not per thread.** The canvas repaints
+  constantly, so the draw loop walks the scroll window and asks a Set built
+  once per change — the other way round would be a list scan per frame.
+- **A thread whose row or column was deleted says "deleted"** rather than
+  resolving to whatever cell now sits at those coordinates. Ids do not come
+  back, and a comment pointing confidently at the wrong cell is worse than one
+  admitting it lost its place.
+- **The unresolved count in the header spans every tab.** It is how you find
+  out something is waiting on a sheet you are not looking at.
+
+One bug this closed on the way past: `readOnly` was `role === 'viewer'` in both
+`SheetView` and `EditorView`. A commenter would have got an editable grid,
+typed, sent a doc update and had their socket closed for a policy violation.
+Both now go through `canEdit()` in `roles.js`, which mirrors `roleRank` — with
+a test asserting the two agree, since nothing else would catch them drifting.
+
 ### Notifications: in-app always, email only if configured
 
 The filter is **"did this happen while you were not looking?"** Anything you

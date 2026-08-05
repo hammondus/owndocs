@@ -48,7 +48,9 @@
       parent: editorEl,
       ytext,
       awareness: provider.awareness,
-      readOnly: doc.role === 'viewer',
+      // Commenters are read-only here too: typing would send a doc update and
+      // the server closes the socket for it. Comments go over HTTP instead.
+      readOnly: !canEdit(doc.role),
     })
   })
 

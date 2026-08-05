@@ -11,6 +11,8 @@ import { niceScale, extractChartData, drawChart, chartDragPatch } from '../src/s
 import { parseA1, formatA1, handleCall } from '../src/sheet/scriptapi.js'
 import { RUNTIME } from '../src/sheet/sandbox.js'
 import { allowTriggers, forgetTriggerChoice, summariseEdit } from '../src/sheet/triggers.js'
+import { encodeAnchor, decodeAnchor, cellAnchor, anchorKey, cellKey } from '../src/comments.js'
+import { canEdit, canComment } from '../src/roles.js'
 
 let failures = 0
 
@@ -1577,6 +1579,36 @@ eq(colName(25), 'Z', 'colName Z')
 eq(colName(26), 'AA', 'colName AA')
 eq(colName(701), 'ZZ', 'colName ZZ')
 eq(parseColName('AA'), 26, 'parseColName AA')
+
+// ---- comment anchors ------------------------------------------------------
+// The anchor is a blob the server stores and never parses, so its round-trip
+// is entirely our responsibility and nothing server-side would catch a break.
+
+const a1 = cellAnchor('s.abc', 'r7', 'c3', 'hello')
+eq(decodeAnchor(encodeAnchor(a1)), a1, 'anchor round-trips')
+
+// btoa throws on anything above U+00FF, so the encoder goes through UTF-8
+// bytes. A quote is document content, which is exactly where non-Latin text
+// and emoji turn up.
+const a2 = cellAnchor(FIRST_SHEET, 'r1', 'c1', 'café — 日本語 🎉')
+eq(decodeAnchor(encodeAnchor(a2)).quote, 'café — 日本語 🎉', 'anchor survives non-ASCII quote')
+
+eq(decodeAnchor('not base64 at all!!'), null, 'undecodable anchor is null, not a throw')
+eq(decodeAnchor(btoa('{"truncated":')), null, 'invalid JSON anchor is null')
+
+eq(anchorKey(a1), cellKey('s.abc', 'r7', 'c3'), 'anchorKey matches cellKey')
+eq(anchorKey({ k: 'text', start: 'x' }), null, 'a text anchor has no cell key')
+eq(anchorKey(null), null, 'a missing anchor has no cell key')
+
+// ---- roles ----------------------------------------------------------------
+// Mirrors roleRank in docs_api.go. If these drift, a commenter gets an
+// editable grid and the server closes their socket on the first keystroke.
+eq([canEdit('owner'), canEdit('editor'), canEdit('commenter'), canEdit('viewer')],
+   [true, true, false, false], 'canEdit stops at editor')
+eq([canComment('owner'), canComment('editor'), canComment('commenter'), canComment('viewer')],
+   [true, true, true, false], 'canComment stops at commenter')
+eq([canEdit(''), canEdit(undefined), canComment('nonsense')], [false, false, false],
+   'an unknown role grants nothing')
 
 if (failures > 0) {
   console.error(`\n${failures} FAILURES`)

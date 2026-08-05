@@ -18,6 +18,9 @@
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
   import { scheduleCompaction } from '../compaction.js'
   import ScriptsPanel from './ScriptsPanel.svelte'
+  import CommentsPanel from './CommentsPanel.svelte'
+  import { listThreads, cellAnchor, cellKey, anchorKey } from '../comments.js'
+  import { canEdit, canComment } from '../roles.js'
   import { runScript } from '../sheet/sandbox.js'
   import { handleCall } from '../sheet/scriptapi.js'
   import { allowTriggers, summariseEdit } from '../sheet/triggers.js'
@@ -26,7 +29,11 @@
 
   // $derived, not a plain const: props can change, and a const would keep
   // the value from the first render forever.
-  let readOnly = $derived(doc.role === 'viewer')
+  // A commenter is read-only *here* even though they can write comments: if
+  // they could type into the grid, the provider would send a doc update and
+  // the server would close the socket for a policy violation.
+  let readOnly = $derived(!canEdit(doc.role))
+  let mayComment = $derived(canComment(doc.role))
   const HEADER_W = 48
   const HEADER_H = 24
   const BASE_FONT = '13px system-ui, sans-serif'
@@ -64,6 +71,8 @@
   let charts = $state([])
   let selectedChart = $state(null)
   let showScripts = $state(false)
+  let showComments = $state(false)
+  let threads = $state([])
   let triggerError = $state('')
   let triggerBusy = false // one trigger run at a time; bursts coalesce
   let chartCanvases = $state({})
@@ -106,7 +115,12 @@
         if (provider.corrupted) return
         scheduleCompaction({ docId: doc.id, doc: ydoc, role: doc.role, synced })
       },
+      // The server says only that comments changed, never what changed, so
+      // the answer is always the same: refetch.
+      onComments: loadComments,
     })
+
+    loadComments()
 
     myColor = cursorColors[ydoc.clientID % cursorColors.length][0]
     provider.awareness.setLocalStateField('user', { name: me.name, color: myColor })
@@ -141,6 +155,76 @@
     provider?.destroy()
     ydoc?.destroy()
   })
+
+  // ---- comments -----------------------------------------------------------
+
+  async function loadComments() {
+    try {
+      threads = await listThreads(doc.id)
+    } catch (e) {
+      // A failed refetch must not take the sheet down with it; the next nudge
+      // or reopen tries again.
+      console.warn('docs: could not load comments', e)
+    }
+    scheduleDraw()
+  }
+
+  // Cells on *this* tab carrying an unresolved thread, for the corner marker.
+  // Keyed by row/col id rather than position, so an inserted row moves the
+  // marker with the cell exactly as it moves the comment.
+  let commentedCells = $derived.by(() => {
+    const marks = new Set()
+    for (const t of threads) {
+      if (t.resolved_at || t.anchor?.k !== 'cell') continue
+      if ((t.anchor.sheet || FIRST_SHEET) !== activeId) continue
+      marks.add(t.anchor.row + '.' + t.anchor.col)
+    }
+    return marks
+  })
+
+  // The anchor for "comment here" — the active cell, with its displayed text
+  // captured as the quote. Null when the model has no id for that position,
+  // which happens on a row the sheet has not materialised yet.
+  let newAnchor = $derived.by(() => {
+    void revision
+    const rid = model?.rowIds[sel.r]
+    const cid = model?.colIds[sel.c]
+    if (!rid || !cid) return null
+    return cellAnchor(activeId, rid, cid, model.display(sel.r, sel.c).text.slice(0, 120))
+  })
+
+  let newLabel = $derived(colName(sel.c) + (sel.r + 1))
+
+  // Count across every tab, not just this one: the badge is how you learn a
+  // thread is waiting on a sheet you are not looking at.
+  let openComments = $derived(threads.filter((t) => !t.resolved_at).length)
+
+  // Where a thread points, as an A1 name. A thread whose row or column has
+  // since been deleted has no position left to name, so it says so rather
+  // than silently rendering a wrong cell.
+  function threadLabel(t) {
+    void revision
+    const a = t.anchor
+    if (a?.k !== 'cell') return '—'
+    const sheet = workbook?.sheet(a.sheet || FIRST_SHEET)
+    const r = sheet?.rowPos.get(a.row)
+    const c = sheet?.colPos.get(a.col)
+    if (r === undefined || c === undefined) return 'deleted'
+    const name = colName(c) + (r + 1)
+    const tab = tabs.find((t) => t.id === (a.sheet || FIRST_SHEET))
+    return (a.sheet || FIRST_SHEET) === activeId ? name : `${tab?.name || '?'}!${name}`
+  }
+
+  function goToThread(t) {
+    const a = t.anchor
+    if (a?.k !== 'cell') return
+    if ((a.sheet || FIRST_SHEET) !== activeId) selectSheet(a.sheet || FIRST_SHEET)
+    const r = model.rowPos.get(a.row)
+    const c = model.colPos.get(a.col)
+    if (r === undefined || c === undefined) return
+    setSelection(r, c, false)
+    scrollCellIntoView(r, c)
+  }
 
   // ---- drawing ------------------------------------------------------------
 
@@ -278,6 +362,29 @@
       ctx.lineTo(w, y)
     }
     ctx.stroke()
+
+    // Comment markers: a small corner triangle, as in Sheets. Drawn after the
+    // gridlines so it sits on top of them, and only for visible cells — this
+    // runs on every repaint, so it walks the window, never the thread list.
+    if (commentedCells.size) {
+      ctx.fillStyle = '#f9a825'
+      for (let r = r0; r <= r1 && r < R; r++) {
+        const rid = model.rowIds[r]
+        if (!rid) continue
+        for (let c = c0; c <= c1 && c < C; c++) {
+          const cid = model.colIds[c]
+          if (!cid || !commentedCells.has(rid + '.' + cid)) continue
+          const x = screenX(c) + (colX[c + 1] - colX[c])
+          const y = screenY(r)
+          ctx.beginPath()
+          ctx.moveTo(x - 7, y)
+          ctx.lineTo(x, y)
+          ctx.lineTo(x, y + 7)
+          ctx.closePath()
+          ctx.fill()
+        }
+      }
+    }
 
     // Collaborator selections (position-based and ephemeral: they update on
     // every move, so a concurrent row insert misplaces them only momentarily).
@@ -1033,6 +1140,11 @@
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}
   <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
+  <!-- Outside the editing toolbar on purpose: viewers read comments and
+       commenters write them, and neither sees that toolbar. -->
+  <button class="linkish" onclick={() => (showComments = !showComments)}>
+    💬 comments{openComments ? ` (${openComments})` : ''}
+  </button>
   <span class="status">{status}</span>
   {#if peerCount > 1}
     <span class="status">{peerCount} online</span>
@@ -1093,6 +1205,22 @@
 
 {#if showScripts && workbook}
   <ScriptsPanel {workbook} {readOnly} onClose={() => (showScripts = false)} />
+{/if}
+
+{#if showComments}
+  <CommentsPanel
+    docId={doc.id}
+    {threads}
+    {me}
+    canComment={mayComment}
+    isOwner={doc.role === 'owner'}
+    {newAnchor}
+    {newLabel}
+    label={threadLabel}
+    onRefresh={loadComments}
+    onGoTo={goToThread}
+    onClose={() => (showComments = false)}
+  />
 {/if}
 
 <div class="formula-bar">
@@ -1448,5 +1576,17 @@
     font-size: 0.85rem;
     opacity: 0.7;
     margin-left: 0.5rem;
+  }
+  /* A button, because it toggles a panel rather than navigating — styled to
+     sit with the links beside it. */
+  .linkish {
+    border: 0;
+    background: none;
+    padding: 0;
+    margin-left: 0.5rem;
+    font: inherit;
+    font-size: 0.9rem;
+    color: #1565c0;
+    cursor: pointer;
   }
 </style>

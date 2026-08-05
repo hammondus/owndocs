@@ -26,6 +26,10 @@ runner: runner-js
 
 test: runner-js
 	go vet ./... && go test ./...
+	# The headless JS suites. They existed but nothing ran them, so a break in
+	# the model, the formula engine or the comment anchors was only ever found
+	# by hand. Neither needs a server.
+	cd web && node scripts/sheet_test.mjs && node scripts/table_test.mjs
 
 # Local dev run: quick-login users + vite dev server origin allowed.
 # Production runs via docker compose, whose entrypoint has neither flag.

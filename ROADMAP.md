@@ -17,17 +17,16 @@ Decided: bodies, identity and resolved-state in SQLite; anchors as opaque
 blobs. See *Comments* for why, and for the two traps. Build order — each step
 is useful on its own:
 
-1. Sheets UI first — anchors are just row/col ids, so no new anchor mechanism
-2. Docs UI: encoded `RelativePosition` anchors + quoted-snippet fallback
-3. Mentions, and in-app notifications: mention inbox, unresolved count in the
+1. Docs UI: encoded `RelativePosition` anchors + quoted-snippet fallback
+2. Mentions, and in-app notifications: mention inbox, unresolved count in the
    document list
-4. Email, optional: unset SMTP config means none, and the app is whole
+3. Email, optional: unset SMTP config means none, and the app is whole
    without it. Two events only — mentioned, and shared-with-you
-5. Share UI: offer the `commenter` role (the API takes it already)
+4. Share UI: offer the `commenter` role (the API takes it already)
 
 Prerequisite, and a defect in its own right: **doc restore is
 delete-all-then-insert-all**, which orphans every anchor. It needs to become
-diff-and-patch before step 2 ships.
+diff-and-patch before step 1 ships.
 
 ## Sheets — formatting
 

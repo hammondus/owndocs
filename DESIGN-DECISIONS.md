@@ -310,6 +310,22 @@ recipients.
 
 ### Static assets: hashed + immutable via Vite
 
+Dependencies are split into their own chunks (`vendor-editor`,
+`vendor-sync`, `vendor`). This saves **no bytes on a first visit** —
+everything is still loaded on every page — and that is not what it is for.
+Assets are hashed and served `immutable`, so with a single bundle a
+one-line change to our own code re-hashes all of it and every client
+re-downloads CodeMirror, which measurement showed to be 170 kB gzipped, or
+about 70% of the bundle. Split out, a code-only deploy re-hashes only the
+~33 kB app chunk and the rest stays cached — verified by changing one
+constant and diffing the emitted filenames.
+
+Real byte savings would need route-level lazy loading, so that opening a
+sheet never fetches the markdown editor at all. Deferred: it costs a
+loading state in the router, and on a self-hosted LAN app the first-visit
+cost is a fraction of a second, once.
+
+
 ~~Interim policy: everything no-cache, because the esbuild bundle was
 unhashed and `max-age` let browsers run a stale bundle for up to an hour
 after a rebuild.~~ Resolved by the Svelte shell migration: Vite emits

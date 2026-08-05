@@ -1121,6 +1121,61 @@ Implementation notes (schema v5 + the REST layer):
   `db_test.go` migrates a *populated* v4 database, because every other test
   starts empty and would pass even if the copy dropped every row.
 
+### Notifications: in-app always, email only if configured
+
+The filter is **"did this happen while you were not looking?"** Anything you
+would notice on your next visit belongs in-app, where it costs nothing and
+cannot be marked as spam. That leaves a short list.
+
+**In-app** carries everything: a mention inbox, the unresolved count in the
+document list, replies to threads you are in. No deployment surface, so it
+ships first and the feature is whole without any mail at all.
+
+**Email covers exactly two events**, because they are the only ones where the
+recipient is by definition *not* in the app to see a badge:
+
+- **You were mentioned.** Someone named you and is waiting.
+- **A document was shared with you.** Today `handleAddShare` grants a role and
+  the document silently appears in a list — if the recipient never opens the
+  app, they never learn it exists. This is the only event with no in-app place
+  to discover it, and it is not a comment feature at all.
+
+Deliberately *not* emailed: any comment on a document you own (ownership is not
+interest, and an active document is a firehose), thread resolved (that is
+closure — nothing waits on you), and all version/snapshot/share bookkeeping
+for actions you took yourself.
+
+Rules that keep it signal:
+
+- **Skip anyone connected to that document right now** — they can see it
+  happen. `hub.evictUser` already walks a room's clients by user id, so the
+  presence test is a few lines, not a subsystem.
+- **Debounce per (user, document)**, around five minutes. A thread during a
+  live session is one conversation, not N events.
+- **Never notify anyone of their own action**, including self-mentions.
+- **Never put a share-link token in an email.** Those are bearer capabilities
+  stored only as SHA-256; mail is archived, forwarded and indexed. Link to the
+  document URL and let ordinary auth do its job.
+
+Consequence worth knowing before writing the templates: the server can include
+the **comment body** — those are stored in the clear, deliberately, so mentions
+can be read — but never *what the comment is about*, because the quoted text is
+inside the opaque anchor. The mail says "Craig said: this seems wrong" and
+cannot say what it was said about. That is the content-blind design working,
+and it means these emails are pointers into the app, not substitutes for it.
+Keep them short and link-first.
+
+Transport: **submission only, to an existing relay** — the deploy environment
+has one, so this app never touches SPF/DKIM/DMARC, reputation or bounces, and
+it must not grow a queue pretending otherwise. `net/smtp` over 587 with
+STARTTLS and PLAIN is enough, so no new dependency; headers are hand-built and
+a non-ASCII subject goes through `mime`. Unset config means the feature is off,
+not broken.
+
+Loose end for whoever builds it: signup never verifies an email address, so
+notifications go to unverified addresses. Fine for a small self-hosted team,
+worth a second look if an instance runs `-signup=open`.
+
 ---
 
 ## Incidents
@@ -1186,9 +1241,9 @@ Implementation notes (schema v5 + the REST layer):
 - Snapshot-trigger thresholds (currently >100 tail rows or >128 KiB) and the
   1s batch-flush interval: revisit once there's real typing traffic.
 - ~~Comment threads: anchor storage in the Yjs doc vs. SQLite side-table.~~
-  Answered — see Comments. Still open underneath it: the **notification
-  delivery channel**. In-app only needs nothing new; email needs SMTP config
-  and a sending identity on a self-hosted box, which is a deployment burden
-  this project has so far avoided entirely.
+  Answered — see Comments. ~~Still open underneath it: the notification
+  delivery channel.~~ Also answered — see Notifications: in-app first and
+  always, email optional and submission-only to an existing relay, so the
+  deliverability burden never lands on this app.
 - Search: without server-side document reads, any full-text search must be
   client-fed. Deferred until wanted.

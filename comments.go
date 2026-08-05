@@ -129,7 +129,7 @@ func handleListComments(db *sql.DB) http.HandlerFunc {
 // POST /api/docs/{id}/comments {anchor, body} — opens a thread with its first
 // comment. Both rows go in one transaction: a thread with nothing in it is not
 // a state any reader should have to handle.
-func handleCreateThread(db *sql.DB) http.HandlerFunc {
+func handleCreateThread(db *sql.DB, h *hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireRole(db, w, r, "commenter"); !ok {
 			return
@@ -172,12 +172,13 @@ func handleCreateThread(db *sql.DB) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
+		h.notifyComments(r.PathValue("id"))
 		writeJSON(w, http.StatusOK, commentThread{ID: tid, Anchor: in.Anchor, CreatedBy: uid, CreatedAt: now})
 	}
 }
 
 // POST /api/docs/{id}/comments/{tid} {body} — reply to a thread.
-func handleReply(db *sql.DB) http.HandlerFunc {
+func handleReply(db *sql.DB, h *hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireRole(db, w, r, "commenter"); !ok {
 			return
@@ -201,6 +202,7 @@ func handleReply(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		id, _ := res.LastInsertId()
+		h.notifyComments(r.PathValue("id"))
 		writeJSON(w, http.StatusOK, comment{
 			ID: id, ThreadID: tid, AuthorID: u.ID, AuthorName: u.Name, Body: in.Body, CreatedAt: now,
 		})
@@ -210,7 +212,7 @@ func handleReply(db *sql.DB) http.HandlerFunc {
 // PATCH /api/docs/{id}/comments/{tid} {resolved} — resolve or reopen. Anyone
 // who may comment may resolve, as in Google Docs: resolution is part of the
 // conversation, not an ownership claim over it.
-func handleResolveThread(db *sql.DB) http.HandlerFunc {
+func handleResolveThread(db *sql.DB, h *hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireRole(db, w, r, "commenter"); !ok {
 			return
@@ -235,6 +237,7 @@ func handleResolveThread(db *sql.DB) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
+		h.notifyComments(r.PathValue("id"))
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }
@@ -242,7 +245,7 @@ func handleResolveThread(db *sql.DB) http.HandlerFunc {
 // PATCH /api/docs/{id}/comments/{tid}/{cid} {body} — edit a comment. The
 // author and nobody else: an owner moderating a thread may delete it, but
 // rewriting someone's words under their name is forgery, not moderation.
-func handleEditComment(db *sql.DB) http.HandlerFunc {
+func handleEditComment(db *sql.DB, h *hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireRole(db, w, r, "commenter"); !ok {
 			return
@@ -272,6 +275,7 @@ func handleEditComment(db *sql.DB) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
+		h.notifyComments(r.PathValue("id"))
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }
@@ -279,7 +283,7 @@ func handleEditComment(db *sql.DB) http.HandlerFunc {
 // DELETE /api/docs/{id}/comments/{tid}/{cid} — the author, or the document
 // owner as moderator. Removing the last comment removes the thread with it,
 // since an anchor with nothing attached is invisible to every reader anyway.
-func handleDeleteComment(db *sql.DB) http.HandlerFunc {
+func handleDeleteComment(db *sql.DB, h *hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		role, ok := requireRole(db, w, r, "commenter")
 		if !ok {
@@ -324,13 +328,14 @@ func handleDeleteComment(db *sql.DB) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
+		h.notifyComments(r.PathValue("id"))
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }
 
 // DELETE /api/docs/{id}/comments/{tid} — whoever opened the thread, or the
 // document owner. Comments cascade.
-func handleDeleteThread(db *sql.DB) http.HandlerFunc {
+func handleDeleteThread(db *sql.DB, h *hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		role, ok := requireRole(db, w, r, "commenter")
 		if !ok {
@@ -354,6 +359,7 @@ func handleDeleteThread(db *sql.DB) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
+		h.notifyComments(r.PathValue("id"))
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }

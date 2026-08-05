@@ -22,6 +22,7 @@ import (
 //	client -> server  [msgAwareness] one raw y-protocols awareness update
 //	server -> client  [msgDoc]       a batch: repeated [uvarint len][bytes]
 //	server -> client  [msgAwareness] one awareness update, relayed as-is
+//	server -> client  [msgComments]  no payload: "refetch the comments"
 //	server -> client  text           JSON control; "synced" carries replay
 //	                                 stats the client uses to decide whether
 //	                                 to snapshot or verify (compaction.js)
@@ -29,9 +30,22 @@ import (
 // A stored `updates` row is a msgDoc payload without the type byte, so
 // replay is prepend-a-byte-and-copy. Awareness is ephemeral: relayed and
 // remembered per-connection for join replay, never persisted.
+//
+// msgComments is the first message that is **server -> client only**, and the
+// first that originates here rather than being relayed from a peer: comments
+// are written over HTTP, and this only says that they changed. It carries no
+// payload on purpose — the GET handler is the single place that assembles what
+// the comment state *is*, and a delta on the wire would be a second assembly
+// path plus a client-side merge to keep in step with it. Clients therefore
+// refetch, which is affordable because comments change at human speed.
+//
+// Nothing may accept msgComments *from* a client. The reader's switch handles
+// only the two client types and drops the rest, which is what stops a peer
+// forging comment activity at everyone else; do not add a case for it.
 const (
 	msgDoc       = 0
 	msgAwareness = 1
+	msgComments  = 2
 )
 
 const (
@@ -163,6 +177,31 @@ func (h *hub) evictUser(docID string, userID int64) {
 		}
 	}
 	rm.mu.Unlock()
+}
+
+// notifyComments tells everyone watching a document that its comments changed.
+// Callers are the HTTP handlers in comments.go, and they call it *after* the
+// write commits — a client that refetches on the nudge must not race the
+// transaction that caused it.
+//
+// Sent to every client including whoever made the change: an HTTP request and
+// a WebSocket connection are separate things, so the room cannot tell which
+// socket belongs to the caller, and a redundant refetch is cheaper than the
+// bookkeeping to find out. No room means nobody is watching, which is not a
+// case to create one for.
+func (h *hub) notifyComments(docID string) {
+	h.mu.Lock()
+	rm := h.rooms[docID]
+	h.mu.Unlock()
+	if rm == nil {
+		return
+	}
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	if rm.closed {
+		return
+	}
+	rm.broadcastLocked(nil, typed(msgComments, nil))
 }
 
 // shutdown flushes every room's buffer; called once, after the HTTP server

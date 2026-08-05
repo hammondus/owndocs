@@ -40,12 +40,12 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen, dev bool) http.Handl
 	mux.HandleFunc("DELETE /api/docs/{id}/versions/{vid}", requireAuth(db, handleDeleteVersion(db)))
 
 	mux.HandleFunc("GET /api/docs/{id}/comments", requireAuth(db, handleListComments(db)))
-	mux.HandleFunc("POST /api/docs/{id}/comments", requireAuth(db, handleCreateThread(db)))
-	mux.HandleFunc("POST /api/docs/{id}/comments/{tid}", requireAuth(db, handleReply(db)))
-	mux.HandleFunc("PATCH /api/docs/{id}/comments/{tid}", requireAuth(db, handleResolveThread(db)))
-	mux.HandleFunc("DELETE /api/docs/{id}/comments/{tid}", requireAuth(db, handleDeleteThread(db)))
-	mux.HandleFunc("PATCH /api/docs/{id}/comments/{tid}/{cid}", requireAuth(db, handleEditComment(db)))
-	mux.HandleFunc("DELETE /api/docs/{id}/comments/{tid}/{cid}", requireAuth(db, handleDeleteComment(db)))
+	mux.HandleFunc("POST /api/docs/{id}/comments", requireAuth(db, handleCreateThread(db, h)))
+	mux.HandleFunc("POST /api/docs/{id}/comments/{tid}", requireAuth(db, handleReply(db, h)))
+	mux.HandleFunc("PATCH /api/docs/{id}/comments/{tid}", requireAuth(db, handleResolveThread(db, h)))
+	mux.HandleFunc("DELETE /api/docs/{id}/comments/{tid}", requireAuth(db, handleDeleteThread(db, h)))
+	mux.HandleFunc("PATCH /api/docs/{id}/comments/{tid}/{cid}", requireAuth(db, handleEditComment(db, h)))
+	mux.HandleFunc("DELETE /api/docs/{id}/comments/{tid}/{cid}", requireAuth(db, handleDeleteComment(db, h)))
 
 	mux.HandleFunc("POST /api/docs/{id}/snapshot", requireAuth(db, handleSnapshotUpload(db)))
 	mux.HandleFunc("GET /api/docs/{id}/verify-bundle", requireAuth(db, handleVerifyBundle(db)))

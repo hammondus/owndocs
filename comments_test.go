@@ -9,7 +9,25 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
+
+// awaitCommentNudge reads until the server says comments changed.
+func awaitCommentNudge(t *testing.T, conn *websocket.Conn, who string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		typ, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("%s never heard about the comment: %v", who, err)
+		}
+		if typ == websocket.MessageBinary && len(data) > 0 && data[0] == msgComments {
+			return
+		}
+	}
+}
 
 func sendJSON(t *testing.T, c *http.Client, method, url string, body any) *http.Response {
 	t.Helper()
@@ -235,5 +253,68 @@ func TestCommenterLinkNeverDemotes(t *testing.T) {
 	}
 	if d.Role != "editor" {
 		t.Fatalf("editor demoted to %q by a commenter link", d.Role)
+	}
+}
+
+// A comment written over HTTP reaches everyone watching the document, the
+// author's own socket included — the room cannot tell which connection made
+// the request, and a redundant refetch is cheaper than finding out.
+func TestCommentChangeNotifiesWatchers(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	bob := apiClient(t, srv, "bob@example.com")
+	docID := createDoc(t, srv, alice)
+	share(t, srv, alice, docID, "bob@example.com", "commenter")
+
+	aConn, bConn := dialWS(t, srv, alice, docID), dialWS(t, srv, bob, docID)
+	readUntilSynced(t, aConn)
+	readUntilSynced(t, bConn)
+
+	tid := openThread(t, srv, alice, docID, "first")
+	awaitCommentNudge(t, aConn, "alice")
+	awaitCommentNudge(t, bConn, "bob")
+
+	// Every mutation nudges, not just thread creation.
+	res := sendJSON(t, alice, http.MethodPatch,
+		srv.URL+"/api/docs/"+docID+"/comments/"+strconv.FormatInt(tid, 10),
+		map[string]bool{"resolved": true})
+	res.Body.Close()
+	awaitCommentNudge(t, bConn, "bob (resolve)")
+}
+
+// msgComments is server->client only. A peer sending one must not have it
+// relayed, or anyone with write access could fabricate comment activity.
+func TestForgedCommentNudgeIsNotRelayed(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	bob := apiClient(t, srv, "bob@example.com")
+	docID := createDoc(t, srv, alice)
+	share(t, srv, alice, docID, "bob@example.com", "editor")
+
+	aConn, bConn := dialWS(t, srv, alice, docID), dialWS(t, srv, bob, docID)
+	readUntilSynced(t, aConn)
+	readUntilSynced(t, bConn)
+
+	// Forge, then send a legitimate update as a barrier: if the forgery were
+	// relayed at all it would arrive at alice ahead of the update.
+	sendTyped(t, bConn, msgComments, []byte{9, 9})
+	sendTyped(t, bConn, msgDoc, []byte{1, 2})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		typ, data, err := aConn.Read(ctx)
+		if err != nil {
+			t.Fatalf("barrier update never arrived: %v", err)
+		}
+		if typ != websocket.MessageBinary {
+			continue
+		}
+		if data[0] == msgComments {
+			t.Fatal("a client's forged comment notification was relayed to peers")
+		}
+		if data[0] == msgDoc {
+			return // barrier reached, nothing forged got through
+		}
 	}
 }

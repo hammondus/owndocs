@@ -1121,6 +1121,33 @@ Implementation notes (schema v5 + the REST layer):
   `db_test.go` migrates a *populated* v4 database, because every other test
   starts empty and would pass even if the copy dropped every row.
 
+### Live fanout: `msgComments`, a nudge rather than a delta
+
+Comments are written over HTTP, so the socket's job is only to say *that* they
+changed. Type byte 2 carries **no payload**: the GET handler is the single
+place that assembles what the comment state is, and putting a delta on the
+wire would mean a second assembly path plus a client-side merge to keep in
+step with it. Clients refetch, which is affordable because comments change at
+human speed — unlike keystrokes, which is why `msgDoc` cannot work this way.
+
+Two properties that make it unlike the other two message types:
+
+- **Server → client only, and server-*originated*.** Every other message is
+  relayed from a peer. Nothing may accept `msgComments` *from* a client: the
+  reader's switch handles the two client types and drops the rest, which is
+  what stops a peer fabricating comment activity at everyone else. There is a
+  test for the forgery specifically, using a following legitimate update as a
+  barrier — if the forged message were relayed it would arrive first.
+- **It fires after the write commits**, not before. A client refetching on the
+  nudge must not race the transaction that caused it.
+
+Sent to everyone including whoever made the change: an HTTP request and a
+WebSocket connection are separate things, so the room cannot tell which socket
+belongs to the caller, and one redundant refetch is cheaper than the
+bookkeeping to find out. No protocol version bump — the client demultiplexes
+with an `if/else if` chain and ignores unknown types, so a tab on the previous
+v2 bundle sees nothing rather than breaking.
+
 ### Notifications: in-app always, email only if configured
 
 The filter is **"did this happen while you were not looking?"** Anything you

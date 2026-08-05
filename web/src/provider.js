@@ -1,7 +1,9 @@
 // Sync provider: connects a Y.Doc + Awareness to the Go relay.
 // Wire protocol v2 (matches ws.go): every binary message starts with a type
-// byte — 0 doc, 1 awareness. Client->server doc messages carry one raw
-// update; server->client doc messages are length-prefixed batches.
+// byte — 0 doc, 1 awareness, 2 comments. Client->server doc messages carry one
+// raw update; server->client doc messages are length-prefixed batches.
+// Type 2 is server->client only and carries no payload: comments are written
+// over HTTP, and it only means "refetch them".
 import * as Y from 'yjs'
 import {
   Awareness,
@@ -14,6 +16,7 @@ import { iterFrames } from './frames.js'
 
 const MSG_DOC = 0
 const MSG_AWARENESS = 1
+const MSG_COMMENTS = 2
 
 // Client-side guard just under the server's 16 MiB per-message read limit.
 // Sending anything bigger gets the connection closed (1009) — and must
@@ -21,13 +24,16 @@ const MSG_AWARENESS = 1
 const MAX_WS_UPDATE = 15 * 1024 * 1024
 
 export class Provider {
-  constructor(doc, docId, { onStatus = () => {}, onSynced = () => {}, wsUrl } = {}) {
+  constructor(doc, docId, { onStatus = () => {}, onSynced = () => {}, onComments = () => {}, wsUrl } = {}) {
     this.doc = doc
     this.docId = docId
     this.wsUrl = wsUrl // override for non-browser use (tests); default from location
     this.awareness = new Awareness(doc)
     this.onStatus = onStatus
     this.onSynced = onSynced
+    // Fired when the server says a comment changed. Nobody drives a UI from
+    // it yet; it completes the transport so the comment views can just listen.
+    this.onComments = onComments
     this.stopped = false
     this.backoff = 500
     this.resyncNeeded = false
@@ -133,6 +139,8 @@ export class Provider {
         } catch (e) {
           console.warn('docs: undecodable awareness update — skipped', e)
         }
+      } else if (u8[0] === MSG_COMMENTS) {
+        this.onComments()
       }
     }
     ws.onopen = () => {

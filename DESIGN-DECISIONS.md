@@ -1232,6 +1232,49 @@ worth a second look if an instance runs `-signup=open`.
 
 ---
 
+### Browser tests: `puppeteer-core`, and the assertion that matters
+
+`make test-ui` drives the real UI in a real Chrome. It exists because three
+incidents below share one signature: **a thrown error inside a Svelte `{#if}`
+presents as a dead control, not a crash.** The page keeps working, nothing
+looks broken, and the only evidence is a console nobody is reading. No
+headless model test can produce that, because none of them mount a component.
+
+So the highest-value assertion here is not any interaction — it is *the
+console stayed clean*. Every step runs under that check, and an uncaught
+exception fails the step that caused it.
+
+- **`puppeteer-core`, not `puppeteer` or `playwright`.** The other two
+  download their own ~150 MB browser; this drives the Chrome already on the
+  machine (`CHROME_PATH` overrides the lookup). It is a devDependency, never
+  in the binary, never cross-compiled — the linux/arm64 target has no browser
+  and should not acquire one. 7.8 MB installed.
+- **Separate target from `test`**, for the reason `e2e.mjs` is separate: it
+  needs the built binary and a browser, which a plain unit run should not
+  depend on.
+- **The harness boots and kills its own server** on port 8599 with a temp db
+  and a throwaway Chrome profile, so it never touches the dev instance on 8484
+  or the developer's own browser session.
+- **Controls are found by visible label**, not by selector. Svelte's scoped
+  class hashes change on every recompile, so selector-based tests would rot
+  by construction.
+- **A failing step reports the console and the visible text**, not just
+  "waiting failed" — the timeout is the symptom, the console holds the cause.
+  Two of the first three failures it produced were diagnosable only that way.
+
+It earned itself on the first run, catching a live regression: `EditorView`
+called `canEdit()` without importing it, so **the markdown editor threw on
+mount and rendered nothing** — shipped, committed, and invisible to `go test`,
+`sheet_test.mjs` and a `vite build` alike. Verified by reintroducing the bug
+and watching the suite fail.
+
+Also caught, in the feature it was written for: an anchor names row and column
+ids, and a new sheet materialises *zero* rows however many the grid draws — so
+commenting on an untouched cell had to materialise it first. Editors now do
+that on submit exactly as typing would; commenters cannot, since it is a
+document write, and the composer says so instead of sitting inexplicably
+disabled.
+
 ## Incidents
 
 - **2026-08-05, the comments panel threw before it could render.** User
@@ -1270,7 +1313,8 @@ worth a second look if an instance runs `-signup=open`.
   the "it works when I try it" case is often the one that ran the
   initialisation. This is the third browser-only bug in this file that the
   headless suite could not see (see the two below), which is what promoted a
-  browser-level harness from a nice-to-have to a roadmap item.
+  browser-level harness from a nice-to-have into `make test-ui` — see Browser
+  tests above, which caught a fourth on its first run.
 
 - **2026-08-05, two chart UX bugs, one root cause.** Both user-reported,
   both from the same mistake: **charts are real DOM inside the grid, so

@@ -31,6 +31,16 @@ test: runner-js
 	# by hand. Neither needs a server.
 	cd web && node scripts/sheet_test.mjs && node scripts/table_test.mjs
 
+# Browser-level checks: the only tests that mount a component, and the only
+# ones that can see a thrown error inside an {#if} presenting as a dead
+# control (three incidents and counting). Separate from `test` because it
+# needs the built binary and a real Chrome — CHROME_PATH overrides the
+# lookup. Kept out of `test` for the same reason e2e.mjs is: extra moving
+# parts that a plain unit run should not depend on.
+.PHONY: test-ui
+test-ui: build
+	cd web && node scripts/ui_test.mjs
+
 # Local dev run: quick-login users + vite dev server origin allowed.
 # Production runs via docker compose, whose entrypoint has neither flag.
 run: build

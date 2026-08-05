@@ -60,12 +60,6 @@ diff-and-patch before step 1 ships.
 - Runner scheduling: `cmd/runner` is invoked once per document per script and
   leaves scheduling to cron. Give it a schedule of its own, and edit-watching.
 
-## Testing
-
-- A browser-level harness. Two user-reported chart bugs were unreachable by the
-  headless suite, which never mounts a component — see *Incidents, 2026-08-05*.
-  Until this exists, interaction logic must be extracted into pure functions.
-
 ---
 
 ## Deliberately not scheduled

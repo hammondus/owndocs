@@ -8,6 +8,7 @@
   import { Provider } from '../provider.js'
   import { mountEditor, toolbarCommands } from '../editor.js'
   import { scheduleCompaction } from '../compaction.js'
+  import { canEdit } from '../roles.js'
 
   let { me, doc, onBack, onShare, onHistory } = $props()
 

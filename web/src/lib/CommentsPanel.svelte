@@ -22,7 +22,10 @@
     me,
     canComment,
     isOwner,
-    newAnchor, // anchor object for "comment here", or null if nothing selected
+    makeAnchor, // () => anchor for "comment here"; called at submit, not before,
+    // because for a sheet it may have to materialise the cell first
+    canAnchor, // whether this spot can take a new thread at all
+    anchorNote, // why not, when it cannot
     newLabel, // human name of that place, e.g. "B4"
     label, // (thread) => string, where this thread points
     onRefresh,
@@ -60,9 +63,14 @@
 
   function compose() {
     const body = draft.trim()
-    if (!body || !newAnchor) return
+    if (!body) return
+    const anchor = makeAnchor()
+    if (!anchor) {
+      error = 'could not anchor a comment there'
+      return
+    }
     run(async () => {
-      await openThread(docId, newAnchor, body)
+      await openThread(docId, anchor, body)
       draft = ''
     })
   }
@@ -115,13 +123,16 @@
       <textarea
         bind:value={draft}
         rows="2"
-        placeholder={newAnchor ? `Comment on ${newLabel}…` : 'Select a cell to comment on it'}
-        disabled={!newAnchor}
+        placeholder={canAnchor ? `Comment on ${newLabel}…` : anchorNote}
+        disabled={!canAnchor}
       ></textarea>
-      <button onclick={compose} disabled={!newAnchor || !draft.trim() || busy}>
+      <button onclick={compose} disabled={!canAnchor || !draft.trim() || busy}>
         comment on {newLabel || '—'}
       </button>
     </div>
+    {#if anchorNote}
+      <p class="hint">{anchorNote}</p>
+    {/if}
   {/if}
 
   {#each [...open, ...(showResolved ? closed : [])] as t (t.id)}

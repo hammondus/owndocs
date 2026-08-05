@@ -15,7 +15,8 @@ list or the editor's share link. `-signup=closed` disables new accounts.
 
 ## Develop
 
-    make test         # go vet + go test
+    make test         # go vet + go test + the headless JS suites
+    make test-ui      # drives the real UI in a real Chrome (needs Chrome)
     make build        # frontend build + local binary
 
 Frontend hot-reload loop: run the Go server with

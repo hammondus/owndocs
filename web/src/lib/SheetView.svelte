@@ -188,16 +188,39 @@
     return marks
   })
 
-  // The anchor for "comment here" — the active cell, with its displayed text
-  // captured as the quote. Null when the model has no id for that position,
-  // which happens on a row the sheet has not materialised yet.
-  let newAnchor = $derived.by(() => {
+  // An anchor names row and column *ids*, and a cell has no ids until it is
+  // materialised — a new sheet has zero rows, however many the grid draws. So
+  // commenting somewhere empty has to create the cell first, which is a
+  // document write:
+  //
+  //   editor/owner — always allowed; materialise on submit, exactly as typing
+  //                  into the cell would
+  //   commenter    — only where ids already exist, because they may not write
+  //                  to the document at all
+  //
+  // That asymmetry is inherent to id-based anchoring, not an oversight, so the
+  // composer says why rather than sitting inexplicably disabled.
+  let canAnchor = $derived.by(() => {
     void revision
+    if (!model) return false
+    if (!readOnly) return true
+    const { row, col } = model.idsAt(sel.r, sel.c)
+    return !!(row && col)
+  })
+
+  let anchorNote = $derived(
+    canAnchor ? '' : 'That cell is still empty, and only an editor can start one there.',
+  )
+
+  // Built at submit time, not derived: it has a side effect when the cell does
+  // not exist yet.
+  function makeAnchor() {
     if (!model) return null
+    if (!readOnly) model.ensureSize(sel.r, sel.c)
     const { row, col } = model.idsAt(sel.r, sel.c)
     if (!row || !col) return null
     return cellAnchor(activeId, row, col, model.display(sel.r, sel.c).text.slice(0, 120))
-  })
+  }
 
   let newLabel = $derived(colName(sel.c) + (sel.r + 1))
 
@@ -1216,7 +1239,9 @@
     {me}
     canComment={mayComment}
     isOwner={doc.role === 'owner'}
-    {newAnchor}
+    {makeAnchor}
+    {canAnchor}
+    {anchorNote}
     {newLabel}
     label={threadLabel}
     onRefresh={loadComments}

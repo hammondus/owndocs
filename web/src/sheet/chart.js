@@ -16,6 +16,25 @@ export const SERIES_COLORS = [
   '#7b1fa2', '#00838f', '#f9a825', '#5d4037',
 ]
 
+export const MIN_CHART_W = 160
+export const MIN_CHART_H = 120
+// Below this the pointer was clicking, not dragging. Without it, every
+// click on a chart nudges it by whatever the hand wobbled.
+export const DRAG_THRESHOLD = 3
+
+// Where a chart lands for a drag of (dx, dy) from `orig`. Returns null
+// while the gesture is still just a click. `started` is true once a drag
+// has been recognised, so it can't drop back below the threshold mid-drag.
+export function chartDragPatch(mode, orig, dx, dy, started) {
+  if (!started && Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return null
+  if (mode === 'move') {
+    // Clamped at the top-left: a chart dragged off the sheet would be
+    // unreachable, since the grid never scrolls to negative coordinates.
+    return { x: Math.max(0, orig.x + dx), y: Math.max(0, orig.y + dy) }
+  }
+  return { w: Math.max(MIN_CHART_W, orig.w + dx), h: Math.max(MIN_CHART_H, orig.h + dy) }
+}
+
 // Round axis bounds and a tick step from the 1/2/5 family. Raw min/max
 // give ticks like 3.7143 that nobody can read off a chart.
 export function niceScale(min, max, targetTicks = 5) {

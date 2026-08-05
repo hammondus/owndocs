@@ -15,7 +15,7 @@
   import { colName } from '../sheet/engine.js'
   import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
   import { NUMBER_FORMATS, formatNumber } from '../sheet/format.js'
-  import { CHART_TYPES, extractChartData, drawChart } from '../sheet/chart.js'
+  import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
   import { scheduleCompaction } from '../compaction.js'
 
   let { me, doc, onBack, onShare } = $props()
@@ -477,9 +477,9 @@
   }
 
   function onChartMouseDown(e, chart, mode) {
-    if (readOnly) return
     e.stopPropagation() // never let this reach the grid's selection handling
     selectedChart = chart.id
+    if (readOnly) return
     chartDrag = {
       id: chart.id, mode,
       startX: e.clientX, startY: e.clientY,
@@ -695,12 +695,12 @@
 
   function onMouseMove(e) {
     if (chartDrag) {
-      const dx = e.clientX - chartDrag.startX
-      const dy = e.clientY - chartDrag.startY
-      const o = chartDrag.orig
-      const patch = chartDrag.mode === 'move'
-        ? { x: Math.max(0, o.x + dx), y: Math.max(0, o.y + dy) }
-        : { w: Math.max(160, o.w + dx), h: Math.max(120, o.h + dy) }
+      const patch = chartDragPatch(
+        chartDrag.mode, chartDrag.orig,
+        e.clientX - chartDrag.startX, e.clientY - chartDrag.startY,
+        chartDrag.patch != null,
+      )
+      if (!patch) return // still a click, not yet a drag
       // Live-update the local copy so the drag looks immediate; the
       // document write happens once on mouseup, so a drag is one undo step
       // and one update on the wire rather than one per mouse event.
@@ -1019,26 +1019,28 @@
   <!-- Charts live inside the scroll container, so they scroll with the
        sheet for free. Positions are stored in grid pixels. -->
   {#each charts as chart (chart.id)}
-    <!-- The body is a mouse affordance only: it selects the chart and
-         stops the click reaching the grid underneath. Everything the chart
-         can do is on its toolbar strip, which is keyboard reachable, so
-         there is no keyboard handler to add here. -->
+    <!-- The whole body is the drag surface, as in Excel and Sheets. It was
+         originally only the top strip, but once a chart is selected the
+         controls fill that strip and each one swallows mousedown to stay
+         clickable — leaving nothing to grab. A movement threshold keeps a
+         plain click from nudging the chart.
+         Keyboard users reach every function from the strip's controls. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="chart"
       class:selected={selectedChart === chart.id}
       style="left:{chart.x}px; top:{chart.y}px; width:{chart.w}px; height:{chart.h}px"
       role="figure"
-      onmousedown={(e) => { e.stopPropagation(); selectedChart = chart.id }}
+      onmousedown={(e) => onChartMouseDown(e, chart, 'move')}
     >
-      <!-- The strip is the drag handle; the canvas below is not, so a
-           click on the chart body doesn't move it by accident. -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
         class="chart-bar"
         role="toolbar"
         tabindex="-1"
         onmousedown={(e) => onChartMouseDown(e, chart, 'move')}
       >
+        <span class="chart-grip" title="Drag to move">⠿</span>
         {#if selectedChart === chart.id && !readOnly}
           <select
             value={chart.type}
@@ -1253,6 +1255,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    cursor: move;
   }
   .chart.selected {
     border-color: #1565c0;
@@ -1272,6 +1275,12 @@
   .chart-bar select,
   .chart-bar input {
     font-size: 0.75rem;
+    cursor: default;
+  }
+  .chart-grip {
+    opacity: 0.4;
+    letter-spacing: -2px;
+    padding-right: 2px;
   }
   .chart-title {
     flex: 1;

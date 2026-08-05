@@ -710,7 +710,12 @@ that promise, and they needed no new machinery:
 - Axis bounds use a 1/2/5 "nice scale"; ticks are rebuilt from the step
   rather than accumulated, so the top tick lands exactly on the axis.
 - Drag and resize write **once on mouse-up**, so a drag is one undo step
-  and one update on the wire rather than one per mouse event.
+  and one update on the wire rather than one per mouse event. The **body**
+  is the drag surface, not the title strip: ~~the strip is the drag handle
+  so a click on the chart body cannot move it by accident~~ was wrong in
+  practice, because a selected chart's controls fill that strip and each
+  one must swallow mousedown to stay clickable, leaving nothing to grab. A
+  3px movement threshold does the job the strip was meant to do.
 
 Types are column, line and pie. Scatter, area and stacked variants are
 deferred, as is picking a range by dragging rather than selecting first.

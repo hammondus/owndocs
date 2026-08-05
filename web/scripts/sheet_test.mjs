@@ -7,7 +7,7 @@ import { Workbook, SheetModel, FIRST_SHEET } from '../src/sheet/model.js'
 import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../src/sheet/clipboard.js'
 import { parseTypedNumber, formatNumber, mergeFormat, resolveFormat } from '../src/sheet/format.js'
 import { serialFromParts, partsFromSerial, parseDate, formatDate, setDayFirst } from '../src/sheet/dates.js'
-import { niceScale, extractChartData, drawChart } from '../src/sheet/chart.js'
+import { niceScale, extractChartData, drawChart, chartDragPatch } from '../src/sheet/chart.js'
 
 let failures = 0
 
@@ -863,6 +863,22 @@ const SER_2026_08_05 = serialFromParts(2026, 8, 5)
   // one lands exactly on the axis top instead of drifting past it.
   eq(niceScale(0, 1).ticks.length, 6, 'a unit range gets six ticks')
   eq(niceScale(0, 1).ticks[5], 1, 'and the last tick is exactly the maximum')
+}
+
+{
+  // Chart drag (2026-08-05: the user could not move a chart at all — the
+  // selected chart's controls filled the only draggable strip, and each
+  // one swallows mousedown to stay clickable. The body is now the drag
+  // surface, with a threshold so a plain click doesn't nudge it.)
+  const orig = { x: 100, y: 50, w: 400, h: 250 }
+  eq(chartDragPatch('move', orig, 2, -1, false), null, 'a small wobble is a click, not a drag')
+  eq(chartDragPatch('move', orig, 20, 10, false), { x: 120, y: 60 }, 'a real drag moves the chart')
+  // Once dragging, small deltas must keep applying or the chart would
+  // stick whenever the pointer came back near where it started.
+  eq(chartDragPatch('move', orig, 1, 1, true), { x: 101, y: 51 }, 'a drag in progress keeps tracking')
+  eq(chartDragPatch('move', orig, -500, -500, true), { x: 0, y: 0 }, 'a chart cannot be dragged off the top-left')
+  eq(chartDragPatch('resize', orig, 50, 30, true), { w: 450, h: 280 }, 'resize grows the chart')
+  eq(chartDragPatch('resize', orig, -900, -900, true), { w: 160, h: 120 }, 'resize stops at a usable minimum')
 }
 
 function chartModel() {

@@ -1159,9 +1159,9 @@ pair of encoded RelativePositions) can share the column.
 
 - **The panel knows nothing about sheets.** It takes threads, a `label(thread)`
   function and callbacks, so the docs UI can reuse it whole.
-- **Markers are drawn per visible cell, not per thread.** The canvas repaints
-  constantly, so the draw loop walks the scroll window and asks a Set built
-  once per change — the other way round would be a list scan per frame.
+- **Markers are resolved once per change, not per frame.** `commentedCells`
+  holds *positions*, so the draw loop is a Set lookup per visible cell; going
+  the other way meant two id lookups per cell on every repaint.
 - **A thread whose row or column was deleted says "deleted"** rather than
   resolving to whatever cell now sits at those coordinates. Ids do not come
   back, and a comment pointing confidently at the wrong cell is worse than one
@@ -1233,6 +1233,44 @@ worth a second look if an instance runs `-signup=open`.
 ---
 
 ## Incidents
+
+- **2026-08-05, the comments panel threw before it could render.** User
+  report: "clicking comments does nothing". `threadLabel` raised
+  `Cannot read properties of undefined (reading 'get')`, so the
+  `{#if showComments}` block failed to render and the button looked inert —
+  a thrown error inside a conditional block presents as a dead control, not
+  as a crash.
+
+  Root cause: **`rowIds`/`rowPos` are a lazily built cache that does not exist
+  until `_index()` runs.** Every caller inside `model.js` runs it first; the
+  panel read the maps directly and did not. `sheet?.rowPos.get(...)` guarded
+  the sheet being nullish but not the map being absent, which is the failure
+  optional chaining invites — it protects the hop you wrote a `?.` on and
+  none of the ones after it.
+
+  The masking effect is the interesting part. `workbook.sheet(id)` returns a
+  **cached** model, so the active tab is always indexed — *drawing it indexes
+  it*. Every other tab hands back a fresh, never-indexed one. The bug was
+  therefore invisible on the sheet under test and certain to fire the first
+  time anyone commented on a second sheet and reloaded. What made it fire
+  immediately was a thread injected by hand during testing carrying
+  `sheet:"__first"` where `FIRST_SHEET` is `"1"`, and `workbook.sheet()`
+  invents a model for an id that does not exist.
+
+  Fixes, in order of how much they matter: `SheetModel` gained public
+  `idsAt(r, c)` and `posOf(rowId, colId)` that index first and return nulls
+  for ids whose row or column is gone — **the component no longer knows the
+  index exists**; `threadLabel` uses `sheetById` (null for a missing sheet)
+  rather than `sheet` (invents one); and hand-injected test rows are not
+  test coverage — the id in that row was guessed rather than read from
+  `FIRST_SHEET`, and it seeded a fixture no real client would ever write.
+
+  The lesson worth carrying: **a lazily populated cache reached from outside
+  its module is a crash waiting for the one caller that arrives first**, and
+  the "it works when I try it" case is often the one that ran the
+  initialisation. This is the third browser-only bug in this file that the
+  headless suite could not see (see the two below), which is what promoted a
+  browser-level harness from a nice-to-have to a roadmap item.
 
 - **2026-08-05, two chart UX bugs, one root cause.** Both user-reported,
   both from the same mistake: **charts are real DOM inside the grid, so

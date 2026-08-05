@@ -406,7 +406,7 @@
     // tick() waits until Svelte has rendered the overlay input; only then
     // can it be focused.
     await tick()
-    cellInputEl?.focus()
+    cellInputEl?.focus({ preventScroll: true })
     if (initial === undefined) cellInputEl?.select()
     scheduleDraw()
   }
@@ -416,13 +416,13 @@
     model.setCell(edit.r, edit.c, edit.value)
     edit = null
     if (dr !== 0 || dc !== 0) setSelection(sel.r + dr, sel.c + dc, false)
-    containerEl.focus()
+    containerEl.focus({ preventScroll: true })
     scheduleDraw()
   }
 
   function cancelEdit() {
     edit = null
-    containerEl.focus()
+    containerEl.focus({ preventScroll: true })
     scheduleDraw()
   }
 
@@ -733,8 +733,13 @@
     return { x: e.clientX - rect.left, y: e.clientY - rect.top }
   }
 
+  // preventScroll on every focus() here: focusing an element the browser
+  // thinks is out of view makes it scroll the PAGE. With the scripts panel
+  // open the page is taller than the viewport, so clicking a cell yanked
+  // the script box to the top. The user clicked what they could already
+  // see, so there is nothing to scroll to.
   function onMouseDown(e) {
-    containerEl.focus()
+    containerEl.focus({ preventScroll: true })
     const { x, y } = gridPos(e)
     const sx = containerEl.scrollLeft, sy = containerEl.scrollTop
 
@@ -1004,7 +1009,7 @@
   // A Svelte "action": a function run when the element is created. This is
   // the idiomatic way to touch a DOM node right after it mounts.
   function focusOnMount(node) {
-    node.focus()
+    node.focus({ preventScroll: true })
     node.select()
   }
 
@@ -1341,7 +1346,11 @@
   .grid {
     position: relative;
     overflow: auto;
-    height: calc(100vh - 200px);
+    /* Absorbs the leftover height from .page.fill. min-height:0 is the
+       non-obvious part: without it a scrollable flex child refuses to
+       shrink below its content and pushes the page taller instead. */
+    flex: 1;
+    min-height: 0;
     border: 1px solid #d0d1d3;
     outline: none;
     background: #fff;

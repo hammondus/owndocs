@@ -79,6 +79,13 @@
     await afterAuth()
   }
 
+  // A sheet, and a sheet's history preview, both show grids and want the
+  // window's full width. Only the editor also *fills* the height — the
+  // history view has its own two-column layout and scrolls normally.
+  let wideView = $derived(route.doc?.kind === 'sheet' &&
+    (route.view === 'editor' || route.view === 'history'))
+  let fillView = $derived(route.doc?.kind === 'sheet' && route.view === 'editor')
+
   async function signOut() {
     await api('/api/logout', { method: 'POST' })
     me = null
@@ -86,24 +93,28 @@
   }
 </script>
 
-<h1>docs</h1>
+<!-- Prose views keep a comfortable reading width; a grid gets the whole
+     window, since a spreadsheet's usefulness is columns you can see. -->
+<div class="page" class:wide={wideView} class:fill={fillView}>
+  <h1>docs</h1>
 
-{#if route.view === 'auth'}
-  <AuthView onSignedIn={signedIn} />
-{:else if route.view === 'list'}
-  <DocList {me} onOpen={openDoc} onShare={openShare} onSignOut={signOut} />
-{:else if route.view === 'editor'}
-  <!-- #key destroys and recreates the editor when the doc changes, so a
-       stale CodeMirror/provider from the previous doc can never leak. -->
-  {#key route.doc.id}
-    {#if route.doc.kind === 'sheet'}
-      <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
-    {:else}
-      <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
-    {/if}
-  {/key}
-{:else if route.view === 'share'}
-  <ShareView doc={route.doc} onBack={showList} />
-{:else if route.view === 'history'}
-  <HistoryView doc={route.doc} onBack={() => openDoc(route.doc)} />
-{/if}
+  {#if route.view === 'auth'}
+    <AuthView onSignedIn={signedIn} />
+  {:else if route.view === 'list'}
+    <DocList {me} onOpen={openDoc} onShare={openShare} onSignOut={signOut} />
+  {:else if route.view === 'editor'}
+    <!-- #key destroys and recreates the editor when the doc changes, so a
+         stale CodeMirror/provider from the previous doc can never leak. -->
+    {#key route.doc.id}
+      {#if route.doc.kind === 'sheet'}
+        <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
+      {:else}
+        <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
+      {/if}
+    {/key}
+  {:else if route.view === 'share'}
+    <ShareView doc={route.doc} onBack={showList} />
+  {:else if route.view === 'history'}
+    <HistoryView doc={route.doc} onBack={() => openDoc(route.doc)} />
+  {/if}
+</div>

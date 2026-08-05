@@ -3,7 +3,19 @@
    md-*) can't use Svelte's scoped styles and must be global. */
 
 :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-body { margin: 0 auto; max-width: 52rem; padding: 1rem; }
+body { margin: 0; padding: 1rem; }
+
+/* The reading-width limit belongs to prose, not to the window: a markdown
+   document wants a comfortable line length, a spreadsheet wants the whole
+   screen. So it lives on the page wrapper, and the sheet view opts out. */
+.page { max-width: 52rem; margin: 0 auto; }
+.page.wide { max-width: none; }
+
+/* The sheet editor fills the window instead of guessing at a height. The
+   grid is the flex child that absorbs whatever is left, so opening the
+   scripts panel shrinks the grid rather than making the whole page taller
+   than the viewport — which is what used to let a click scroll the page. */
+.page.fill { display: flex; flex-direction: column; height: calc(100vh - 2rem); }
 h1 { font-size: 1.2rem; }
 fieldset { border: 1px solid #8884; border-radius: 6px; margin-bottom: 1rem; }
 input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; }

@@ -835,6 +835,60 @@ that promise, and they needed no new machinery:
 Types are column, line and pie. Scatter, area and stacked variants are
 deferred, as is picking a range by dragging rather than selecting first.
 
+### Scripting: a sandboxed iframe, and nothing runs by itself
+
+Scripts live **in the document**, so they are shared, versioned, restored
+and git-exported by machinery that already existed. That is also precisely
+what makes them dangerous, and it sets the threat model: the risk is not
+"the user runs their own code", it is **"someone shares a sheet whose
+script runs as you"**.
+
+- **Never `eval`.** That would hand a shared document's script the page's
+  origin — session cookie, API access, everything. The script runs in an
+  iframe created with `sandbox="allow-scripts"` and deliberately *without*
+  `allow-same-origin`, which puts it in a unique opaque origin: no
+  cookies, no storage, no parent DOM, no ability to call our API as the
+  signed-in user. A CSP of `connect-src 'none'` removes the network, so it
+  cannot exfiltrate what it reads either. Everything it can do it must ask
+  for by `postMessage`, and the host decides.
+- `'unsafe-eval'` *is* granted inside the sandbox. Running arbitrary code
+  is the entire feature; the isolation comes from the opaque origin and the
+  absent network, not from restricting eval.
+- Messages are trusted by **window identity, not origin** — a sandboxed
+  frame's origin is the string `"null"`, which anything could claim, but a
+  window reference cannot be forged.
+- **Nothing runs automatically.** No triggers, no on-open, no on-edit. A
+  script runs when a person presses run. This is the single property that
+  makes opening a shared sheet safe, and it is why triggers are not a
+  "later feature" to add casually — adding them re-opens the whole threat
+  model.
+- Residual risk, stated plainly: a script can still make destructive
+  *edits* as whoever ran it. Every edit is one transaction, undoable, and
+  lands in version history — the same protections a careless human gets.
+- **Runaway scripts** are stopped by removing the iframe, which destroys
+  the execution context. Honest caveat: a tight *synchronous* loop can only
+  be interrupted if the browser gave the frame its own process. Chrome
+  normally isolates opaque-origin frames, so in practice the timeout fires;
+  a guaranteed interrupt would need QuickJS in WASM, which is the
+  dependency this design is avoiding.
+
+The split that makes it testable, and that the Go runner will reuse:
+
+- `scriptapi.js` is a **pure function over the workbook** — what each call
+  does is ordinary model work, tested headlessly. A headless Go/Sobek
+  runner implements the same call names against the same model and
+  inherits the same behaviour.
+- `sandbox.js` is only transport. Its runtime is exported as a string, so
+  the tests evaluate the code that actually ships against a fake message
+  channel: the async wrapper, log forwarding, the call/result round trip
+  and error reporting all covered without a browser.
+- The API is **async throughout**, because every call is a round trip.
+  Writes take a *block* of values rather than one cell, which is what keeps
+  a thousand-cell script to one transaction, one update and one undo step.
+- Script values are committed exactly as if typed, so `"$1,200"` becomes
+  currency and `"=SUM(A1:A2)"` becomes a formula. One rule for humans and
+  scripts.
+
 ### v1 scope cuts (deliberate, recorded)
 
 ~~Single sheet per doc (tabs need a container restructure — decide before,

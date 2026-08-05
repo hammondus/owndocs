@@ -8,6 +8,8 @@ import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../src/sheet/clipboard
 import { parseTypedNumber, formatNumber, mergeFormat, resolveFormat } from '../src/sheet/format.js'
 import { serialFromParts, partsFromSerial, parseDate, formatDate, setDayFirst } from '../src/sheet/dates.js'
 import { niceScale, extractChartData, drawChart, chartDragPatch } from '../src/sheet/chart.js'
+import { parseA1, formatA1, handleCall } from '../src/sheet/scriptapi.js'
+import { RUNTIME } from '../src/sheet/sandbox.js'
 
 let failures = 0
 
@@ -1222,6 +1224,200 @@ function chartModel() {
   m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { b: 1, c: '#ff0000' })
   m.setCell(1, 0, '=A1')
   eq(m.formatOf(1, 0), { n: 'cur', cur: '$' }, 'the result inherits the number format alone')
+}
+
+// ---- script API ---------------------------------------------------------------
+
+{
+  eq(parseA1('A1'), { sheet: undefined, r1: 0, c1: 0, r2: 0, c2: 0 }, 'a single cell')
+  eq(parseA1('B3:D10'), { sheet: undefined, r1: 2, c1: 1, r2: 9, c2: 3 }, 'a rectangle')
+  eq(parseA1('D10:B3'), { sheet: undefined, r1: 2, c1: 1, r2: 9, c2: 3 }, 'given backwards, normalised')
+  eq(parseA1('Data!A1:B2').sheet, 'Data', 'a sheet-qualified range')
+  eq(parseA1("'My Data'!A1").sheet, 'My Data', 'a quoted sheet name')
+  eq(parseA1('$B$3'), { sheet: undefined, r1: 2, c1: 1, r2: 2, c2: 1 }, 'dollar signs are tolerated')
+  eq(parseA1('nonsense'), null, 'anything else is rejected')
+  eq(parseA1('A0'), null, 'row zero does not exist')
+  eq(formatA1(2, 1), 'B3', 'formatA1 round-trips')
+}
+
+function scriptWb() {
+  const wb = new Workbook(new Y.Doc())
+  const m = wb.sheet(FIRST_SHEET)
+  m.setCell(0, 0, 'Item'); m.setCell(0, 1, 'Price')
+  m.setCell(1, 0, 'bolt'); m.setCell(1, 1, '$10')
+  m.setCell(2, 0, 'nut'); m.setCell(2, 1, '$5.50')
+  return wb
+}
+const callOk = (wb, method, args) => {
+  const r = handleCall(wb, method, args)
+  if (r.error) throw new Error(`${method}: ${r.error}`)
+  return r.value
+}
+
+{
+  const wb = scriptWb()
+  eq(callOk(wb, 'get', { range: 'A1:B3' }),
+    [['Item', 'Price'], ['bolt', 10], ['nut', 5.5]],
+    'get returns computed values, so a script can calculate with them')
+  eq(callOk(wb, 'getText', { range: 'B2:B3' }), [['$10.00'], ['$5.50']],
+    'getText returns what the user sees')
+  eq(callOk(wb, 'usedRange', {}), { range: 'A1:B3', rows: 3, cols: 2 }, 'usedRange finds the data')
+  eq(callOk(wb, 'sheets', {}).map((s) => s.name), ['Sheet1'], 'sheets lists the tabs')
+}
+
+{
+  const wb = scriptWb()
+  const m = wb.sheet(FIRST_SHEET)
+  // Values are committed exactly as if typed — one rule for humans and
+  // scripts — so punctuation still chooses the format and = still means
+  // formula.
+  eq(callOk(wb, 'set', { range: 'A5', values: [['bolt'], ['nut']] }), 2, 'set reports how many cells it wrote')
+  eq(val(m, 5, 0), 'nut', 'a column of values lands below the anchor')
+  callOk(wb, 'set', { range: 'D1', values: [['$99', '15%', '=1+1']] })
+  eq(m.display(0, 3).text, '$99.00', 'a typed currency string becomes currency')
+  eq(m.display(0, 4).text, '15%', 'and a percentage becomes a percentage')
+  eq(val(m, 0, 5), 2, 'and a formula is a formula')
+
+  callOk(wb, 'set', { range: 'F1', values: 'bare' })
+  eq(val(m, 0, 5) !== null, true, 'a bare value is accepted as one cell')
+
+  callOk(wb, 'setFormat', { range: 'A1:B1', format: { b: 1 } })
+  eq(m.formatOf(0, 0), { b: 1 }, 'setFormat applies to the range')
+  callOk(wb, 'clear', { range: 'A5:A6' })
+  eq([val(m, 4, 0), val(m, 5, 0)], [null, null], 'clear empties cells')
+}
+
+{
+  // A whole script's writes must be one update on the wire, and each call
+  // one undo step — the reason set() takes a block rather than a cell.
+  const ydoc = new Y.Doc()
+  const wb = new Workbook(ydoc)
+  let updates = 0
+  ydoc.on('update', () => updates++)
+  const values = Array.from({ length: 50 }, (_, i) => [i, i * 2])
+  callOk(wb, 'set', { range: 'A1', values })
+  eq(updates, 1, 'a 100-cell script write is a single update')
+  wb.undo.undo()
+  eq(val(wb.sheet(FIRST_SHEET), 0, 0), null, 'and a single undo step')
+}
+
+{
+  const wb = scriptWb()
+  callOk(wb, 'addSheet', { name: 'Report' })
+  eq(wb.list().map((s) => s.name), ['Sheet1', 'Report'], 'a script can add a sheet')
+  callOk(wb, 'set', { range: 'A1', values: [['on the new tab']], sheet: 'Report' })
+  eq(val(wb.sheet(wb.idByName('Report')), 0, 0), 'on the new tab', 'and write to it by name')
+  eq(callOk(wb, 'get', { range: 'Report!A1' }), [['on the new tab']],
+    'a sheet-qualified range works too')
+}
+
+{
+  // Mistakes come back as errors the script can catch, never as an
+  // exception in the host.
+  const wb = scriptWb()
+  eq(handleCall(wb, 'get', { range: 'gibberish' }).error.includes('A1 notation'), true,
+    'a bad range is a readable error')
+  eq(handleCall(wb, 'get', { range: 'A1', sheet: 'Nope' }).error.includes('no sheet'), true,
+    'so is a missing sheet')
+  eq(handleCall(wb, 'nonexistent', {}).error.includes('unknown method'), true,
+    'and an unknown method')
+  eq(handleCall(wb, 'setFormat', { range: 'A1', format: 'bold' }).error.includes('must be an object'), true,
+    'and a badly typed argument')
+  eq(handleCall(wb, 'get', { range: 'A1:ZZ100000' }).error.includes('too large'), true,
+    'a runaway range is refused rather than freezing the tab')
+}
+
+{
+  // Structural operations, so a script can reshape a sheet.
+  const wb = scriptWb()
+  const m = wb.sheet(FIRST_SHEET)
+  callOk(wb, 'insertRows', { at: 0, count: 2 })
+  eq(val(m, 2, 0), 'Item', 'insertRows shifts the data down')
+  callOk(wb, 'deleteRows', { at: 0, count: 2 })
+  eq(val(m, 0, 0), 'Item', 'deleteRows puts it back')
+}
+
+// ---- the sandbox runtime ------------------------------------------------------
+
+// The runtime that ships inside the sandboxed iframe is a string of code,
+// and it only ever touches `parent` and `window`. Supplying fakes for those
+// runs the real protocol here: the async wrapper, log forwarding, the
+// call/result round trip and error reporting, none of which a browser is
+// actually required for.
+async function runInFakeSandbox(code, wb, maxTicks = 2000) {
+  const listeners = []
+  const outbox = []
+  const fakeWindow = {
+    addEventListener: (type, fn) => { if (type === 'message') listeners.push(fn) },
+  }
+  const fakeParent = { postMessage: (msg) => outbox.push(msg) }
+  new Function('parent', 'window', RUNTIME)(fakeParent, fakeWindow)
+
+  const send = (data) => listeners.forEach((l) => l({ data }))
+  const logs = []
+  let done = null
+  let ready = false
+  send({ t: 'run', code })
+  for (let i = 0; i < maxTicks && !done; i++) {
+    while (outbox.length) {
+      const msg = outbox.shift()
+      if (msg.t === 'ready') ready = true
+      else if (msg.t === 'log') logs.push(msg.text)
+      else if (msg.t === 'done') done = msg
+      else if (msg.t === 'call') {
+        const r = handleCall(wb, msg.method, msg.args)
+        send({ t: 'result', id: msg.id, value: r.value, error: r.error })
+      }
+    }
+    await Promise.resolve()
+  }
+  return { logs, done, ready }
+}
+
+{
+  const wb = scriptWb()
+  const r = await runInFakeSandbox(`
+    const used = await docs.usedRange()
+    log('range', used.range)
+    const rows = await docs.get('B2:B3')
+    const total = rows.flat().reduce((a, b) => a + b, 0)
+    await docs.set('B5', [[total]])
+    log('total', total)
+  `, wb)
+  eq(r.ready, true, 'the runtime announces itself before running anything')
+  eq(r.done && !r.done.error, true, 'a working script finishes cleanly')
+  eq(r.logs, ['range A1:B3', 'total 15.5'], 'log output reaches the host in order')
+  eq(val(wb.sheet(FIRST_SHEET), 4, 1), 15.5, 'and the script actually wrote to the sheet')
+}
+
+{
+  // Top-level await is the whole reason the body is wrapped in an async
+  // function; without it every script would need an IIFE.
+  const wb = scriptWb()
+  const r = await runInFakeSandbox(`log(String(await docs.usedRange() !== null))`, wb)
+  eq([r.logs, !!r.done.error], [['true'], false], 'top-level await works')
+}
+
+{
+  const wb = scriptWb()
+  const r = await runInFakeSandbox(`this is not javascript`, wb)
+  eq(r.done.error.startsWith('SyntaxError'), true, 'a syntax error is reported, not thrown at the host')
+}
+
+{
+  const wb = scriptWb()
+  const r = await runInFakeSandbox(`throw new Error('deliberate')`, wb)
+  eq(r.done.error.includes('deliberate'), true, 'a thrown error comes back with its message')
+}
+
+{
+  // An API error must surface as a catchable rejection inside the script.
+  const wb = scriptWb()
+  const r = await runInFakeSandbox(`
+    try { await docs.get('rubbish') } catch (e) { log('caught:', e.message) }
+  `, wb)
+  eq(r.logs[0].startsWith('caught:'), true, 'an API error is catchable inside the script')
+  eq(!r.done.error, true, 'and the script still finishes normally')
 }
 
 // ---- A1 helpers -----------------------------------------------------------

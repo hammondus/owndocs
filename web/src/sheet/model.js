@@ -14,7 +14,8 @@
 //   fmt   / s.<id>.fmt    Y.Map keyed "rowId.colId" (cell), "c.<colId>",
 //                         "r.<rowId>" -> format record (see format.js)
 //   objects / s.<id>.objects  Y.Map keyed object id -> chart spec
-// Reserved for a later phase: scripts.
+// and workbook-level:
+//   scripts:     Y.Map keyed script id -> {id, name, code}
 import * as Y from 'yjs'
 import { parseFormula, mapRefs, collectRefs, serialize, evaluate, isErr, ERR, fmtNum } from './engine.js'
 import { formatNumber, resolveFormat, mergeFormat, parseTypedNumber } from './format.js'
@@ -69,6 +70,10 @@ export class Workbook {
     this.ydoc = ydoc
     this.sheetIds = ydoc.getArray('sheets')
     this.sheetNames = ydoc.getMap('sheetNames')
+    // Scripts live IN the document, so they are shared, versioned and
+    // git-exported by the same machinery as everything else. Workbook
+    // level rather than per sheet: a script routinely spans tabs.
+    this.scripts = ydoc.getMap('scripts')
     this.models = new Map()
     this.listeners = new Set()
 
@@ -84,7 +89,7 @@ export class Workbook {
     // captureTimeout 0 because Yjs otherwise merges everything within 500ms
     // into one step: fine for typing prose, wrong for a spreadsheet, where
     // each cell entry, paste and fill is a discrete act.
-    this.undo = new Y.UndoManager([this.sheetIds, this.sheetNames], {
+    this.undo = new Y.UndoManager([this.sheetIds, this.sheetNames, this.scripts], {
       trackedOrigins: new Set([this]),
       captureTimeout: 0,
     })
@@ -95,6 +100,7 @@ export class Workbook {
     }
     this.sheetIds.observe(changed)
     this.sheetNames.observe(changed)
+    this.scripts.observe(() => this.notify())
   }
 
   onChange(cb) {
@@ -155,6 +161,31 @@ export class Workbook {
   sheetByName(name) {
     const id = this.idByName(name)
     return id ? this.sheet(id) : null
+  }
+
+  // ---- scripts ------------------------------------------------------------
+
+  listScripts() {
+    return [...this.scripts.values()]
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  addScript(name, code = '') {
+    const id = newId()
+    const script = { id, name: name || 'Untitled script', code }
+    this.tx(() => this.scripts.set(id, script))
+    return script
+  }
+
+  updateScript(id, patch) {
+    const cur = this.scripts.get(id)
+    if (!cur) return
+    this.tx(() => this.scripts.set(id, { ...cur, ...patch }))
+  }
+
+  removeScript(id) {
+    this.tx(() => this.scripts.delete(id))
   }
 
   addSheet(name) {

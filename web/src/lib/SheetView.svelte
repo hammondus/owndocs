@@ -17,6 +17,7 @@
   import { NUMBER_FORMATS, formatNumber } from '../sheet/format.js'
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
   import { scheduleCompaction } from '../compaction.js'
+  import ScriptsPanel from './ScriptsPanel.svelte'
 
   let { me, doc, onBack, onShare, onHistory } = $props()
 
@@ -59,6 +60,7 @@
   // here by bind:this and repainted from draw(), alongside the grid.
   let charts = $state([])
   let selectedChart = $state(null)
+  let showScripts = $state(false)
   let chartCanvases = $state({})
   let chartDrag = null // {id, mode, startX, startY, orig} while dragging
 
@@ -66,7 +68,10 @@
   // $state because the overlay input mounts and unmounts with {#if edit}:
   // bind:this writes to it each time, and reads must see the fresh element.
   let cellInputEl = $state(null)
-  let ydoc, provider, workbook, model, unobserve
+  let ydoc, provider, model, unobserve
+  // $state because the template reads it: it is created in onMount, and a
+  // plain let would leave the scripts panel unable to ever render.
+  let workbook = $state(null)
 
   // Non-reactive interaction state (only the canvas cares, via redraws).
   let dragging = false
@@ -1013,7 +1018,12 @@
     <span class="sep"></span>
     <button onclick={insertChart} title="Chart the selected range">📊 chart</button>
     <button onclick={downloadCsv} title="Download this sheet as CSV">↓ csv</button>
+    <button onclick={() => (showScripts = !showScripts)} title="Scripts">⚙ scripts</button>
   </div>
+{/if}
+
+{#if showScripts && workbook}
+  <ScriptsPanel {workbook} {readOnly} onClose={() => (showScripts = false)} />
 {/if}
 
 <div class="formula-bar">

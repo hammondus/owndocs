@@ -10,6 +10,7 @@
   import { mountPreview } from '../editor.js'
   import { Provider } from '../provider.js'
   import { Workbook } from '../sheet/model.js'
+  import { splices } from '../diff.js'
   import SheetPreview from './SheetPreview.svelte'
 
   let { doc, onBack } = $props()
@@ -122,9 +123,18 @@
         new Workbook(ydoc).restoreFrom(new Workbook(previewDoc))
       } else {
         const ytext = ydoc.getText('text')
+        // Patch the differences rather than replacing the text. Deleting every
+        // character orphans every RelativePosition anchored into it — every
+        // comment, including ones on paragraphs this restore does not touch —
+        // and sends the whole document over the wire while yanking every
+        // collaborator's cursor. Applied last-first so earlier offsets stay
+        // valid, in one transaction so it is still one undo step.
+        const ops = splices(ytext.toString(), previewText)
         ydoc.transact(() => {
-          ytext.delete(0, ytext.length)
-          ytext.insert(0, previewText)
+          for (let i = ops.length - 1; i >= 0; i--) {
+            if (ops[i].remove) ytext.delete(ops[i].at, ops[i].remove)
+            if (ops[i].insert) ytext.insert(ops[i].at, ops[i].insert)
+          }
         })
       }
       provider.destroy()

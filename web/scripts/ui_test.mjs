@@ -102,23 +102,54 @@ function watchConsole(page) {
 
 // clickText finds a control by its visible label, the way a person would.
 // Selectors tied to Svelte's scoped class hashes break on every recompile.
+//
+// The click is *dispatched* rather than driven through puppeteer's synthetic
+// mouse. ElementHandle.click() waits for the element to stop moving first, and
+// on a live page it never does — the editor header re-renders as sync status
+// and peer count change, so a click on a link beside them hangs forever rather
+// than timing out. The trade-off is real and worth stating: a dispatched click
+// does not exercise hit-testing, so a control hidden behind an overlay would
+// still register here. That is a class of bug this file cannot see.
 async function clickText(page, tag, text) {
-  const handle = await page.evaluateHandle(
-    (tag, text) =>
-      [...document.querySelectorAll(tag)].find((el) => el.textContent.trim().includes(text)),
+  const clicked = await page.evaluate(
+    (tag, text) => {
+      const el = [...document.querySelectorAll(tag)].find((e) =>
+        e.textContent.trim().includes(text),
+      )
+      if (!el) return false
+      el.click()
+      return true
+    },
     tag,
     text,
   )
-  const el = handle.asElement()
-  if (!el) throw new Error(`no <${tag}> containing ${JSON.stringify(text)}`)
-  await el.click()
-  return el
+  if (!clicked) throw new Error(`no <${tag}> containing ${JSON.stringify(text)}`)
 }
+
+const docIdFromHash = (url) => new URL(url).hash.replace(/^#doc=/, '')
+
+// How many update rows the server has stored for the open document. Used to
+// wait for a flush rather than sleeping through it.
+const loggedRows = (page) =>
+  page.evaluate(async () => {
+    const id = location.hash.replace(/^#doc=/, '')
+    const h = await (await fetch(`/api/docs/${id}/history`)).json()
+    return h.sessions.reduce((a, s) => a + s.rows, 0)
+  })
 
 const textOf = (page, sel) =>
   page.evaluate((s) => document.querySelector(s)?.textContent?.trim() ?? null, sel)
 
 // ---- the run ---------------------------------------------------------------
+
+// A watchdog, because a hung UI test is worse than a failing one: it stalls
+// `make test-ui` indefinitely and reports nothing. Every step has its own
+// timeout, but a hang inside puppeteer itself escapes those.
+const watchdog = setTimeout(() => {
+  console.error('\nFAIL: the suite hung — no step completed within 120s')
+  process.exit(1)
+}, 120_000)
+watchdog.unref?.()
 
 const dbDir = await mkdtemp(join(tmpdir(), 'docs-ui-'))
 const chrome = await findChrome()
@@ -136,12 +167,32 @@ try {
   const page = await browser.newPage()
   const console_ = watchConsole(page)
 
+  // A native confirm() blocks the page completely — no timer, no event, no
+  // in-page poll runs until it is answered — so an unhandled one hangs the
+  // suite rather than failing it. This app uses confirm() for destructive
+  // actions (restore, delete a sheet, delete a thread), so the harness answers
+  // yes. Any step that clicks such a control is therefore asserting the
+  // *confirmed* path; there is no test here of someone clicking Cancel.
+  const dialogs = []
+  page.on('dialog', async (d) => {
+    dialogs.push(d.message())
+    await d.accept()
+  })
+
   // A step is "do a thing, then assert nothing was logged doing it".
   // On failure, say what was actually on screen. A bare "waiting failed" sends
   // you back to the browser by hand, which is the cost this file exists to
   // remove.
-  const visible = async () =>
-    (await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').trim())).slice(0, 300)
+  // Guarded: the page may be gone by the time a failure is being reported —
+  // a detached frame must not replace the real error with its own.
+  const visible = async () => {
+    try {
+      const t = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').trim())
+      return t.slice(0, 300)
+    } catch {
+      return '(page unavailable)'
+    }
+  }
 
   const step = async (what, fn) => {
     let thrown = null
@@ -252,6 +303,90 @@ try {
     await page.type('input[placeholder="new document title"]', 'UI test doc')
     await clickText(page, 'button', 'Create')
     await page.waitForSelector('.cm-content')
+  })
+
+  // Restore patches the differences rather than replacing the text, so that
+  // comment anchors outside the changed region survive it (see diff.js). The
+  // unit tests prove the algorithm; this proves the wiring.
+  await step('type into the document', async () => {
+    await page.focus('.cm-content')
+    await page.keyboard.type('first line\nsecond line')
+    await page.waitForFunction(() => document.body.innerText.includes('second line'), {
+      timeout: 5000,
+    })
+  })
+
+  await step('pin the current version', async () => {
+    await clickText(page, 'a', 'history')
+    await page.waitForSelector('input[placeholder="name current version"]', { timeout: 5000 })
+    await page.type('input[placeholder="name current version"]', 'before the change')
+    await clickText(page, 'button', 'Pin')
+    await page.waitForFunction(() => document.body.innerText.includes('Named versions'), {
+      timeout: 5000,
+    })
+  })
+
+  await step('edit the document again, and wait for it to reach the server', async () => {
+    await clickText(page, 'a', '← back to document')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    const before = await loggedRows(page)
+    await page.focus('.cm-content')
+    await page.keyboard.type('\nA THIRD LINE')
+    await page.waitForFunction(() => document.body.innerText.includes('A THIRD LINE'), {
+      timeout: 5000,
+    })
+    // Wait until the edit is actually *persisted*, not merely typed. The room
+    // batches updates to SQLite roughly once a second, and navigating away
+    // before that flush drops the edit — which silently made the first version
+    // of this test pass even with the patcher stubbed out to do nothing.
+    await page.waitForFunction(
+      async (docId, before) => {
+        const h = await (await fetch(`/api/docs/${docId}/history`)).json()
+        return h.sessions.reduce((a, s) => a + s.rows, 0) > before
+      },
+      { timeout: 10000, polling: 300 },
+      docIdFromHash(await page.url()),
+      before,
+    )
+  })
+
+  // Smoke coverage of the restore *flow*: pin, edit, restore, land back on the
+  // document without a console error. Text-level correctness of the patcher is
+  // diff_test.mjs's job, including the anchor-survival property that is the
+  // reason restore stopped replacing the whole document.
+  //
+  // Known limitation, stated rather than implied: this step still passes with
+  // the patcher stubbed to emit no operations, and I have not worked out why —
+  // the earlier suspects (asserting against the history view's own preview
+  // CodeMirror, and an edit that had not been flushed to the server) are both
+  // fixed above and it still does not discriminate. So treat this as "restore
+  // does not blow up", not "restore produces the right text".
+  await step('restore the pin, and the later edit is undone', async () => {
+    await clickText(page, 'a', 'history')
+    await page.waitForSelector('a[href^="#v"]', { timeout: 5000 })
+    // Dispatched, not page.click(): puppeteer's click waits for the element to
+    // stop moving and the timeline re-renders as sessions load.
+    await page.$eval('a[href^="#v"]', (el) => el.click())
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('button')].some((b) => b.textContent.includes('Restore')),
+      { timeout: 5000 },
+    )
+    await clickText(page, 'button', 'Restore this version')
+    // Wait to be back on the *document* first. The history view mounts its own
+    // read-only CodeMirror for the preview, so `.cm-content` matches there too
+    // — the first version of this step asserted against the preview pane,
+    // which shows the pinned text by definition and could never fail.
+    await page.waitForFunction(() => !document.body.innerText.includes('History of'), {
+      timeout: 8000,
+    })
+    await page.waitForSelector('.cm-content', { timeout: 8000 })
+    await page.waitForFunction(
+      () => {
+        const t = document.querySelector('.cm-content')?.innerText || ''
+        return t.includes('second line') && !t.includes('A THIRD LINE')
+      },
+      { timeout: 8000 },
+    )
   })
 } finally {
   await browser.close()

@@ -89,12 +89,33 @@ await docs.format('D1:E1', { b: 1 })
   </div>
 
   {#if current}
-    <input
-      class="name"
-      value={current.name}
-      readonly={readOnly}
-      onchange={(e) => workbook.updateScript(current.id, { name: e.target.value })}
-    />
+    <div class="row">
+      <input
+        class="name"
+        value={current.name}
+        readonly={readOnly}
+        onchange={(e) => workbook.updateScript(current.id, { name: e.target.value })}
+      />
+      <!-- The binding lives in the document (it is part of what the sheet
+           IS), but whether this machine honours it is a separate, local
+           decision made the first time a trigger would fire. -->
+      <label title="Run automatically after you edit a cell in this document">
+        <input
+          type="checkbox"
+          disabled={readOnly}
+          checked={current.trigger === 'onEdit'}
+          onchange={(e) => workbook.updateScript(current.id, { trigger: e.target.checked ? 'onEdit' : null })}
+        />
+        run on edit
+      </label>
+    </div>
+    {#if current.trigger === 'onEdit'}
+      <p class="note">
+        Runs on your own edits only, never on a collaborator's, and never on
+        its own writes. The script receives <code>event</code> with the sheet
+        and range that changed.
+      </p>
+    {/if}
     <!-- Committed on blur rather than per keystroke: a script is edited in
          bursts, and one Yjs update per character would flood the log. -->
     <textarea
@@ -129,10 +150,27 @@ await docs.format('D1:E1', { b: 1 })
   .spacer {
     flex: 1;
   }
-  .name {
-    width: 100%;
+  .row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
     margin-bottom: 0.25rem;
+  }
+  .row label {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    white-space: nowrap;
+    font-size: 0.8rem;
+  }
+  .name {
+    flex: 1;
     font-size: 0.85rem;
+  }
+  .note {
+    margin: 0 0 0.25rem;
+    font-size: 0.75rem;
+    opacity: 0.7;
   }
   textarea {
     width: 100%;

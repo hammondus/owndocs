@@ -76,6 +76,14 @@ export class Workbook {
     this.scripts = ydoc.getMap('scripts')
     this.models = new Map()
     this.listeners = new Set()
+    // Everything a script writes carries this origin instead of the
+    // workbook's. That is what stops a trigger from re-triggering itself:
+    // the dispatcher ignores it. Yjs reuses the outermost transaction's
+    // origin for nested ones, so wrapping a whole API call is enough.
+    this.scriptOrigin = Symbol('script')
+    this.editListeners = new Set()
+    this._pendingEdit = null
+    this._editTimer = 0
 
     // Caches live on the workbook, not the sheet: a formula may reach
     // across sheets, so one edit anywhere can change a value anywhere.
@@ -90,7 +98,9 @@ export class Workbook {
     // into one step: fine for typing prose, wrong for a spreadsheet, where
     // each cell entry, paste and fill is a discrete act.
     this.undo = new Y.UndoManager([this.sheetIds, this.sheetNames, this.scripts], {
-      trackedOrigins: new Set([this]),
+      // The script origin is tracked too, so what a script does is as
+      // undoable as what a person does.
+      trackedOrigins: new Set([this, this.scriptOrigin]),
       captureTimeout: 0,
     })
 
@@ -106,6 +116,37 @@ export class Workbook {
   onChange(cb) {
     this.listeners.add(cb)
     return () => this.listeners.delete(cb)
+  }
+
+  // Fires for cell edits made BY THIS CLIENT and not by a script. Both
+  // conditions matter: if every client ran the trigger for a change, the
+  // effect would be applied once per open browser, and if a script's own
+  // writes counted, an on-edit trigger would drive itself forever.
+  onLocalEdit(cb) {
+    this.editListeners.add(cb)
+    return () => this.editListeners.delete(cb)
+  }
+
+  // Called by each sheet's cell observer. Coalesced on a short timer so a
+  // burst of edits produces one trigger run rather than a stampede.
+  _noteEdit(sheetId, keys, transaction, delay = 200) {
+    if (!transaction.local || transaction.origin === this.scriptOrigin) return
+    if (!this.editListeners.size || !keys.length) return
+    if (!this._pendingEdit || this._pendingEdit.sheetId !== sheetId) {
+      this._flushEdit()
+      this._pendingEdit = { sheetId, keys: [] }
+    }
+    this._pendingEdit.keys.push(...keys)
+    clearTimeout(this._editTimer)
+    this._editTimer = setTimeout(() => this._flushEdit(), delay)
+  }
+
+  _flushEdit() {
+    const pending = this._pendingEdit
+    this._pendingEdit = null
+    clearTimeout(this._editTimer)
+    if (!pending) return
+    for (const cb of this.editListeners) cb(pending)
   }
 
   notify() {
@@ -293,7 +334,10 @@ export class SheetModel {
     const contents = () => { this._invalidateValues(); workbook.notify() }
     this.rows.observe(structural)
     this.cols.observe(structural)
-    this.cells.observe(contents)
+    this.cells.observe((event, transaction) => {
+      contents()
+      workbook._noteEdit(this.id, [...event.keys.keys()], transaction)
+    })
     this.dims.observe(contents)
     // Formatting changes appearance, never a computed value, so there is
     // nothing to recompute — just repaint.

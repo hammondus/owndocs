@@ -857,11 +857,15 @@ script runs as you"**.
 - Messages are trusted by **window identity, not origin** — a sandboxed
   frame's origin is the string `"null"`, which anything could claim, but a
   window reference cannot be forged.
-- **Nothing runs automatically.** No triggers, no on-open, no on-edit. A
-  script runs when a person presses run. This is the single property that
-  makes opening a shared sheet safe, and it is why triggers are not a
-  "later feature" to add casually — adding them re-opens the whole threat
-  model.
+- ~~**Nothing runs automatically.** No triggers, no on-open, no on-edit.
+  This is the single property that makes opening a shared sheet safe, and
+  it is why triggers are not a "later feature" to add casually — adding
+  them re-opens the whole threat model.~~ **Overstated, and corrected
+  below.** That reasoning is true of Google Apps Script, which runs with
+  your Google identity and can fetch URLs, send mail and read Drive. It is
+  mostly false here: this sandbox has no network and no ambient authority,
+  and the API reaches exactly one document. On-edit triggers now exist —
+  see On-edit triggers. `onOpen` is still absent, deliberately.
 - Residual risk, stated plainly: a script can still make destructive
   *edits* as whoever ran it. Every edit is one transaction, undoable, and
   lands in version history — the same protections a careless human gets.
@@ -888,6 +892,51 @@ The split that makes it testable, and that the Go runner will reuse:
 - Script values are committed exactly as if typed, so `"$1,200"` becomes
   currency and `"=SUM(A1:A2)"` becomes a formula. One rule for humans and
   scripts.
+
+### On-edit triggers
+
+The decisive argument, which the original "no triggers" position missed:
+**to put a script in a document you must already be an editor of it, and
+an editor can already destroy that document directly.** An automatic
+script therefore grants its author no capability they lack. What it
+changes is attribution (the damage looks like yours) and timing — not
+power. Combined with a sandbox that has no network and an API bound to one
+document, the residual risk is a destructive edit that is one transaction,
+undoable, and in version history.
+
+The one genuine escalation is narrow: **a script outlives its author's
+access.** Someone writes a script, their sharing is later revoked, and it
+keeps running as you. That is what the consent gate is for, and its shape
+follows from it — documents you own run their triggers freely, and a
+document shared with you asks once, with the answer remembered **locally
+on that machine**. Local rather than in the document, because the document
+is exactly the thing whose trustworthiness is in question; an editor could
+otherwise grant consent on your behalf. So the *binding* ("this script
+runs on edit") lives in the document where it belongs, and the *decision
+to honour it* does not.
+
+`onOpen` remains absent: on-edit at least requires you to act, whereas a
+trigger firing because you merely looked at a document is a materially
+worse bargain.
+
+The harder problems turned out to be engineering, not security, and all
+three are enforced in the model rather than left to the caller:
+
+- **Exactly one client runs it.** Yjs marks a transaction `local`, so only
+  the client that made the edit fires the trigger. Otherwise the effect is
+  applied once per open browser — verified live with three connected
+  clients, where an edit produced one run and two zeroes.
+- **A script's writes never re-trigger.** Every script write carries the
+  workbook's `scriptOrigin` instead of the ordinary origin, and the
+  dispatcher ignores it. This kills feedback loops absolutely rather than
+  heuristically. Script edits stay undoable because that origin is also in
+  the UndoManager's tracked set.
+- **Bursts coalesce.** A short debounce turns ten quick edits into one run
+  carrying every changed cell, and one trigger runs at a time.
+
+The event a script receives is the sheet name, the bounding range of the
+change and a cell count — derived from the changed keys, skipping any
+whose row or column has since been deleted.
 
 ### v1 scope cuts (deliberate, recorded)
 

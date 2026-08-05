@@ -18,6 +18,9 @@
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
   import { scheduleCompaction } from '../compaction.js'
   import ScriptsPanel from './ScriptsPanel.svelte'
+  import { runScript } from '../sheet/sandbox.js'
+  import { handleCall } from '../sheet/scriptapi.js'
+  import { allowTriggers, summariseEdit } from '../sheet/triggers.js'
 
   let { me, doc, onBack, onShare, onHistory } = $props()
 
@@ -61,6 +64,8 @@
   let charts = $state([])
   let selectedChart = $state(null)
   let showScripts = $state(false)
+  let triggerError = $state('')
+  let triggerBusy = false // one trigger run at a time; bursts coalesce
   let chartCanvases = $state({})
   let chartDrag = null // {id, mode, startX, startY, orig} while dragging
 
@@ -68,7 +73,7 @@
   // $state because the overlay input mounts and unmounts with {#if edit}:
   // bind:this writes to it each time, and reads must see the fresh element.
   let cellInputEl = $state(null)
-  let ydoc, provider, model, unobserve
+  let ydoc, provider, model, unobserve, unwatchEdits
   // $state because the template reads it: it is created in onMount, and a
   // plain let would leave the scripts panel unable to ever render.
   let workbook = $state(null)
@@ -121,6 +126,8 @@
       scheduleDraw()
     })
 
+    unwatchEdits = workbook.onLocalEdit(runTriggers)
+
     const ro = new ResizeObserver(scheduleDraw)
     ro.observe(containerEl)
     scheduleDraw()
@@ -129,6 +136,7 @@
   })
 
   onDestroy(() => {
+    unwatchEdits?.()
     unobserve?.()
     provider?.destroy()
     ydoc?.destroy()
@@ -428,6 +436,58 @@
         }
       }
     })
+  }
+
+  // ---- on-edit triggers ---------------------------------------------------
+
+  // Fires only for edits made by THIS client and not by a script — the
+  // model enforces both, so the effect is applied once no matter how many
+  // people have the sheet open, and a script can never drive itself.
+  async function runTriggers({ sheetId, keys }) {
+    if (readOnly || triggerBusy) return
+    const scripts = workbook.listScripts().filter((s) => s.trigger === 'onEdit')
+    if (!scripts.length) return
+    // Ask only when a trigger would actually fire, so a document with no
+    // triggers never prompts about them.
+    if (!allowTriggers(safeStorage(), doc.id, doc.role, () => confirm(
+      `"${doc.title}" contains scripts set to run automatically when you edit it.\n\n` +
+      'They can change this document as you, but cannot reach the network, ' +
+      'your account, or any other document.\n\nRun them?'))) return
+
+    const m = workbook.sheet(sheetId)
+    const summary = summariseEdit(m, keys, colName)
+    if (!summary) return
+    const event = { sheet: workbook.nameOf(sheetId), range: summary.range, cells: summary.cells }
+
+    triggerBusy = true
+    try {
+      for (const s of scripts) {
+        const res = await runScript(s.code, {
+          workbook,
+          dispatch: handleCall,
+          event,
+          onLog: (line) => console.log(`[${s.name}]`, line),
+        })
+        if (res.error) {
+          triggerError = `${s.name}: ${res.error}`
+          console.error('trigger failed:', s.name, res.error)
+        } else if (triggerError) {
+          triggerError = ''
+        }
+      }
+    } finally {
+      triggerBusy = false
+    }
+  }
+
+  // localStorage throws in some privacy modes; a missing store just means
+  // the question gets asked again next time, which is the safe direction.
+  function safeStorage() {
+    try {
+      return window.localStorage
+    } catch {
+      return null
+    }
   }
 
   // ---- charts -------------------------------------------------------------
@@ -1022,6 +1082,10 @@
   </div>
 {/if}
 
+{#if triggerError}
+  <p class="trigger-error">⚠ on-edit script failed — {triggerError}</p>
+{/if}
+
 {#if showScripts && workbook}
   <ScriptsPanel {workbook} {readOnly} onClose={() => (showScripts = false)} />
 {/if}
@@ -1362,6 +1426,14 @@
     padding: 0 3px;
     outline: none;
     box-sizing: border-box;
+  }
+  .trigger-error {
+    margin: 0 0 0.25rem;
+    padding: 0.2rem 0.4rem;
+    font-size: 0.8rem;
+    color: #c62828;
+    background: #fdecea;
+    border-radius: 3px;
   }
   .status {
     font-size: 0.85rem;

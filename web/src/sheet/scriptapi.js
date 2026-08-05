@@ -182,7 +182,10 @@ export function handleCall(wb, method, args) {
   const fn = METHODS[method]
   if (!fn) return { error: `unknown method ${JSON.stringify(method)}` }
   try {
-    return { value: fn(wb, args) }
+    // Under the workbook's script origin, so on-edit triggers can tell a
+    // script's writes from a person's and never drive themselves. Yjs
+    // reuses the outermost transaction, so every nested write inherits it.
+    return { value: wb.ydoc.transact(() => fn(wb, args), wb.scriptOrigin) }
   } catch (err) {
     return { error: err instanceof ScriptError ? err.message : String(err && err.message || err) }
   }

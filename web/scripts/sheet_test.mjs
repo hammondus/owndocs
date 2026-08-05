@@ -10,6 +10,7 @@ import { serialFromParts, partsFromSerial, parseDate, formatDate, setDayFirst } 
 import { niceScale, extractChartData, drawChart, chartDragPatch } from '../src/sheet/chart.js'
 import { parseA1, formatA1, handleCall } from '../src/sheet/scriptapi.js'
 import { RUNTIME } from '../src/sheet/sandbox.js'
+import { allowTriggers, forgetTriggerChoice, summariseEdit } from '../src/sheet/triggers.js'
 
 let failures = 0
 
@@ -1344,7 +1345,7 @@ const callOk = (wb, method, args) => {
 // runs the real protocol here: the async wrapper, log forwarding, the
 // call/result round trip and error reporting, none of which a browser is
 // actually required for.
-async function runInFakeSandbox(code, wb, maxTicks = 2000) {
+async function runInFakeSandbox(code, wb, event = null, maxTicks = 2000) {
   const listeners = []
   const outbox = []
   const fakeWindow = {
@@ -1357,7 +1358,7 @@ async function runInFakeSandbox(code, wb, maxTicks = 2000) {
   const logs = []
   let done = null
   let ready = false
-  send({ t: 'run', code })
+  send({ t: 'run', code, event })
   for (let i = 0; i < maxTicks && !done; i++) {
     while (outbox.length) {
       const msg = outbox.shift()
@@ -1418,6 +1419,155 @@ async function runInFakeSandbox(code, wb, maxTicks = 2000) {
   `, wb)
   eq(r.logs[0].startsWith('caught:'), true, 'an API error is catchable inside the script')
   eq(!r.done.error, true, 'and the script still finishes normally')
+}
+
+// ---- on-edit triggers ---------------------------------------------------------
+
+{
+  // The trust gate. A document you own runs its triggers; one shared with
+  // you asks once and the answer is remembered.
+  const store = new Map()
+  const storage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, v),
+    removeItem: (k) => store.delete(k),
+  }
+  let asked = 0
+  const yes = () => { asked++; return true }
+  const no = () => { asked++; return false }
+
+  eq(allowTriggers(storage, 'doc1', 'owner', yes), true, 'your own document runs triggers')
+  eq(asked, 0, 'without asking')
+
+  eq(allowTriggers(storage, 'doc2', 'editor', yes), true, 'a shared document asks, and may be allowed')
+  eq(asked, 1, 'it asked once')
+  eq(allowTriggers(storage, 'doc2', 'editor', yes), true, 'and the answer is remembered')
+  eq(asked, 1, 'so it does not ask again')
+
+  eq(allowTriggers(storage, 'doc3', 'editor', no), false, 'declining is remembered too')
+  eq(allowTriggers(storage, 'doc3', 'editor', yes), false, 'and is not re-asked')
+  eq(asked, 2, 'exactly one prompt per shared document')
+
+  forgetTriggerChoice(storage, 'doc3')
+  eq(allowTriggers(storage, 'doc3', 'editor', yes), true, 'forgetting the choice asks again')
+
+  // A storage that throws (private browsing) must not grant consent by
+  // accident — it should ask, and simply fail to remember.
+  const broken = {
+    getItem() { throw new Error('denied') },
+    setItem() { throw new Error('denied') },
+    removeItem() { throw new Error('denied') },
+  }
+  asked = 0
+  eq(allowTriggers(broken, 'doc4', 'editor', no), false, 'unusable storage still respects a refusal')
+  eq(allowTriggers(broken, 'doc4', 'editor', no), false, 'and asks again rather than assuming yes')
+  eq(asked, 2, 'asking twice is the safe direction when nothing can be remembered')
+}
+
+{
+  const m = newModel()
+  m.setCell(2, 1, 'x')
+  m.setCell(4, 3, 'y')
+  m._index()
+  const keys = [
+    m.rowIds[2] + '.' + m.colIds[1],
+    m.rowIds[4] + '.' + m.colIds[3],
+  ]
+  eq(summariseEdit(m, keys, colName), { range: 'B3:D5', cells: 2 }, 'an edit summarises to its bounding range')
+  eq(summariseEdit(m, [keys[0]], colName), { range: 'B3', cells: 1 }, 'a single cell is not a range')
+  eq(summariseEdit(m, ['gone.missing'], colName), null, 'keys whose row or column vanished are skipped')
+}
+
+// The properties that make triggers safe to have at all. Each uses a tiny
+// debounce so the test does not sit waiting.
+const flush = () => new Promise((r) => setTimeout(r, 30))
+
+{
+  const wb = new Workbook(new Y.Doc())
+  const m = wb.sheet(FIRST_SHEET)
+  const fired = []
+  wb.onLocalEdit((e) => fired.push(e))
+  const note = wb._noteEdit.bind(wb)
+  wb._noteEdit = (id, keys, tx) => note(id, keys, tx, 5)
+
+  m.setCell(0, 0, 'typed by a person')
+  await flush()
+  eq(fired.length, 1, 'a local edit fires the trigger')
+
+  // A script's own writes must never fire it, or an on-edit script would
+  // drive itself forever.
+  fired.length = 0
+  handleCall(wb, 'set', { range: 'B1', values: [['written by a script']] })
+  await flush()
+  eq(fired.length, 0, "a script's own writes do not re-trigger")
+
+  // And an ordinary edit still works afterwards — the origin is per
+  // transaction, not a latch left switched on.
+  m.setCell(0, 2, 'a person again')
+  await flush()
+  eq(fired.length, 1, 'a person editing after a script still triggers')
+}
+
+{
+  // Only the client that made the change runs the trigger; a remote edit
+  // arriving from a collaborator must not fire it here, or the effect
+  // would be applied once per open browser.
+  const dA = new Y.Doc(), dB = new Y.Doc()
+  const wa = new Workbook(dA), wbk = new Workbook(dB)
+  const firedA = [], firedB = []
+  wa.onLocalEdit((e) => firedA.push(e))
+  wbk.onLocalEdit((e) => firedB.push(e))
+  for (const w of [wa, wbk]) {
+    const orig = w._noteEdit.bind(w)
+    w._noteEdit = (id, keys, tx) => orig(id, keys, tx, 5)
+  }
+
+  wa.sheet(FIRST_SHEET).setCell(0, 0, 'from A')
+  Y.applyUpdate(dB, Y.encodeStateAsUpdate(dA))
+  await flush()
+  eq(firedA.length, 1, 'the editing client fires its trigger')
+  eq(firedB.length, 0, 'the receiving client does not')
+}
+
+{
+  // A burst of edits coalesces into one run rather than a stampede.
+  const wb = new Workbook(new Y.Doc())
+  const m = wb.sheet(FIRST_SHEET)
+  const fired = []
+  wb.onLocalEdit((e) => fired.push(e))
+  const orig = wb._noteEdit.bind(wb)
+  wb._noteEdit = (id, keys, tx) => orig(id, keys, tx, 20)
+
+  for (let i = 0; i < 10; i++) m.setCell(i, 0, String(i))
+  await new Promise((r) => setTimeout(r, 60))
+  eq(fired.length, 1, 'ten quick edits produce one trigger run')
+  eq(fired[0].keys.length, 10, 'carrying every changed cell')
+}
+
+{
+  // End to end: a trigger script runs in the sandbox runtime, sees its
+  // event, writes back — and that write does not fire the trigger again.
+  const wb = new Workbook(new Y.Doc())
+  const m = wb.sheet(FIRST_SHEET)
+  const events = []
+  wb.onLocalEdit((e) => events.push(e))
+  const orig = wb._noteEdit.bind(wb)
+  wb._noteEdit = (id, keys, tx) => orig(id, keys, tx, 5)
+
+  m.setCell(0, 0, '5')
+  await flush()
+  eq(events.length, 1, 'the edit fired once')
+
+  const summary = summariseEdit(m, events[0].keys, colName)
+  const r = await runInFakeSandbox(
+    `log('edited', event.range)\nawait docs.set('C1', [['touched ' + event.range]])`,
+    wb,
+    { sheet: 'Sheet1', range: summary.range, cells: summary.cells },
+  )
+  eq(r.logs, [`edited ${summary.range}`], 'the script received the edit event')
+  eq(val(m, 0, 2), 'touched A1', 'and wrote its response')
+  await flush()
+  eq(events.length, 1, "and the script's write did not fire another round")
 }
 
 // ---- A1 helpers -----------------------------------------------------------

@@ -83,14 +83,17 @@ export const RUNTIME = String.raw`
       var AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
       var fn
       try {
-        // An async wrapper so scripts can await at the top level.
-        fn = new AsyncFunction('docs', 'log', msg.code)
+        // An async wrapper so scripts can await at the top level. The
+        // event argument is null for a manual run, and describes what
+        // changed when a trigger fired. (No backticks in here: this whole
+        // runtime is itself a template literal.)
+        fn = new AsyncFunction('docs', 'log', 'event', msg.code)
       } catch (err) {
         parent.postMessage({ t: 'done', error: 'SyntaxError: ' + err.message }, '*')
         return
       }
       Promise.resolve()
-        .then(function () { return fn(docs, log) })
+        .then(function () { return fn(docs, log, msg.event || null) })
         .then(function () { parent.postMessage({ t: 'done' }, '*') })
         .catch(function (err) {
           parent.postMessage({ t: 'done', error: String(err && err.stack || err) }, '*')
@@ -111,7 +114,7 @@ export const DEFAULT_TIMEOUT_MS = 5000
 // Run `code` against `workbook`, calling onLog for each log line. Resolves
 // with {error} or {} when the script finishes. A fresh iframe per run, so
 // one script can never leave state behind for the next.
-export function runScript(code, { workbook, dispatch, onLog, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+export function runScript(code, { workbook, dispatch, onLog, event = null, timeoutMs = DEFAULT_TIMEOUT_MS }) {
   return new Promise((resolve) => {
     const frame = document.createElement('iframe')
     // No allow-same-origin: that is what makes the origin opaque.
@@ -142,7 +145,7 @@ export function runScript(code, { workbook, dispatch, onLog, timeoutMs = DEFAULT
       const msg = e.data
       if (!msg || finished) return
       if (msg.t === 'ready') {
-        frame.contentWindow.postMessage({ t: 'run', code }, '*')
+        frame.contentWindow.postMessage({ t: 'run', code, event }, '*')
       } else if (msg.t === 'log') {
         onLog?.(String(msg.text))
       } else if (msg.t === 'call') {

@@ -11,6 +11,24 @@ undecided things stay under **Open questions** in the design doc.
 
 ---
 
+## Comment threads
+
+Decided: bodies, identity and resolved-state in SQLite; anchors as opaque
+blobs. See *Comments* for why, and for the two traps. Build order — each step
+is useful on its own:
+
+1. Schema v5 (`comments`, `comment_threads`) + `commenter` role in the
+   `permissions` CHECK constraint and `roleFor`
+2. REST endpoints, author stamped from the session — never from the request
+3. Live fanout: a third WebSocket message type alongside `0 doc, 1 awareness`
+4. Sheets UI first — anchors are just row/col ids, so no new anchor mechanism
+5. Docs UI: encoded `RelativePosition` anchors + quoted-snippet fallback
+6. Mentions and notifications; unresolved count in the document list
+
+Prerequisite, and a defect in its own right: **doc restore is
+delete-all-then-insert-all**, which orphans every anchor. It needs to become
+diff-and-patch before step 5 ships.
+
 ## Sheets — formatting
 
 - Borders
@@ -55,8 +73,6 @@ undecided things stay under **Open questions** in the design doc.
 
 Recorded so they are not re-proposed as oversights:
 
-- **Comment threads** — wanted, but the anchor storage question (Yjs doc vs.
-  SQLite side-table) is unanswered. Design doc, *Open questions*.
 - **Search** — needs a client-fed index, since the server never reads document
   content. Deferred until actually wanted.
 - **Route-level lazy loading** — measured and declined: it buys a router

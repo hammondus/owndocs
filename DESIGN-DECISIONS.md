@@ -1012,6 +1012,89 @@ shipped — see CSV export; xlsx still later).
 
 ---
 
+## Comments
+
+### Comment threads live in SQLite, not in the Yjs doc
+
+Decided before building, because it is a schema shape and those get more
+expensive with real data in them (the lesson from Multiple sheets).
+
+A comment is **metadata about the document, not content of it**. Everything
+below follows from that one sentence.
+
+The obvious alternative — a `Y.Map` of comment id → `{anchor, author, body,
+resolved}` inside the doc — was rejected despite getting live sync, offline
+merge, version history, git export and sharing entirely for free from
+machinery that already exists. Two things it cannot do at any price:
+
+- **Viewers could never comment.** `ws.go` drops document writes from
+  `role == "viewer"` at the socket, deliberately. In-doc comments would mean
+  the only way to let someone comment is to make them an editor, which lets
+  them rewrite the document. A `commenter` role is impossible by
+  construction.
+- **Authorship would be unverifiable.** The server never parses Yjs, so an
+  in-doc `author` field is client-supplied and uncheckable. Worse, given
+  Scripting: `scriptapi.js` writes to the workbook, so a shared sheet's
+  script could fabricate comments attributed to whoever opened it — the
+  "someone shares a sheet whose script runs as you" threat model reappearing
+  on a new surface. A SQLite endpoint stamps the author from the session and
+  the forgery stops being expressible.
+
+Server-side reads follow too, and they were wanted: mentions, notifications,
+and an unresolved-comment count in the document list are all impossible while
+the data is inside an opaque blob.
+
+**Anchors are a separate question, and a smaller one.** A Yjs
+`RelativePosition` is a *value*: `encodeRelativePosition` yields bytes that
+survive arbitrary concurrent edits and resolve back to an offset via
+`createAbsolutePositionFromRelativePosition`. It tracks text without living
+in the document. So the anchor is stored as an opaque `BLOB` and the server
+stays exactly as content-blind as it is everywhere else — it can say a
+comment exists and who wrote it, never where it points or what it quotes.
+Only a client with the doc loaded can resolve one. Sheets need none of this:
+`model.js` already keys cells by stable row/col ids, so a sheet comment
+anchors to an id pair, the same way formula refs and chart ranges do.
+
+Consequences accepted on purpose:
+
+- **Comments are not versioned and not restored.** Rolling the text back to
+  yesterday does not resurrect yesterday's resolved threads. A conversation
+  about a document has its own lifecycle; Google draws the line in the same
+  place.
+- **Comments are not git-exported as document text.** The exporter commits
+  what the document *is*. If comments are ever wanted in the export they get
+  their own file, not inline markers.
+- **⌘Z never touches a comment.** In-doc storage would have made undo scope a
+  live hazard — `model.js` adds every sheet container to the UndoManager
+  scope, so a comments map would have needed an explicit exclusion.
+- **This is the first mutable state outside the append-only log.** Everything
+  else in this project is append-and-archive. Threads are edited and resolved
+  in place, so they are ordinary rows. Accepted: the durability argument for
+  the log is about document content, which this is not.
+
+Costs, stated plainly:
+
+- **Live sync is no longer free.** It needs a third WebSocket message type
+  (`provider.js` frames `0 doc, 1 awareness` today) plus hub fanout. Cheap,
+  because the hub already knows rooms — but it is real code that in-doc
+  storage would not have needed.
+- **A new `commenter` role** between `viewer` and `editor`, which touches the
+  `permissions` CHECK constraint, `roleFor`, and the share UI.
+
+Two things to get right when building, both verified against the current
+code rather than assumed:
+
+- **Doc restore orphans every anchor.** `HistoryView.svelte` restores as
+  `ytext.delete(0, length)` then `insert(0, text)`, so after a restore every
+  relative position points into deleted content. Comments turn that
+  full-replace from a stylistic choice into a defect: restore needs to become
+  a diff-and-patch.
+- **`gc` is on** (every `new Y.Doc()` here takes the default), so anchors
+  into deleted text degrade. Store the quoted snippet alongside the anchor,
+  so an unresolvable comment shows as a visible orphan rather than vanishing.
+
+---
+
 ## Incidents
 
 - **2026-08-05, two chart UX bugs, one root cause.** Both user-reported,
@@ -1074,6 +1157,10 @@ shipped — see CSV export; xlsx still later).
 
 - Snapshot-trigger thresholds (currently >100 tail rows or >128 KiB) and the
   1s batch-flush interval: revisit once there's real typing traffic.
-- Comment threads: anchor storage in the Yjs doc vs. SQLite side-table.
+- ~~Comment threads: anchor storage in the Yjs doc vs. SQLite side-table.~~
+  Answered — see Comments. Still open underneath it: the **notification
+  delivery channel**. In-app only needs nothing new; email needs SMTP config
+  and a sending identity on a self-hosted box, which is a deployment burden
+  this project has so far avoided entirely.
 - Search: without server-side document reads, any full-text search must be
   client-fed. Deferred until wanted.

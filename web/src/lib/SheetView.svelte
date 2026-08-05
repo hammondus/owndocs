@@ -169,15 +169,21 @@
     scheduleDraw()
   }
 
-  // Cells on *this* tab carrying an unresolved thread, for the corner marker.
-  // Keyed by row/col id rather than position, so an inserted row moves the
-  // marker with the cell exactly as it moves the comment.
+  // Cells on *this* tab carrying an unresolved thread, as "r.c" *positions*.
+  // Resolved from ids here rather than in draw(): this recomputes once when
+  // the threads or the sheet change, where draw() runs on every repaint and
+  // would otherwise do an id lookup per visible cell per frame.
+  // `revision` is the dependency that re-resolves them after a row insert
+  // moves every position below it.
   let commentedCells = $derived.by(() => {
+    void revision
     const marks = new Set()
+    if (!model) return marks
     for (const t of threads) {
       if (t.resolved_at || t.anchor?.k !== 'cell') continue
       if ((t.anchor.sheet || FIRST_SHEET) !== activeId) continue
-      marks.add(t.anchor.row + '.' + t.anchor.col)
+      const { r, c } = model.posOf(t.anchor.row, t.anchor.col)
+      if (r !== null && c !== null) marks.add(r + '.' + c)
     }
     return marks
   })
@@ -187,10 +193,10 @@
   // which happens on a row the sheet has not materialised yet.
   let newAnchor = $derived.by(() => {
     void revision
-    const rid = model?.rowIds[sel.r]
-    const cid = model?.colIds[sel.c]
-    if (!rid || !cid) return null
-    return cellAnchor(activeId, rid, cid, model.display(sel.r, sel.c).text.slice(0, 120))
+    if (!model) return null
+    const { row, col } = model.idsAt(sel.r, sel.c)
+    if (!row || !col) return null
+    return cellAnchor(activeId, row, col, model.display(sel.r, sel.c).text.slice(0, 120))
   })
 
   let newLabel = $derived(colName(sel.c) + (sel.r + 1))
@@ -206,10 +212,10 @@
     void revision
     const a = t.anchor
     if (a?.k !== 'cell') return '—'
-    const sheet = workbook?.sheet(a.sheet || FIRST_SHEET)
-    const r = sheet?.rowPos.get(a.row)
-    const c = sheet?.colPos.get(a.col)
-    if (r === undefined || c === undefined) return 'deleted'
+    const sheet = workbook?.sheetById(a.sheet || FIRST_SHEET)
+    if (!sheet) return 'deleted'
+    const { r, c } = sheet.posOf(a.row, a.col)
+    if (r === null || c === null) return 'deleted'
     const name = colName(c) + (r + 1)
     const tab = tabs.find((t) => t.id === (a.sheet || FIRST_SHEET))
     return (a.sheet || FIRST_SHEET) === activeId ? name : `${tab?.name || '?'}!${name}`
@@ -219,9 +225,8 @@
     const a = t.anchor
     if (a?.k !== 'cell') return
     if ((a.sheet || FIRST_SHEET) !== activeId) selectSheet(a.sheet || FIRST_SHEET)
-    const r = model.rowPos.get(a.row)
-    const c = model.colPos.get(a.col)
-    if (r === undefined || c === undefined) return
+    const { r, c } = model.posOf(a.row, a.col)
+    if (r === null || c === null) return
     setSelection(r, c, false)
     scrollCellIntoView(r, c)
   }
@@ -369,11 +374,8 @@
     if (commentedCells.size) {
       ctx.fillStyle = '#f9a825'
       for (let r = r0; r <= r1 && r < R; r++) {
-        const rid = model.rowIds[r]
-        if (!rid) continue
         for (let c = c0; c <= c1 && c < C; c++) {
-          const cid = model.colIds[c]
-          if (!cid || !commentedCells.has(rid + '.' + cid)) continue
+          if (!commentedCells.has(r + '.' + c)) continue
           const x = screenX(c) + (colX[c + 1] - colX[c])
           const y = screenY(r)
           ctx.beginPath()

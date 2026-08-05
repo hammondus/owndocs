@@ -401,6 +401,27 @@ export class SheetModel {
   rowCount() { return this.rows.length }
   colCount() { return this.cols.length }
 
+  // The public face of the id/position index. `rowIds`, `colIds`, `rowPos`
+  // and `colPos` do not exist until _index() has run, so reading them from
+  // outside is a TypeError waiting for a model nobody has drawn yet — which
+  // is every sheet on a tab you have not opened. Callers outside this file
+  // use these two and never touch the maps.
+  //
+  // Both return nulls rather than throwing: an id whose row or column has
+  // been deleted is an ordinary outcome for anything holding an id over
+  // time, which is exactly what comment anchors do.
+  idsAt(r, c) {
+    this._index()
+    return { row: this.rowIds[r] || null, col: this.colIds[c] || null }
+  }
+
+  posOf(rowId, colId) {
+    this._index()
+    const r = this.rowPos.get(rowId)
+    const c = this.colPos.get(colId)
+    return { r: r === undefined ? null : r, c: c === undefined ? null : c }
+  }
+
   // Materialize row/col ids up to and including position (r, c). Appending
   // is the only way rows come into existence outside insertRow — see the
   // lazy-materialization note in the design doc.

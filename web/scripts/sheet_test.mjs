@@ -1580,6 +1580,31 @@ eq(colName(26), 'AA', 'colName AA')
 eq(colName(701), 'ZZ', 'colName ZZ')
 eq(parseColName('AA'), 26, 'parseColName AA')
 
+// ---- id/position accessors on a fresh model -------------------------------
+// rowIds/rowPos are a lazily built cache: they do not exist until _index()
+// runs, so reading them from outside is a TypeError on any model nobody has
+// drawn yet — which is every sheet on a tab you have not opened. This is the
+// bug the comments panel shipped with: label() threw, the {#if} block failed,
+// and the button looked dead.
+{
+  const wb = new Workbook(new Y.Doc())
+  const m = wb.sheet(FIRST_SHEET)
+  m.setCell(2, 1, 'x') // materialize some rows/cols
+  const fresh = new Workbook(wb.ydoc).sheet(FIRST_SHEET) // never drawn, never indexed
+  const ids = fresh.idsAt(2, 1)
+  eq(typeof ids.row === 'string' && typeof ids.col === 'string', true,
+     'idsAt works on a model that was never indexed')
+  eq(fresh.posOf(ids.row, ids.col), { r: 2, c: 1 }, 'posOf round-trips ids to positions')
+  eq(new Workbook(wb.ydoc).sheet(FIRST_SHEET).posOf('gone', 'gone'), { r: null, c: null },
+     'posOf returns nulls for deleted ids, never throws')
+  eq(fresh.idsAt(99, 99), { row: null, col: null }, 'idsAt past the end is nulls')
+
+  // A row inserted above moves the position an anchor resolves to; that is
+  // the whole reason anchors are ids and not coordinates.
+  m.insertRows(0, 1)
+  eq(wb.sheet(FIRST_SHEET).posOf(ids.row, ids.col).r, 3, 'an anchored id follows a row insert')
+}
+
 // ---- comment anchors ------------------------------------------------------
 // The anchor is a blob the server stores and never parses, so its round-trip
 // is entirely our responsibility and nothing server-side would catch a break.

@@ -10,6 +10,7 @@ import os from 'node:os'
 import * as Y from 'yjs'
 import WS from 'ws'
 import { Provider } from '../src/provider.js'
+import { Workbook, FIRST_SHEET } from '../src/sheet/model.js'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:8485'
 const WORK = process.argv[3] || fs.mkdtempSync(path.join(os.tmpdir(), 'docs-exporter-e2e-'))
@@ -114,6 +115,62 @@ runExporter(exporterEnv)
 const files = fs.readdirSync(REPO).filter((f) => f.endsWith('.md'))
 assert(files.length === 1 && files[0] === `sprint-notes-${doc.id.slice(0, 6)}.md`, `retitle renames the file (${files})`)
 assert(git('rev-list', '--count', 'HEAD') === '3', 'rename+pin is one more commit')
+
+// ---- sheets export as a directory of CSVs ---------------------------------
+
+const sheetDoc = await (await postJSON('/api/docs', { title: 'Q1 Numbers', kind: 'sheet' })).json()
+const sdoc = new Y.Doc()
+const sp = new Provider(sdoc, sheetDoc.id, {
+  wsUrl: `${BASE.replace(/^http/, 'ws')}/ws/${sheetDoc.id}`,
+  onSynced: () => (sp.synced = true),
+})
+await new Promise((resolve, reject) => {
+  const t = setTimeout(() => reject(new Error('sync timeout')), 8000)
+  const iv = setInterval(() => { if (sp.synced) { clearTimeout(t); clearInterval(iv); resolve() } }, 50)
+})
+const wb = new Workbook(sdoc)
+const s1 = wb.sheet(FIRST_SHEET)
+s1.setCell(0, 0, 'Item'); s1.setCell(0, 1, 'Due'); s1.setCell(0, 2, 'Price')
+s1.setCell(1, 0, 'bolt'); s1.setCell(1, 1, '2026-08-05'); s1.setCell(1, 2, '$10')
+s1.setCell(2, 0, 'nut, large'); s1.setCell(2, 1, '2026-09-01'); s1.setCell(2, 2, '$5.50')
+s1.setCell(3, 0, 'Total'); s1.setCell(3, 2, '=SUM(C2:C3)')
+const notesId = wb.addSheet('Notes')
+wb.sheet(notesId).setCell(0, 0, 'first quarter')
+await sleep(1500)
+await postJSON(`/api/docs/${sheetDoc.id}/versions`, { name: 'q1 close' })
+
+runExporter(exporterEnv)
+const sheetDir = path.join(REPO, `q1-numbers-${sheetDoc.id.slice(0, 6)}`)
+assert(fs.existsSync(sheetDir), 'a sheet exports as a directory')
+assert(fs.readdirSync(sheetDir).sort().join() === 'notes.csv,sheet1.csv', 'one CSV per tab')
+
+const csv = fs.readFileSync(path.join(sheetDir, 'sheet1.csv'), 'utf8')
+assert(csv.split('\n')[0] === 'Item,Due,Price', 'header row')
+assert(csv.includes('"nut, large"'), 'a field containing a comma is quoted')
+assert(csv.includes('2026-08-05'), 'dates export as dates, not serial numbers')
+assert(csv.includes('$10.00'), 'currency exports formatted')
+// The total is unformatted (15.5, not $15.50): a formula result carries no
+// format of its own, and nothing yet propagates the operands' currency to
+// it. Asserted as-is so the day that changes, this test says so.
+assert(csv.includes('Total,,15.5'), 'a formula exports as its computed value')
+assert(!csv.startsWith('﻿'), 'no BOM in the git export')
+
+// Renaming a tab renames its file and removes the old one.
+wb.renameSheet(notesId, 'Commentary')
+await sleep(1500)
+await postJSON(`/api/docs/${sheetDoc.id}/versions`, { name: 'renamed tab' })
+runExporter(exporterEnv)
+assert(fs.readdirSync(sheetDir).sort().join() === 'commentary.csv,sheet1.csv',
+  'a renamed tab renames its CSV and drops the old one')
+
+// Deleting a tab removes its file.
+wb.removeSheet(notesId)
+await sleep(1500)
+await postJSON(`/api/docs/${sheetDoc.id}/versions`, { name: 'dropped tab' })
+runExporter(exporterEnv)
+assert(fs.readdirSync(sheetDir).join() === 'sheet1.csv', 'a deleted tab drops its CSV')
+assert(git('log', '--format=%s', '-1') === 'Q1 Numbers: dropped tab', 'each sheet version is a commit')
+sp.destroy()
 
 console.log('\nALL PASS (repo at ' + REPO + ')')
 process.exit(0)

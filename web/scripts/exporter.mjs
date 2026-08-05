@@ -19,6 +19,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { iterFrames } from '../src/frames.js'
+import { Workbook } from '../src/sheet/model.js'
+import { toCSV } from '../src/sheet/clipboard.js'
 
 const STATE_FILE = '.docs-export.json'
 
@@ -90,29 +92,81 @@ function readState() {
 
 // ---- export ---------------------------------------------------------------
 
-// Filename: slugged title plus a short doc-id suffix, so two docs with the
-// same title never collide and a retitle is a visible rename in git.
-function fileFor(doc) {
-  const slug = doc.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'untitled'
-  return `${slug}-${doc.id.slice(0, 6)}.md`
+const slugify = (s) =>
+  s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60)
+
+// Base name: slugged title plus a short doc-id suffix, so two documents
+// with the same title never collide and a retitle is a visible rename in
+// git. A doc becomes `<base>.md`; a sheet becomes a `<base>/` directory of
+// one CSV per tab, since CSV has no concept of multiple sheets.
+function baseFor(doc) {
+  return `${slugify(doc.title) || 'untitled'}-${doc.id.slice(0, 6)}`
 }
 
-async function textAtSeq(docID, seq) {
+async function docAtSeq(docID, seq) {
   const buf = new Uint8Array(await (await api(`/api/docs/${docID}/replay?to_seq=${seq}`)).arrayBuffer())
   const ydoc = new Y.Doc()
   for (const u of iterFrames(buf)) Y.applyUpdate(ydoc, u)
-  return ydoc.getText('text').toString()
+  return ydoc
+}
+
+// The files a version should produce, as {path, text}. Everything is
+// rendered from the replayed document, so an export is a pure function of
+// a point in history.
+async function filesForVersion(doc, seq) {
+  const ydoc = await docAtSeq(doc.id, seq)
+  const base = baseFor(doc)
+  if (doc.kind !== 'sheet') {
+    const text = ydoc.getText('text').toString()
+    return [{ path: `${base}.md`, text: text.endsWith('\n') || text === '' ? text : text + '\n' }]
+  }
+  const wb = new Workbook(ydoc)
+  const out = []
+  const used = new Set()
+  for (const tab of wb.list()) {
+    // Tab names are free text and may repeat; keep filenames unique
+    // without letting tab ORDER into them, so reordering tabs doesn't
+    // rewrite every file.
+    let name = slugify(tab.name) || 'sheet'
+    if (used.has(name)) name = `${name}-${tab.id.slice(0, 4)}`
+    used.add(name)
+    // Displayed values, not raw: a diff should read "10 → 999", not a date
+    // serial. No BOM — that would be noise in every diff.
+    out.push({ path: `${base}/${name}.csv`, text: toCSV(wb.sheet(tab.id).toGrid()) + '\n' })
+  }
+  return out
 }
 
 async function exportVersion(doc, v, state) {
-  const text = await textAtSeq(doc.id, v.seq)
+  const files = await filesForVersion(doc, v.seq)
   const st = state[doc.id] || (state[doc.id] = {})
-  const file = fileFor(doc)
-  if (st.path && st.path !== file && fs.existsSync(path.join(REPO, st.path))) {
-    fs.rmSync(path.join(REPO, st.path)) // retitled: old name goes, git sees a rename
+
+  // Older state recorded a single `path`; treat it as a one-file list.
+  const previous = st.files || (st.path ? [st.path] : [])
+  const written = new Set(files.map((f) => f.path))
+  // A retitle, a renamed tab or a deleted tab leaves files behind. Removing
+  // them here is what makes git show a rename or a deletion rather than
+  // quietly accumulating orphans.
+  for (const old of previous) {
+    if (written.has(old)) continue
+    const abs = path.join(REPO, old)
+    if (fs.existsSync(abs)) fs.rmSync(abs)
   }
-  fs.writeFileSync(path.join(REPO, file), text.endsWith('\n') || text === '' ? text : text + '\n')
-  st.path = file
+
+  for (const f of files) {
+    const abs = path.join(REPO, f.path)
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    fs.writeFileSync(abs, f.text)
+  }
+  // Prune directories the removals emptied, so a deleted sheet's folder
+  // doesn't linger.
+  for (const old of previous) {
+    const dir = path.dirname(path.join(REPO, old))
+    if (dir !== REPO && fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir)
+  }
+
+  st.files = files.map((f) => f.path)
+  delete st.path
   st.last_version_id = v.id
   fs.writeFileSync(path.join(REPO, STATE_FILE), JSON.stringify(state, null, 2) + '\n')
 
@@ -125,11 +179,11 @@ async function exportVersion(doc, v, state) {
     '-m', `${doc.title}: ${v.name}`,
     '-m', `Docs-Doc: ${doc.id}\nDocs-Version: ${v.id}`],
     { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date })
-  console.log(`committed ${file} @ seq ${v.seq} ("${v.name}")`)
+  console.log(`committed ${files.length} file(s) for ${baseFor(doc)} @ seq ${v.seq} ("${v.name}")`)
 }
 
 async function pass() {
-  const docs = (await (await api('/api/docs')).json()).filter((d) => d.kind === 'doc')
+  const docs = await (await api('/api/docs')).json() // docs as .md, sheets as CSV directories
   const state = readState()
   for (const doc of docs) {
     const hist = await (await api(`/api/docs/${doc.id}/history`)).json()

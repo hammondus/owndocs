@@ -1,5 +1,6 @@
-// Clipboard serialization. Pure string handling — no DOM, so it can be
-// tested headlessly and reused by a script runner later.
+// Grid text serialization: the clipboard's two flavours, and the CSV used
+// by file export and the git exporter. Pure string handling — no DOM, so
+// it can be tested headlessly and reused by the headless exporter.
 //
 // Two flavours go on the clipboard, which is what every spreadsheet does:
 //   text/plain  tab-separated DISPLAYED VALUES — what Excel, Numbers and
@@ -17,17 +18,22 @@ const MARK = 'data-docs-sheet'
 
 // ---- TSV ------------------------------------------------------------------
 
-// A field containing a tab, newline or quote is wrapped in double quotes
-// with "" escaping — the CSV convention, which spreadsheets apply to TSV too.
-function escapeField(s) {
-  return /[\t\n"]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+// A field containing the delimiter, a newline or a quote is wrapped in
+// double quotes with "" escaping — the CSV convention, which spreadsheets
+// apply to TSV too. CSV and TSV are the same format with a different
+// separator, so one implementation serves the clipboard and file export.
+function escapeField(s, delim) {
+  return s.includes(delim) || /[\n"]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
 }
 
-export function toTSV(grid) {
-  return grid.map((row) => row.map(escapeField).join('\t')).join('\n')
+export function toDelimited(grid, delim) {
+  return grid.map((row) => row.map((f) => escapeField(String(f ?? ''), delim)).join(delim)).join('\n')
 }
 
-export function parseTSV(text) {
+export const toTSV = (grid) => toDelimited(grid, '\t')
+export const toCSV = (grid) => toDelimited(grid, ',')
+
+export function parseDelimited(text, delim) {
   const src = text.replace(/\r\n?/g, '\n')
   const rows = []
   let row = []
@@ -43,7 +49,7 @@ export function parseTSV(text) {
       continue
     }
     if (c === '"' && field === '') quoted = true
-    else if (c === '\t') { row.push(field); field = '' }
+    else if (c === delim) { row.push(field); field = '' }
     else if (c === '\n') { row.push(field); rows.push(row); row = []; field = '' }
     else field += c
   }
@@ -56,6 +62,9 @@ export function parseTSV(text) {
   }
   return rows
 }
+
+export const parseTSV = (text) => parseDelimited(text, '\t')
+export const parseCSV = (text) => parseDelimited(text, ',')
 
 // ---- HTML flavour ---------------------------------------------------------
 

@@ -13,7 +13,7 @@
   import { Provider } from '../provider.js'
   import { Workbook, FIRST_SHEET } from '../sheet/model.js'
   import { colName } from '../sheet/engine.js'
-  import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
+  import { toTSV, toCSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
   import { NUMBER_FORMATS, formatNumber } from '../sheet/format.js'
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
   import { scheduleCompaction } from '../compaction.js'
@@ -538,6 +538,23 @@
     scheduleDraw()
   }
 
+  // Download the active tab. One tab, not the workbook: CSV has no concept
+  // of multiple sheets, and bundling would mean inventing a zip writer.
+  // The git exporter writes every tab, for whole-workbook backups.
+  function downloadCsv() {
+    const name = tabs.find((t) => t.id === activeId)?.name || 'Sheet1'
+    // A UTF-8 BOM, because Excel otherwise reads a UTF-8 CSV as the local
+    // codepage and mangles anything non-ASCII. The git export deliberately
+    // omits it — a BOM in a repository is noise in every diff.
+    const blob = new Blob(['﻿' + toCSV(model.toGrid())], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${doc.title} - ${name}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   function addSheet() {
     selectSheet(workbook.addSheet())
   }
@@ -995,6 +1012,7 @@
     <button onclick={() => { model.clearFormat(selRect()); scheduleDraw() }} title="Clear all formatting">clear</button>
     <span class="sep"></span>
     <button onclick={insertChart} title="Chart the selected range">📊 chart</button>
+    <button onclick={downloadCsv} title="Download this sheet as CSV">↓ csv</button>
   </div>
 {/if}
 

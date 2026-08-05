@@ -419,6 +419,38 @@ Like the document restore, this is an ordinary collaborative edit: it
 syncs to anyone with the sheet open, is undoable, and itself appears in
 history. Nothing is ever rewritten.
 
+### CSV export
+
+CSV is the export format and **displayed values** are what it contains —
+dates as dates, currency as currency, formulas as their computed result.
+Raw storage would be unreadable (a date is a serial like `46239`) and the
+whole point is to be legible somewhere else. It is the same decision, and
+now literally the same code, as the clipboard's `text/plain` flavour: CSV
+and TSV differ only by delimiter.
+
+- **In the app**, the button exports the active tab, since CSV has no
+  concept of multiple sheets and bundling would mean inventing a zip
+  writer. It carries a UTF-8 BOM, because Excel otherwise reads a UTF-8
+  CSV as the local codepage and mangles anything non-ASCII.
+- **In the git exporter**, a sheet becomes a *directory* of one CSV per
+  tab (`<slug>-<id>/<tab>.csv`), and there is deliberately **no BOM** — it
+  would be noise in every diff. Filenames come from the tab name, not its
+  position, so reordering tabs doesn't rewrite every file; a duplicate
+  name gets a short id suffix.
+- Exports are trimmed to the sheet's **used rectangle**, so a stray
+  `=Z100` reference — which materializes rows and columns — doesn't emit a
+  hundred blank lines.
+- The exporter's state file now records the **set of files** each document
+  produced, so a retitle, a renamed tab or a deleted tab removes the old
+  file and git shows a rename or a deletion instead of accumulating
+  orphans. Older state with a single `path` is read as a one-file list.
+
+Known gap, asserted in the exporter's end-to-end test so it is visible
+rather than forgotten: a formula's result carries no format of its own, so
+a `=SUM(...)` over a currency column exports as `15.5` rather than
+`$15.50`. Propagating operand formats to results is its own decision (which
+functions? what if operands disagree?) and has not been made.
+
 ### Import/export
 
 xlsx via `excelize` (mature, justified). Doc export is now trivial: the
@@ -775,8 +807,9 @@ applied, then shipped — see Dates for exactly what "disagree" amounts to);
 ~~history *browsing* UI for sheets deferred (the log and
 replay already work — only the preview renderer is markdown-specific)~~
 (shipped — see Version history for sheets);
-CSV/xlsx export later; the git exporter keeps skipping `kind=sheet` until
-a text serialization is chosen (likely CSV alongside the .md files).
+~~CSV/xlsx export later; the git exporter keeps skipping `kind=sheet` until
+a text serialization is chosen (likely CSV alongside the .md files)~~ (CSV
+shipped — see CSV export; xlsx still later).
 
 ---
 

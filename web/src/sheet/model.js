@@ -686,6 +686,33 @@ export class SheetModel {
 
   // ---- rectangles ---------------------------------------------------------
 
+  // The smallest rectangle holding every non-empty cell, or null when the
+  // sheet is empty. Export uses it so a stray `=Z100` reference — which
+  // materializes rows and columns — doesn't emit a hundred blank lines.
+  usedRect() {
+    this._index()
+    let r2 = -1
+    let c2 = -1
+    for (const key of this.cells.keys()) {
+      const dot = key.indexOf('.')
+      const r = this.rowPos.get(key.slice(0, dot))
+      const c = this.colPos.get(key.slice(dot + 1))
+      if (r === undefined || c === undefined) continue // orphan from a delete
+      if (r > r2) r2 = r
+      if (c > c2) c2 = c
+    }
+    return r2 < 0 ? null : { r1: 0, c1: 0, r2, c2 }
+  }
+
+  // Every cell as displayed text, ready for CSV. Displayed rather than raw
+  // so a date reads as a date and a total reads as its value — the point
+  // of an export is to be readable and diffable elsewhere.
+  toGrid() {
+    const rect = this.usedRect()
+    if (!rect) return []
+    return this.readRect(rect.r1, rect.c1, rect.r2, rect.c2).values
+  }
+
   // inputs = what to store on a copy (formulas, in A1 form); values = the
   // displayed text, which is what other applications expect on the clipboard.
   readRect(r1, c1, r2, c2) {

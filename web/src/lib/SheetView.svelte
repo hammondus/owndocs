@@ -14,6 +14,7 @@
   import { Workbook, FIRST_SHEET } from '../sheet/model.js'
   import { colName } from '../sheet/engine.js'
   import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
+  import { NUMBER_FORMATS } from '../sheet/format.js'
   import { scheduleCompaction } from '../compaction.js'
 
   let { me, doc, onBack, onShare } = $props()
@@ -23,6 +24,12 @@
   let readOnly = $derived(doc.role === 'viewer')
   const HEADER_W = 48
   const HEADER_H = 24
+  const BASE_FONT = '13px system-ui, sans-serif'
+
+  function fontFor(fmt) {
+    if (!fmt || (!fmt.b && !fmt.i)) return BASE_FONT
+    return `${fmt.i ? 'italic ' : ''}${fmt.b ? 'bold ' : ''}${BASE_FONT}`
+  }
 
   let status = $state('connecting…')
   let peerCount = $state(1)
@@ -174,7 +181,7 @@
     const ctx = canvasEl.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
-    ctx.font = '13px system-ui, sans-serif'
+    ctx.font = BASE_FONT
     ctx.textBaseline = 'middle'
 
     const sx = containerEl.scrollLeft
@@ -187,17 +194,29 @@
     const screenX = (c) => HEADER_W + colX[c] - sx
     const screenY = (r) => HEADER_H + rowY[r] - sy
 
-    // Selection fill goes under the gridlines.
+    // Cell backgrounds first, so the selection tint and gridlines sit on
+    // top of them rather than being painted over.
+    for (let r = r0; r <= r1 && r < R; r++) {
+      for (let c = c0; c <= c1 && c < C; c++) {
+        const f = model.formatOf(r, c)
+        if (!f || !f.bg) continue
+        ctx.fillStyle = f.bg
+        ctx.fillRect(screenX(c), screenY(r), colX[c + 1] - colX[c], rowY[r + 1] - rowY[r])
+      }
+    }
+
+    // Selection tint over the backgrounds.
     const s = selRect()
     ctx.fillStyle = 'rgba(21, 101, 192, 0.08)'
     ctx.fillRect(screenX(s.c1), screenY(s.r1), colX[s.c2 + 1] - colX[s.c1], rowY[s.r2 + 1] - rowY[s.r1])
 
     // Cell contents, clipped to their cell.
+    let font = BASE_FONT
     for (let r = r0; r <= r1 && r < R; r++) {
       const y = screenY(r) + (rowY[r + 1] - rowY[r]) / 2
       for (let c = c0; c <= c1 && c < C; c++) {
         if (edit && edit.r === r && edit.c === c) continue // input overlay shows here
-        const { text, align } = model.display(r, c)
+        const { text, align, fmt } = model.display(r, c)
         if (text === '') continue
         const x = screenX(c)
         const cw = colX[c + 1] - colX[c]
@@ -205,13 +224,20 @@
         ctx.beginPath()
         ctx.rect(x, screenY(r), cw, rowY[r + 1] - rowY[r])
         ctx.clip()
-        ctx.fillStyle = text.startsWith('#') && align === 'center' ? '#c62828' : '#202124'
+        // Only touch ctx.font when it actually changes: assigning it
+        // re-parses the shorthand, and this loop runs per visible cell.
+        const want = fontFor(fmt)
+        if (want !== font) { ctx.font = want; font = want }
+        ctx.fillStyle = text.startsWith('#') && align === 'center'
+          ? '#c62828'
+          : (fmt && fmt.c) || '#202124'
         ctx.textAlign = align
         const tx = align === 'right' ? x + cw - 5 : align === 'center' ? x + cw / 2 : x + 5
         ctx.fillText(text, tx, y)
         ctx.restore()
       }
     }
+    ctx.font = BASE_FONT
 
     // Gridlines.
     ctx.strokeStyle = '#e2e3e5'
@@ -328,7 +354,9 @@
     const { R, C } = layout
     r = Math.max(0, Math.min(r, R - 1))
     c = Math.max(0, Math.min(c, C - 1))
-    sel = extend ? { ...sel, r2: r, c2: c } : { r, c, r2: r, c2: c }
+    sel = extend
+      ? { ...sel, r2: r, c2: c, kind: 'cell' }
+      : { r, c, r2: r, c2: c, kind: 'cell' }
     publishSelection()
     scrollCellIntoView(r, c)
     scheduleDraw()
@@ -383,6 +411,39 @@
     })
   }
 
+  // ---- formatting ---------------------------------------------------------
+
+  // A selection made by clicking a column or row header formats the whole
+  // column/row — one stored default that also covers cells nobody has
+  // created yet. Anything else formats the selected cells.
+  function applyFormat(patch) {
+    if (readOnly) return
+    const s = selRect()
+    if (sel.kind === 'col') model.setColFormat(s.c1, s.c2, patch)
+    else if (sel.kind === 'row') model.setRowFormat(s.r1, s.r2, patch)
+    else model.setFormat(s, patch)
+    scheduleDraw()
+  }
+
+  // The active cell's look drives the toolbar's pressed states.
+  let activeFormat = $derived.by(() => {
+    revision
+    return (model && model.formatOf(sel.r, sel.c)) || {}
+  })
+
+  function toggle(key) {
+    applyFormat({ [key]: activeFormat[key] ? null : 1 })
+  }
+
+  function setAlign(a) {
+    applyFormat({ a: activeFormat.a === a ? null : a })
+  }
+
+  function setNumberFormat(e) {
+    const id = e.target.value
+    applyFormat({ n: id === 'auto' ? null : id })
+  }
+
   // ---- sheets -------------------------------------------------------------
 
   function selectSheet(id) {
@@ -431,10 +492,11 @@
     if (edit) return
     e.preventDefault()
     const s = selRect()
-    const { inputs, values } = model.readRect(s.r1, s.c1, s.r2, s.c2)
-    clipboard = { inputs, values, origin: { r: s.r1, c: s.c1 } }
+    const { inputs, values, formats } = model.readRect(s.r1, s.c1, s.r2, s.c2)
+    clipboard = { inputs, values, formats, origin: { r: s.r1, c: s.c1 } }
     e.clipboardData.setData('text/plain', toTSV(values))
-    e.clipboardData.setData('text/html', toHTML(values, { inputs, origin: clipboard.origin }))
+    e.clipboardData.setData('text/html',
+      toHTML(values, { inputs, formats, origin: clipboard.origin }))
     cutRegion = null
     scheduleDraw()
   }
@@ -456,15 +518,18 @@
 
     let inputs = null
     let origin = null
+    let formats = null
     const payload = readHTMLPayload(html)
     if (payload) {
       inputs = payload.inputs
       origin = payload.origin
+      formats = payload.formats
     } else if (clipboard && text && toTSV(clipboard.values) === text) {
       // Same-page fallback for a browser that dropped our HTML flavour:
       // the plain text still identifies our own copy.
       inputs = clipboard.inputs
       origin = clipboard.origin
+      formats = clipboard.formats
     } else if (text) {
       inputs = parseTSV(text) // foreign data: literals, nothing to translate
     }
@@ -475,6 +540,7 @@
       rows: s.r2 - s.r1 + 1,
       cols: s.c2 - s.c1 + 1,
       origin,
+      formats,
       clear: cutRegion,
     })
     cutRegion = null
@@ -526,7 +592,8 @@
         return
       }
       commitEdit(0, 0)
-      sel = { r: 0, c, r2: layout.R - 1, c2: c }
+      // kind 'col' so formatting targets the column default, not the cells.
+      sel = { r: 0, c, r2: layout.R - 1, c2: c, kind: 'col' }
       publishSelection()
       scheduleDraw()
       return
@@ -534,7 +601,7 @@
     if (x < HEADER_W && y >= HEADER_H) {
       const r = rowAt(sy + y - HEADER_H)
       commitEdit(0, 0)
-      sel = { r, c: 0, r2: r, c2: layout.C - 1 }
+      sel = { r, c: 0, r2: r, c2: layout.C - 1, kind: 'row' }
       publishSelection()
       scheduleDraw()
       return
@@ -775,6 +842,39 @@
     <button onclick={() => insertColsAt(true)} title="Insert column right">+col →</button>
     <button onclick={deleteSelCols} title="Delete selected columns">−col</button>
   </div>
+
+  <div class="toolbar">
+    <!-- class:on gives the button a pressed look when the active cell
+         already has that format. -->
+    <button class:on={activeFormat.b} onclick={() => toggle('b')} title="Bold (applies to the selection)"><b>B</b></button>
+    <button class:on={activeFormat.i} onclick={() => toggle('i')} title="Italic"><i>I</i></button>
+    <span class="sep"></span>
+    <button class:on={activeFormat.a === 'l'} onclick={() => setAlign('l')} title="Align left">⇤</button>
+    <button class:on={activeFormat.a === 'c'} onclick={() => setAlign('c')} title="Align centre">⇔</button>
+    <button class:on={activeFormat.a === 'r'} onclick={() => setAlign('r')} title="Align right">⇥</button>
+    <span class="sep"></span>
+    <select value={activeFormat.n || 'auto'} onchange={setNumberFormat} title="Number format">
+      {#each NUMBER_FORMATS as nf (nf.id)}
+        <option value={nf.id}>{nf.label}</option>
+      {/each}
+    </select>
+    <span class="sep"></span>
+    <!-- Native colour inputs: no custom picker to build or maintain. The
+         × next to each clears the colour, which a colour input cannot
+         express on its own. -->
+    <label title="Text colour">
+      A<input type="color" value={activeFormat.c || '#202124'}
+        oninput={(e) => applyFormat({ c: e.target.value })} />
+    </label>
+    <button onclick={() => applyFormat({ c: null })} title="Clear text colour">×</button>
+    <label title="Background colour">
+      ▉<input type="color" value={activeFormat.bg || '#ffffff'}
+        oninput={(e) => applyFormat({ bg: e.target.value })} />
+    </label>
+    <button onclick={() => applyFormat({ bg: null })} title="Clear background">×</button>
+    <span class="sep"></span>
+    <button onclick={() => { model.clearFormat(selRect()); scheduleDraw() }} title="Clear all formatting">clear</button>
+  </div>
 {/if}
 
 <div class="formula-bar">
@@ -864,6 +964,31 @@
     display: flex;
     gap: 0.25rem;
     margin-bottom: 0.25rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .toolbar button.on {
+    background: #e8f0fe;
+    border-color: #1565c0;
+  }
+  .toolbar .sep {
+    width: 1px;
+    align-self: stretch;
+    background: #d0d1d3;
+    margin: 0 0.25rem;
+  }
+  .toolbar label {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: 0.85rem;
+  }
+  .toolbar input[type='color'] {
+    width: 22px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid #d0d1d3;
+    background: none;
   }
   .formula-bar {
     display: flex;

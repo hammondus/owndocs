@@ -591,12 +591,53 @@ Writing `=Sheet2!C5` materializes that sheet up to C5, exactly as an
 in-sheet forward reference does; otherwise the reference would be born
 dead on an empty sheet.
 
+### Formatting lives in its own map, not in the cell value
+
+~~Cell values become `{v, ...format}` objects; readers accept both.~~
+Superseded. Formatting is a **separate Y.Map** (`fmt`) keyed the same way
+as `cells`. The reason is concurrent merging: if the format lived inside
+the cell value, one person bolding A1 while another types into A1 would be
+two writes to the same map key, and last-writer-wins would throw one away.
+In separate maps they touch different keys and both survive — verified
+with two clients, locally and over the wire. It also leaves the formula
+and paste machinery completely untouched, since `cells` stays a map of
+plain input strings.
+
+Other decisions here:
+
+- **Cell over row over column.** `fmt` also holds `c.<colId>` and
+  `r.<rowId>` defaults, so "make this column currency" is one stored entry
+  that covers rows nobody has created yet — a per-cell write would cover
+  neither. A selection made by clicking a column header formats the
+  column; any other selection formats its cells.
+- **Values are never formatted, only displayed.** `display()` applies the
+  format; `getValue()` and every formula see the raw number. Storing
+  formatted text would corrupt arithmetic, and the "computed values are
+  never stored" rule already forbids it.
+- **Typed punctuation is a format request.** `$1,234.50`, `12%` and
+  `1,000` store a *number* and set the format the punctuation implies —
+  what every spreadsheet does, and the alternative (storing the string
+  "12%") makes the cell unusable in arithmetic. `parseTypedNumber` is
+  pure and tested, including the cases that must stay text.
+- **`Intl.NumberFormat` for grouping and rounding**, cached per spec:
+  built into browser and node, locale-correct, no dependency, and no
+  hand-rolled digit juggling. Currency stores a *symbol* rather than an
+  ISO code, so there is no locale guessing to get wrong; a proper currency
+  picker can come later.
+- **Formatting travels with content** through copy, paste and fill. The
+  clipboard's HTML flavour also carries inline CSS, so bold and colours
+  survive a paste into Excel or Google Sheets.
+- Deleting a row or column removes its formats, so a later id occupying
+  that position cannot inherit a ghost.
+
 ### v1 scope cuts (deliberate, recorded)
 
 ~~Single sheet per doc (tabs need a container restructure — decide before,
 not after, people have data)~~ (shipped — see Multiple sheets; still
-missing: tab reordering by drag, moving/copying a sheet); no cell formatting (raw-string cell values
-can become objects later — readers accept both); ~~no fill handle or
+missing: tab reordering by drag, moving/copying a sheet); ~~no cell
+formatting~~ (shipped — see Formatting; still missing: date formats and a
+date type at all, borders, merged cells, conditional formatting, font
+size/family); ~~no fill handle or
 copy-paste of formulas (hence `$` inert)~~ (both shipped — see Copy/paste
 and fill; still missing: double-click-to-fill-down, date/weekday series,
 paste-special); no volatile functions

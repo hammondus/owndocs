@@ -63,11 +63,28 @@ const escapeHTML = (s) =>
 const unescapeHTML = (s) =>
   s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
 
-// payload: {inputs, origin} — raw cell inputs plus where they came from,
-// which is what lets paste shift relative references correctly.
+// Inline styles on each cell, so formatting survives a paste into Excel or
+// Google Sheets — they read the HTML flavour's CSS, not our attribute.
+function cellStyle(f) {
+  if (!f) return ''
+  const css = []
+  if (f.b) css.push('font-weight:bold')
+  if (f.i) css.push('font-style:italic')
+  if (f.a) css.push(`text-align:${f.a === 'l' ? 'left' : f.a === 'c' ? 'center' : 'right'}`)
+  if (f.c) css.push(`color:${f.c}`)
+  if (f.bg) css.push(`background-color:${f.bg}`)
+  return css.length ? ` style="${escapeHTML(css.join(';'))}"` : ''
+}
+
+// payload: {inputs, formats, origin} — raw cell inputs and their formats
+// plus where they came from, which is what lets paste shift relative
+// references correctly.
 export function toHTML(values, payload) {
+  const formats = payload?.formats
   const body = values
-    .map((row) => '<tr>' + row.map((v) => `<td>${escapeHTML(v)}</td>`).join('') + '</tr>')
+    .map((row, i) => '<tr>' + row
+      .map((v, j) => `<td${cellStyle(formats?.[i]?.[j])}>${escapeHTML(v)}</td>`)
+      .join('') + '</tr>')
     .join('')
   return `<table ${MARK}="${escapeHTML(JSON.stringify(payload))}">${body}</table>`
 }

@@ -11,9 +11,12 @@
 //   cols  / s.<id>.cols   Y.Array of col ids
 //   cells / s.<id>.cells  Y.Map keyed "rowId.colId" -> raw input string
 //   dims  / s.<id>.dims   Y.Map keyed "w.<colId>" / "h.<rowId>" -> px size
+//   fmt   / s.<id>.fmt    Y.Map keyed "rowId.colId" (cell), "c.<colId>",
+//                         "r.<rowId>" -> format record (see format.js)
 // Reserved for later phases: objects (charts), scripts.
 import * as Y from 'yjs'
 import { parseFormula, mapRefs, collectRefs, serialize, evaluate, isErr, ERR, fmtNum } from './engine.js'
+import { formatNumber, resolveFormat, mergeFormat, parseTypedNumber } from './format.js'
 
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 function newId() {
@@ -29,6 +32,8 @@ export const DEFAULT_ROW_H = 24
 // migrated or copied when tabs arrive — the existing containers simply
 // become sheet one, which also means no concurrent-migration hazard.
 export const FIRST_SHEET = '1'
+
+const ALIGN_NAMES = { l: 'left', c: 'center', r: 'right' }
 
 export class Workbook {
   constructor(ydoc) {
@@ -175,9 +180,14 @@ export class SheetModel {
     this.cols = this.ydoc.getArray(p + 'cols')
     this.cells = this.ydoc.getMap(p + 'cells')
     this.dims = this.ydoc.getMap(p + 'dims')
+    // Formatting is a SEPARATE map from cell contents on purpose: one
+    // person bolding A1 while another types into A1 then touches two
+    // different keys and both survive. Folding format into the cell value
+    // would make last-writer-wins throw one of them away.
+    this.fmt = this.ydoc.getMap(p + 'fmt')
     this.indexesStale = true
 
-    workbook.undo.addToScope([this.rows, this.cols, this.cells, this.dims])
+    workbook.undo.addToScope([this.rows, this.cols, this.cells, this.dims, this.fmt])
 
     const structural = () => { this._invalidate(); workbook.notify() }
     const contents = () => { this._invalidateValues(); workbook.notify() }
@@ -185,6 +195,9 @@ export class SheetModel {
     this.cols.observe(structural)
     this.cells.observe(contents)
     this.dims.observe(contents)
+    // Formatting changes appearance, never a computed value, so there is
+    // nothing to recompute — just repaint.
+    this.fmt.observe(() => workbook.notify())
   }
 
   get undo() { return this.wb.undo }
@@ -255,6 +268,100 @@ export class SheetModel {
     this._invalidate()
   }
 
+  // ---- formatting ---------------------------------------------------------
+
+  // The record stored on this cell alone, ignoring row/column defaults.
+  cellFormat(r, c) {
+    this._index()
+    const rid = this.rowIds[r], cid = this.colIds[c]
+    if (!rid || !cid) return null
+    return this.fmt.get(rid + '.' + cid) || null
+  }
+
+  // What the cell should actually look like: column default, then row
+  // default, then the cell's own record.
+  formatOf(r, c) {
+    this._index()
+    const rid = this.rowIds[r], cid = this.colIds[c]
+    if (!rid || !cid) return null
+    return resolveFormat(
+      cid ? this.fmt.get('c.' + cid) : null,
+      rid ? this.fmt.get('r.' + rid) : null,
+      this.fmt.get(rid + '.' + cid),
+    )
+  }
+
+  _patchKey(key, patch) {
+    const next = mergeFormat(this.fmt.get(key), patch)
+    if (next) this.fmt.set(key, next)
+    else this.fmt.delete(key)
+  }
+
+  // Apply a format patch to every cell in a rect. A key set to null (or
+  // false) is removed, which is how the toolbar toggles bold off.
+  setFormat(rect, patch) {
+    this.tx(() => {
+      this.ensureSize(rect.r2, rect.c2)
+      this._index()
+      for (let r = rect.r1; r <= rect.r2; r++) {
+        for (let c = rect.c1; c <= rect.c2; c++) {
+          const rid = this.rowIds[r], cid = this.colIds[c]
+          if (rid && cid) this._patchKey(rid + '.' + cid, patch)
+        }
+      }
+    })
+  }
+
+  // Column and row defaults exist so that "format this column as currency"
+  // is one entry that also covers rows nobody has created yet — writing a
+  // record per cell would cover neither.
+  setColFormat(c1, c2, patch) {
+    this.tx(() => {
+      this.ensureSize(0, c2)
+      this._index()
+      for (let c = c1; c <= c2; c++) {
+        if (this.colIds[c]) this._patchKey('c.' + this.colIds[c], patch)
+      }
+    })
+  }
+
+  setRowFormat(r1, r2, patch) {
+    this.tx(() => {
+      this.ensureSize(r2, 0)
+      this._index()
+      for (let r = r1; r <= r2; r++) {
+        if (this.rowIds[r]) this._patchKey('r.' + this.rowIds[r], patch)
+      }
+    })
+  }
+
+  // Strip formatting from a rect, including any row/column defaults that
+  // fully cover it — otherwise "clear formatting" would visibly do nothing
+  // on a cell whose look came from its column.
+  clearFormat(rect) {
+    this.tx(() => {
+      this._index()
+      for (let r = rect.r1; r <= rect.r2; r++) {
+        const rid = this.rowIds[r]
+        if (!rid) continue
+        for (let c = rect.c1; c <= rect.c2; c++) {
+          const cid = this.colIds[c]
+          if (cid) this.fmt.delete(rid + '.' + cid)
+        }
+      }
+      if (rect.r1 === 0 && rect.r2 >= this.rows.length - 1) {
+        for (let c = rect.c1; c <= rect.c2; c++) {
+          if (this.colIds[c]) this.fmt.delete('c.' + this.colIds[c])
+        }
+      }
+      if (rect.c1 === 0 && rect.c2 >= this.cols.length - 1) {
+        for (let r = rect.r1; r <= rect.r2; r++) {
+          if (this.rowIds[r]) this.fmt.delete('r.' + this.rowIds[r])
+        }
+      }
+    })
+  }
+
   // ---- cell input ---------------------------------------------------------
 
   getRaw(r, c) {
@@ -308,6 +415,21 @@ export class SheetModel {
     }
     this.tx(() => {
       let stored = text
+      // "$1,234.50" and "12%" are numbers wearing punctuation. Store the
+      // number and let the punctuation choose the format, as every
+      // spreadsheet does — otherwise typing 12% would give you the string.
+      if (!text.startsWith('=')) {
+        const typed = parseTypedNumber(text)
+        if (typed) {
+          stored = String(typed.value)
+          if (typed.fmt) {
+            this.ensureSize(r, c)
+            this._index()
+            const rid = this.rowIds[r], cid = this.colIds[c]
+            if (rid && cid) this._patchKey(rid + '.' + cid, typed.fmt)
+          }
+        }
+      }
       if (text.startsWith('=')) {
         let ast = null
         try {
@@ -391,24 +513,30 @@ export class SheetModel {
   readRect(r1, c1, r2, c2) {
     const inputs = []
     const values = []
+    const formats = []
     for (let r = r1; r <= r2; r++) {
       const irow = []
       const vrow = []
+      const frow = []
       for (let c = c1; c <= c2; c++) {
         irow.push(this.getInput(r, c))
         vrow.push(this.display(r, c).text)
+        // The RESOLVED format travels, so pasting a currency cell into a
+        // plain column still looks like currency at the destination.
+        frow.push(this.formatOf(r, c))
       }
       inputs.push(irow)
       values.push(vrow)
+      formats.push(frow)
     }
-    return { inputs, values }
+    return { inputs, values, formats }
   }
 
   // Write a block at (r,c), repeating it to cover `rows` x `cols` when the
   // target area is larger (paste into a bigger selection, as in Sheets).
   // origin = where the block was copied from, or null for foreign data with
   // no references to translate. clear = a rect emptied first, for cut.
-  writeRect(r, c, inputs, { rows, cols, origin = null, clear = null } = {}) {
+  writeRect(r, c, inputs, { rows, cols, origin = null, clear = null, formats = null } = {}) {
     const h = inputs.length
     const w = h ? inputs[0].length : 0
     if (!h || !w) return
@@ -429,9 +557,21 @@ export class SheetModel {
           const dRow = origin ? r + i - (origin.r + si) : 0
           const dCol = origin ? c + j - (origin.c + sj) : 0
           this.setCellShifted(r + i, c + j, inputs[si][sj], dRow, dCol)
+          if (formats) this._setCellFormat(r + i, c + j, formats[si]?.[sj] || null)
         }
       }
     })
+  }
+
+  // Replace a cell's own format record outright (paste and fill carry
+  // formatting with the content, as every spreadsheet does).
+  _setCellFormat(r, c, fmt) {
+    this.ensureSize(r, c)
+    this._index()
+    const rid = this.rowIds[r], cid = this.colIds[c]
+    if (!rid || !cid) return
+    if (fmt && Object.keys(fmt).length) this.fmt.set(rid + '.' + cid, { ...fmt })
+    else this.fmt.delete(rid + '.' + cid)
   }
 
   // ---- fill ---------------------------------------------------------------
@@ -486,18 +626,23 @@ export class SheetModel {
       }
     }
 
+    // Formatting travels with a fill: dragging a currency cell down must
+    // give currency cells, not bare numbers.
+    const formats = srcCells.map(([r, c]) => this.cellFormat(r, c))
+
     targets.forEach(([tr, tc], k) => {
+      const idx = forward
+        ? k % inputs.length
+        : inputs.length - 1 - (k % inputs.length)
       if (step !== null) {
         const base = forward ? nums[nums.length - 1] : nums[0]
         const v = forward ? base + step * (k + 1) : base - step * (k + 1)
         this.setCell(tr, tc, fmtNum(v))
-        return
+      } else {
+        const [sr, sc] = srcCells[idx]
+        this.setCellShifted(tr, tc, inputs[idx], tr - sr, tc - sc)
       }
-      const idx = forward
-        ? k % inputs.length
-        : inputs.length - 1 - (k % inputs.length)
-      const [sr, sc] = srcCells[idx]
-      this.setCellShifted(tr, tc, inputs[idx], tr - sr, tc - sc)
+      this._setCellFormat(tr, tc, formats[idx])
     })
   }
 
@@ -586,15 +731,22 @@ export class SheetModel {
     }
   }
 
-  // What the grid paints: display text plus alignment (numbers right,
-  // text left — the convention every spreadsheet user reads by).
+  // What the grid paints: display text, alignment and the resolved format.
+  // Alignment defaults by type (numbers right, text left — the convention
+  // every spreadsheet user reads by) and an explicit format overrides it.
   display(r, c) {
     const v = this.getValue(r, c)
-    if (v === null) return { text: '', align: 'left' }
-    if (isErr(v)) return { text: v.error, align: 'center' }
-    if (typeof v === 'number') return { text: fmtNum(v), align: 'right' }
-    if (typeof v === 'boolean') return { text: v ? 'TRUE' : 'FALSE', align: 'center' }
-    return { text: v, align: 'left' }
+    const f = this.formatOf(r, c)
+    const out = (text, align) => ({
+      text,
+      align: f && f.a ? ALIGN_NAMES[f.a] || align : align,
+      fmt: f,
+    })
+    if (v === null) return out('', 'left')
+    if (isErr(v)) return out(v.error, 'center')
+    if (typeof v === 'number') return out(formatNumber(v, f) ?? fmtNum(v), 'right')
+    if (typeof v === 'boolean') return out(v ? 'TRUE' : 'FALSE', 'center')
+    return out(v, 'left')
   }
 
   // ---- structure ----------------------------------------------------------
@@ -626,7 +778,13 @@ export class SheetModel {
       for (const key of [...this.cells.keys()]) {
         if (ids.includes(key.split('.')[0])) this.cells.delete(key)
       }
-      for (const id of ids) this.dims.delete('h.' + id)
+      for (const key of [...this.fmt.keys()]) {
+        if (ids.includes(key.split('.')[0])) this.fmt.delete(key)
+      }
+      for (const id of ids) {
+        this.dims.delete('h.' + id)
+        this.fmt.delete('r.' + id)
+      }
     })
     this._invalidate()
   }
@@ -640,7 +798,13 @@ export class SheetModel {
       for (const key of [...this.cells.keys()]) {
         if (ids.includes(key.split('.')[1])) this.cells.delete(key)
       }
-      for (const id of ids) this.dims.delete('w.' + id)
+      for (const key of [...this.fmt.keys()]) {
+        if (ids.includes(key.split('.')[1])) this.fmt.delete(key)
+      }
+      for (const id of ids) {
+        this.dims.delete('w.' + id)
+        this.fmt.delete('c.' + id)
+      }
     })
     this._invalidate()
   }

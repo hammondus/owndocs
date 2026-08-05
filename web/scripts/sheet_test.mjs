@@ -5,6 +5,7 @@ import * as Y from 'yjs'
 import { parseFormula, serialize, evaluate, isErr, fmtNum, colName, parseColName } from '../src/sheet/engine.js'
 import { Workbook, SheetModel, FIRST_SHEET } from '../src/sheet/model.js'
 import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../src/sheet/clipboard.js'
+import { parseTypedNumber, formatNumber, mergeFormat, resolveFormat } from '../src/sheet/format.js'
 
 let failures = 0
 function eq(got, want, what) {
@@ -553,6 +554,142 @@ for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A
 {
   const wb = new Workbook(new Y.Doc())
   eq(wb.removeSheet(FIRST_SHEET), false, 'the last remaining sheet cannot be removed')
+}
+
+// ---- formatting ------------------------------------------------------------
+
+{
+  // parseTypedNumber: punctuation the user types is a format request.
+  eq(parseTypedNumber('1234'), { value: 1234, fmt: null }, 'a plain number implies no format')
+  eq(parseTypedNumber('1,234'), { value: 1234, fmt: { n: 'int' } }, 'grouping separators imply a grouped format')
+  eq(parseTypedNumber('1,234.5'), { value: 1234.5, fmt: { n: 'dec2' } }, 'grouped with decimals implies 2dp')
+  eq(parseTypedNumber('12%'), { value: 0.12, fmt: { n: 'pct' } }, 'percent stores the fraction')
+  eq(parseTypedNumber('-12%'), { value: -0.12, fmt: { n: 'pct' } }, 'negative percent')
+  eq(parseTypedNumber('$1,234.50'), { value: 1234.5, fmt: { n: 'cur', cur: '$' } }, 'currency stores the number')
+  eq(parseTypedNumber('-$5'), { value: -5, fmt: { n: 'cur', cur: '$' } }, 'negative currency')
+  eq(parseTypedNumber('€9.99'), { value: 9.99, fmt: { n: 'cur', cur: '€' } }, 'other currency symbols')
+  eq(parseTypedNumber('hello'), null, 'text is not a number')
+  eq(parseTypedNumber(''), null, 'empty is not a number')
+  eq(parseTypedNumber('1,23'), null, 'malformed grouping is text, not a number')
+  eq(parseTypedNumber('12%%'), null, 'nonsense is text')
+
+  eq(formatNumber(1234.567, { n: 'int' }), '1,235', 'int format rounds and groups')
+  eq(formatNumber(1234.567, { n: 'dec2' }), '1,234.57', 'dec2 rounds to 2dp')
+  eq(formatNumber(1234.5, { n: 'plain' }), '1234.5', 'plain does not group')
+  eq(formatNumber(0.1234, { n: 'pct' }), '12.34%', 'percent scales by 100')
+  eq(formatNumber(1234.5, { n: 'cur', cur: '$' }), '$1,234.50', 'currency pads to 2dp')
+  eq(formatNumber(-5, { n: 'cur', cur: '$' }), '-$5.00', 'the sign goes outside the currency symbol')
+  eq(formatNumber(5, null), null, 'no format means the caller decides')
+
+  eq(mergeFormat({ b: 1, i: 1 }, { b: null }), { i: 1 }, 'a null patch value removes the key')
+  eq(mergeFormat({ b: 1 }, { b: null }), null, 'emptying a record yields null so it can be deleted')
+  eq(resolveFormat({ n: 'cur' }, null, { b: 1 }), { n: 'cur', b: 1 }, 'cell format layers over the column')
+  eq(resolveFormat({ n: 'cur' }, null, { n: 'pct' }), { n: 'pct' }, 'the cell wins over its column')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '1234.5')
+  eq(m.display(0, 0).text, '1234.5', 'unformatted numbers display as typed')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { n: 'cur', cur: '$' })
+  eq(m.display(0, 0).text, '$1,234.50', 'currency format applies')
+  eq(m.getInput(0, 0), '1234.5', 'but the underlying input is untouched')
+  eq(val(m, 0, 0), 1234.5, 'and so is the value, so formulas are unaffected')
+
+  m.setCell(1, 0, '=A1*2')
+  eq(val(m, 1, 0), 2469, 'a formula reads the number, not the formatted text')
+}
+
+{
+  // Typing punctuation sets both the value and the format.
+  const m = newModel()
+  m.setCell(0, 0, '$1,500')
+  eq(val(m, 0, 0), 1500, 'typed currency stores a number')
+  eq(m.display(0, 0).text, '$1,500.00', 'and displays as currency')
+  m.setCell(0, 1, '15%')
+  eq(val(m, 0, 1), 0.15, 'typed percent stores the fraction')
+  eq(m.display(0, 1).text, '15%', 'and displays as a percent')
+  m.setCell(0, 2, '=B1*2')
+  eq(val(m, 0, 2), 0.3, 'percent cells compute as fractions')
+}
+
+{
+  // Column defaults cover cells that do not exist yet.
+  const m = newModel()
+  m.setCell(0, 0, '5')
+  m.setColFormat(0, 0, { n: 'cur', cur: '$' })
+  eq(m.display(0, 0).text, '$5.00', 'a column format reaches existing cells')
+  m.setCell(9, 0, '7')
+  eq(m.display(9, 0).text, '$7.00', 'and cells created afterwards')
+  m.setFormat({ r1: 9, c1: 0, r2: 9, c2: 0 }, { n: 'pct' })
+  eq(m.display(9, 0).text, '700%', 'a cell format overrides its column')
+  eq(m.display(0, 0).text, '$5.00', 'without disturbing its neighbours')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, 'x')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { b: 1, c: '#ff0000' })
+  eq(m.formatOf(0, 0), { b: 1, c: '#ff0000' }, 'bold and colour are stored')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { b: null })
+  eq(m.formatOf(0, 0), { c: '#ff0000' }, 'toggling bold off leaves the colour')
+  m.clearFormat({ r1: 0, c1: 0, r2: 0, c2: 0 })
+  eq(m.formatOf(0, 0), null, 'clear removes everything')
+}
+
+{
+  // Alignment overrides the type default in both directions.
+  const m = newModel()
+  m.setCell(0, 0, '5')
+  eq(m.display(0, 0).align, 'right', 'numbers default right')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { a: 'l' })
+  eq(m.display(0, 0).align, 'left', 'an explicit alignment wins')
+}
+
+{
+  // Formatting rides along with copy/paste and with fill.
+  const m = newModel()
+  m.setCell(0, 0, '10')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { n: 'cur', cur: '$', b: 1 })
+  const { inputs, formats } = m.readRect(0, 0, 0, 0)
+  m.writeRect(5, 5, inputs, { origin: { r: 0, c: 0 }, formats })
+  eq(m.display(5, 5).text, '$10.00', 'paste carries the format')
+  eq(m.formatOf(5, 5).b, 1, 'including bold')
+
+  m.setCell(1, 0, '20')
+  m.setFormat({ r1: 1, c1: 0, r2: 1, c2: 0 }, { n: 'cur', cur: '$' })
+  m.fill({ r1: 0, c1: 0, r2: 1, c2: 0 }, { r1: 0, c1: 0, r2: 3, c2: 0 })
+  eq(val(m, 3, 0), 40, 'the series still extrapolates')
+  eq(m.display(3, 0).text, '$40.00', 'and filled cells keep the source formatting')
+}
+
+{
+  // Deleting a row must not leave its formats behind to be inherited by
+  // whatever id later occupies that position.
+  const m = newModel()
+  m.setCell(0, 0, 'a')
+  m.setCell(1, 0, 'b')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { b: 1 })
+  m.setRowFormat(0, 0, { i: 1 })
+  m.deleteRows(0)
+  eq([...m.fmt.keys()].length, 0, 'deleting a row removes its cell and row formats')
+  eq(m.formatOf(0, 0), null, 'the row that shifted up is unformatted')
+}
+
+{
+  // Formatting and typing the same cell concurrently must both survive —
+  // the reason formats live in their own map.
+  const dA = new Y.Doc(), dB = new Y.Doc()
+  const a = newModel(dA), b = newModel(dB)
+  a.setCell(0, 0, 'hello')
+  syncBoth(dA, dB)
+  a.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { b: 1 })
+  b.setCell(0, 0, 'goodbye')
+  syncBoth(dA, dB)
+  eq(val(a, 0, 0), 'goodbye', "the other client's edit lands")
+  eq(a.formatOf(0, 0), { b: 1 }, 'and the concurrent formatting is not lost')
+  eq(val(b, 0, 0), 'goodbye', 'both sides agree on content')
+  eq(b.formatOf(0, 0), { b: 1 }, 'and on format')
 }
 
 // ---- A1 helpers -----------------------------------------------------------

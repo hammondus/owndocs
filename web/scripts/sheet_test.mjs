@@ -1125,6 +1125,105 @@ function chartModel() {
   eq(val(wbk.sheet(FIRST_SHEET), 0, 0), 'v1', 'the restore syncs to the other client')
 }
 
+// ---- number formats propagate through formulas -------------------------------
+
+{
+  // The gap this closes: a total under a currency column used to read 15.5
+  // while every cell above it read $10.00.
+  const m = newModel()
+  m.setCell(0, 0, '$10')
+  m.setCell(1, 0, '$5.50')
+  m.setCell(2, 0, '=SUM(A1:A2)')
+  eq(m.display(2, 0).text, '$15.50', 'a total inherits the currency of the cells it sums')
+  eq(val(m, 2, 0), 15.5, 'while the value stays a plain number')
+
+  m.setCell(3, 0, '=AVERAGE(A1:A2)')
+  eq(m.display(3, 0).text, '$7.75', 'AVERAGE inherits too')
+  m.setCell(4, 0, '=COUNT(A1:A2)')
+  eq(m.display(4, 0).text, '2', 'COUNT does not — it returns a count, not an amount')
+}
+
+{
+  // A column format covers cells that do not exist yet, so a total under a
+  // formatted column works before anything is typed into it.
+  const m = newModel()
+  m.setColFormat(0, 0, { n: 'cur', cur: '$' })
+  m.setCell(0, 0, '10')
+  m.setCell(1, 0, '20')
+  m.setCell(2, 1, '=SUM(A1:A2)')
+  eq(m.display(2, 1).text, '$30.00', 'an aggregate inherits a column-level format')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '$100')
+  m.setCell(1, 0, '=A1')
+  eq(m.display(1, 0).text, '$100.00', 'a bare reference inherits')
+  m.setCell(2, 0, '=A1+50')
+  eq(m.display(2, 0).text, '$150.00', 'adding a plain number keeps the format')
+  m.setCell(3, 0, '=A1*0.1')
+  eq(m.display(3, 0).text, '$10.00', 'multiplying by a plain number keeps it')
+  m.setCell(4, 0, '=A1*10%')
+  eq(m.display(4, 0).text, '$10.00', 'percent is dimensionless: currency times percent is currency')
+}
+
+{
+  // Two formatted operands multiplied make units no single format
+  // describes, so nothing is inherited rather than something wrong.
+  const m = newModel()
+  m.setCell(0, 0, '$10')
+  m.setCell(0, 1, '$4')
+  m.setCell(1, 0, '=A1*B1')
+  eq(m.display(1, 0).text, '40', 'currency times currency inherits nothing')
+  m.setCell(2, 0, '=A1/B1')
+  eq(m.display(2, 0).text, '2.5', 'and neither does dividing one by the other')
+  m.setCell(3, 0, '=A1-B1')
+  eq(m.display(3, 0).text, '$6.00', 'but subtracting like from like keeps the unit')
+}
+
+{
+  // Disagreeing operands and ranges inherit nothing.
+  const m = newModel()
+  m.setCell(0, 0, '$10')
+  m.setCell(1, 0, '25%')
+  m.setCell(2, 0, '=SUM(A1:A2)')
+  eq(m.display(2, 0).text, '10.25', 'a range of mixed formats inherits nothing')
+  m.setCell(3, 0, '=A1+A2')
+  eq(m.display(3, 0).text, '10.25', 'and neither do mismatched operands')
+}
+
+{
+  // The date rules from before must survive the generalisation.
+  const m = newModel()
+  m.setCell(0, 0, '2026-08-05')
+  m.setCell(1, 0, '2026-08-20')
+  m.setCell(2, 0, '=A2-A1')
+  eq(m.display(2, 0).text, '15', 'date minus date is still a count of days')
+  m.setCell(3, 0, '=A1+7')
+  eq(m.display(3, 0).text, '2026-08-12', 'date plus days is still a date')
+  m.setCell(4, 0, '=MIN(A1:A2)')
+  eq(m.display(4, 0).text, '2026-08-05', 'MIN over dates is a date')
+}
+
+{
+  // An explicit format always wins over an inherited one.
+  const m = newModel()
+  m.setCell(0, 0, '$10')
+  m.setFormat({ r1: 1, c1: 0, r2: 1, c2: 0 }, { n: 'plain' })
+  m.setCell(1, 0, '=A1')
+  eq(m.display(1, 0).text, '10', 'a format the user set is not overridden')
+}
+
+{
+  // Only the number format travels: bold and colour stay where they were
+  // applied, because they are presentation rather than a unit.
+  const m = newModel()
+  m.setCell(0, 0, '$10')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { b: 1, c: '#ff0000' })
+  m.setCell(1, 0, '=A1')
+  eq(m.formatOf(1, 0), { n: 'cur', cur: '$' }, 'the result inherits the number format alone')
+}
+
 // ---- A1 helpers -----------------------------------------------------------
 
 eq(colName(0), 'A', 'colName A')

@@ -27,6 +27,26 @@ const DATE_RETURNING = {
   TODAY: 'date', DATE: 'date', EDATE: 'date', NOW: 'datetime', TIME: 'time',
 }
 
+// Functions whose result is in the same units as their input, so a total
+// under a currency column is itself currency. COUNT, COUNTA and DAYS are
+// absent on purpose: they return counts, not amounts.
+const AGGREGATES = new Set(['SUM', 'AVERAGE', 'MIN', 'MAX', 'ROUND', 'ABS'])
+
+// A cap on how many cells a range is inspected for a common format. This
+// runs on every formula commit and the answer is usually decided by the
+// first cell or two.
+const RANGE_FORMAT_SCAN_LIMIT = 400
+
+// Only the number format (and its currency symbol) travels through a
+// formula; bold, colour and alignment stay with the cells they were
+// applied to.
+function numberFormatOf(f) {
+  if (!f || !f.n) return null
+  return f.cur ? { n: f.n, cur: f.cur } : { n: f.n }
+}
+
+const sameNumberFormat = (a, b) => a.n === b.n && (a.cur || '') === (b.cur || '')
+
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 function newId() {
   let s = ''
@@ -612,15 +632,14 @@ export class SheetModel {
           }
           stored = '=' + serialize(mapRefs(ast, toId))
 
-          // Give a date-producing formula a date format, unless the cell
-          // already says otherwise. Same spirit as typed punctuation: the
-          // input tells us how the result should read.
-          const suggested = this._suggestedDateFormat(ast)
+          // Let the formula's inputs choose how its result reads, unless
+          // the cell already says otherwise. Same spirit as typed
+          // punctuation: the input tells us what the value means.
+          const suggested = this._suggestedFormat(ast)
           if (suggested) {
-            const own = this.fmt.get(this.rowIds[r] + '.' + this.colIds[c])
-            if (!own || !own.n) {
-              this._patchKey(this.rowIds[r] + '.' + this.colIds[c], { n: suggested })
-            }
+            const key = this.rowIds[r] + '.' + this.colIds[c]
+            const own = this.fmt.get(key)
+            if (!own || !own.n) this._patchKey(key, suggested)
           }
         }
       }
@@ -636,31 +655,88 @@ export class SheetModel {
     })
   }
 
-  // Which date format, if any, a formula's result should wear:
+  // What number format, if any, a formula's result should inherit from its
+  // inputs. Without this a total under a currency column reads 15.5 while
+  // every cell above it reads $10.00, which looks broken.
+  //
+  // Only the NUMBER format travels — never bold, colour or alignment.
+  // Those are presentation the user applied to particular cells; the
+  // number format is closer to a unit, and units are what a calculation
+  // actually carries forward.
+  //
   //   =TODAY(), =DATE(...)  the function says so
-  //   =A1                   a bare reference inherits the date format
-  //   =A1+7, =TODAY()+7     a date plus a count of days is still a date
-  //   =B1-A1                NOT a date — the gap between two dates is a
-  //                         number of days. Excel's habit of formatting
-  //                         that as a date in 1900 is a well-known
-  //                         annoyance, not something to copy, and the
-  //                         rule that avoids it is simply "subtracting a
-  //                         date from a date yields a number".
-  _suggestedDateFormat(ast) {
-    if (ast.n === 'call') return DATE_RETURNING[ast.fn] || null
-    if (ast.n === 'ref' && ast.ref.kind === 'a1') {
-      const m = ast.ref.sheet === undefined ? this : this.wb.sheetByName(ast.ref.sheet)
-      if (!m) return null
-      const f = m.formatOf(ast.ref.row, ast.ref.col)
-      return f && isDateFormat(f.n) ? f.n : null
+  //   =A1                   a bare reference inherits
+  //   =SUM(C2:C9)           an aggregate inherits from its range
+  //   =A1+7                 adding to a formatted value keeps the format
+  //   =B1-A1 (both dates)   NOT a date: the gap between two dates is a
+  //                         count of days. Excel shows that as a date in
+  //                         1900, which is a famous annoyance, not
+  //                         something to copy.
+  //   =C2*D2                currency times a plain count is currency, but
+  //                         two formatted operands make units that no
+  //                         single format describes, so nothing is
+  //                         inherited. Percent is the exception: it is
+  //                         dimensionless, so currency times percent is
+  //                         still currency.
+  _suggestedFormat(ast) {
+    switch (ast.n) {
+      case 'call': {
+        const d = DATE_RETURNING[ast.fn]
+        if (d) return { n: d }
+        // The result of an aggregate is in the same units as its data.
+        // COUNT and DAYS are deliberately absent: they return counts.
+        if (!AGGREGATES.has(ast.fn) || !ast.args.length) return null
+        return this._suggestedFormat(ast.args[0])
+      }
+      case 'ref': return numberFormatOf(this._refTarget(ast.ref))
+      case 'range': return this._rangeFormat(ast.a, ast.b)
+      case 'un': case 'pct': return this._suggestedFormat(ast.e)
+      case 'bin': {
+        const { op } = ast
+        if (!'+-*/'.includes(op) || op.length !== 1) return null
+        const l = this._suggestedFormat(ast.l)
+        const r = this._suggestedFormat(ast.r)
+        if (!l || !r) return l || r
+        if (op === '+' || op === '-') {
+          if (op === '-' && isDateFormat(l.n) && isDateFormat(r.n)) return null
+          return sameNumberFormat(l, r) ? l : null
+        }
+        if (l.n === 'pct') return r // a percentage is a multiplier, not a unit
+        if (r.n === 'pct') return l
+        return null
+      }
+      default: return null
     }
-    if (ast.n === 'bin' && (ast.op === '+' || ast.op === '-')) {
-      const l = this._suggestedDateFormat(ast.l)
-      const r = this._suggestedDateFormat(ast.r)
-      if (ast.op === '-') return l && !r ? l : null
-      return l || r
+  }
+
+  // The resolved format of the cell an A1 reference points at, following
+  // the reference into another sheet when it names one.
+  _refTarget(ref) {
+    if (ref.kind !== 'a1') return null
+    const m = ref.sheet === undefined ? this : this.wb.sheetByName(ref.sheet)
+    return m ? m.formatOf(ref.row, ref.col) : null
+  }
+
+  // The format a range agrees on, or null when its cells disagree. Scans a
+  // bounded number of cells: this runs on every formula commit, and one
+  // disagreement anywhere is enough to give up.
+  _rangeFormat(a, b) {
+    if (a.kind !== 'a1' || b.kind !== 'a1') return null
+    const m = a.sheet === undefined ? this : this.wb.sheetByName(a.sheet)
+    if (!m) return null
+    m._index()
+    let found = null
+    let seen = 0
+    for (let r = Math.min(a.row, b.row); r <= Math.max(a.row, b.row); r++) {
+      for (let c = Math.min(a.col, b.col); c <= Math.max(a.col, b.col); c++) {
+        if (++seen > RANGE_FORMAT_SCAN_LIMIT) return found
+        const f = numberFormatOf(m.formatOf(r, c))
+        if (!f) continue
+        if (!found) found = f
+        else if (!sameNumberFormat(found, f)) return null
+      }
     }
-    return null
+    return found
   }
 
   // Store `input` — A1-notation text as produced by getInput — at (r,c),

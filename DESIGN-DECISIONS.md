@@ -461,12 +461,6 @@ and TSV differ only by delimiter.
   file and git shows a rename or a deletion instead of accumulating
   orphans. Older state with a single `path` is read as a one-file list.
 
-Known gap, asserted in the exporter's end-to-end test so it is visible
-rather than forgotten: a formula's result carries no format of its own, so
-a `=SUM(...)` over a currency column exports as `15.5` rather than
-`$15.50`. Propagating operand formats to results is its own decision (which
-functions? what if operands disagree?) and has not been made.
-
 ### Import/export
 
 xlsx via `excelize` (mature, justified). Doc export is now trivial: the
@@ -740,7 +734,8 @@ already built.
   New York — the same text, each user's own reading. Dashed pairs without
   a year (`1-2`) stay text, being far more often a range.
 - **A date-producing formula gets a date format automatically**, or
-  `=TODAY()` would display 46239 and be useless. The rule is narrow and
+  `=TODAY()` would display 46239 and be useless. Generalised later into
+  format propagation (see Number formats travel through formulas). The rule is narrow and
   deliberately unlike Excel in one place: `=A1+7` is a date, but
   `=B1-A1` is a *number of days*, because subtracting a date from a date
   yields a count. Excel's habit of showing that as a date in 1900 is a
@@ -755,6 +750,38 @@ already built.
   clock.
 - Fill series work on the **stored serial**, not the displayed text, which
   is what makes dragging two consecutive dates continue the run.
+
+### Number formats travel through formulas
+
+A formula's result used to carry no format, so a total under a currency
+column read `15.5` while every cell above it read `$10.00`. The number
+format is closer to a *unit* than to decoration, and units are what a
+calculation carries forward, so results now inherit one from their inputs.
+
+Only the number format travels. Bold, colour and alignment stay with the
+cells they were applied to — those are presentation the user chose for
+particular cells, not a property of the value.
+
+The rules, chosen to be defensible rather than merely Excel-compatible:
+
+- `=A1`, `=SUM(C2:C9)`, `=AVERAGE(...)`, `=MIN/MAX/ROUND/ABS` inherit.
+  `COUNT`, `COUNTA` and `DAYS` deliberately do not: they return counts.
+- `+` and `-` inherit when the operands agree, or when only one is
+  formatted (`=A1+50` on currency stays currency).
+- `=B1-A1` with two dates stays a plain number of days — the pre-existing
+  rule, now falling out of "subtracting like from like gives that unit,
+  except dates, whose difference is a duration".
+- `*` and `/` inherit only when **one** side is formatted: currency times
+  a plain count is currency, but two formatted operands make units no
+  single format describes, so nothing is inherited rather than something
+  wrong. Percent is the exception, being dimensionless: currency times a
+  percentage is still currency.
+- A range whose cells disagree inherits nothing, and the scan is capped
+  (400 cells) since it runs on every formula commit and one disagreement
+  is enough to give up.
+- **An explicit format always wins.** Inheritance only fills a cell that
+  has no number format of its own, which also means it does not re-derive
+  when a formula is later edited.
 
 ### Charts: a range consumer, exactly as reserved
 

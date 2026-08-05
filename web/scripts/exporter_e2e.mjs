@@ -149,10 +149,8 @@ assert(csv.split('\n')[0] === 'Item,Due,Price', 'header row')
 assert(csv.includes('"nut, large"'), 'a field containing a comma is quoted')
 assert(csv.includes('2026-08-05'), 'dates export as dates, not serial numbers')
 assert(csv.includes('$10.00'), 'currency exports formatted')
-// The total is unformatted (15.5, not $15.50): a formula result carries no
-// format of its own, and nothing yet propagates the operands' currency to
-// it. Asserted as-is so the day that changes, this test says so.
-assert(csv.includes('Total,,15.5'), 'a formula exports as its computed value')
+assert(csv.includes('Total,,$15.50'),
+  'a formula exports as its computed value, in the currency it inherited')
 assert(!csv.startsWith('﻿'), 'no BOM in the git export')
 
 // Renaming a tab renames its file and removes the old one.

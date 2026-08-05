@@ -7,10 +7,21 @@ import { Workbook, SheetModel, FIRST_SHEET } from '../src/sheet/model.js'
 import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../src/sheet/clipboard.js'
 import { parseTypedNumber, formatNumber, mergeFormat, resolveFormat } from '../src/sheet/format.js'
 import { serialFromParts, partsFromSerial, parseDate, formatDate, setDayFirst } from '../src/sheet/dates.js'
+import { niceScale, extractChartData, drawChart } from '../src/sheet/chart.js'
 
 let failures = 0
+
+// Key order is not meaningful, so compare with it normalised — otherwise
+// {r1,r2,c1,c2} and {r1,c1,r2,c2} read as a failure while being identical.
+function stable(v) {
+  return JSON.stringify(v, (_k, val) =>
+    val && typeof val === 'object' && !Array.isArray(val)
+      ? Object.fromEntries(Object.keys(val).sort().map((k) => [k, val[k]]))
+      : val)
+}
+
 function eq(got, want, what) {
-  const g = JSON.stringify(got), w = JSON.stringify(want)
+  const g = stable(got), w = stable(want)
   if (g === w) console.log('ok:', what)
   else { failures++; console.error(`FAIL: ${what}\n  got  ${g}\n  want ${w}`) }
 }
@@ -838,6 +849,162 @@ const SER_2026_08_05 = serialFromParts(2026, 8, 5)
   eq(m.display(0, 0).text, '2026-08-05', 'formatting it as a date reveals the date')
   m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { n: null })
   eq(m.display(0, 0).text, '46239', 'and removing the format shows the number again')
+}
+
+// ---- charts -----------------------------------------------------------------
+
+{
+  eq(niceScale(0, 10).ticks, [0, 2, 4, 6, 8, 10], 'a round range gets round ticks')
+  eq(niceScale(0, 97).max, 100, 'the top is rounded up past the data')
+  eq(niceScale(3, 7).ticks.includes(3) || niceScale(3, 7).min <= 3, true, 'the bottom covers the data')
+  eq(niceScale(5, 5).min < 5 && niceScale(5, 5).max > 5, true, 'flat data still gets a range')
+  eq([niceScale(0, 0).min, niceScale(0, 0).max], [0, 1], 'all-zero data gets a unit range')
+  // Ticks are rebuilt from the step rather than accumulated, so the last
+  // one lands exactly on the axis top instead of drifting past it.
+  eq(niceScale(0, 1).ticks.length, 6, 'a unit range gets six ticks')
+  eq(niceScale(0, 1).ticks[5], 1, 'and the last tick is exactly the maximum')
+}
+
+function chartModel() {
+  const m = newModel()
+  m.setCell(0, 0, 'Month'); m.setCell(0, 1, 'Sales'); m.setCell(0, 2, 'Costs')
+  m.setCell(1, 0, '2026-01-01'); m.setCell(1, 1, '100'); m.setCell(1, 2, '60')
+  m.setCell(2, 0, '2026-02-01'); m.setCell(2, 1, '150'); m.setCell(2, 2, '70')
+  m.setCell(3, 0, '2026-03-01'); m.setCell(3, 1, '120'); m.setCell(3, 2, '90')
+  return m
+}
+
+{
+  const m = chartModel()
+  const data = extractChartData(m, { r1: 0, c1: 0, r2: 3, c2: 2 }, { headers: true })
+  eq(data.series.map((s) => s.name), ['Sales', 'Costs'], 'header row names the series')
+  eq(data.series[0].values, [100, 150, 120], 'series values come out in order')
+  eq(data.categories, ['2026-01-01', '2026-02-01', '2026-03-01'],
+    'category labels use the DISPLAYED text, so charted dates read as dates')
+
+  const noHead = extractChartData(m, { r1: 1, c1: 0, r2: 3, c2: 1 }, { headers: false })
+  eq(noHead.series[0].values, [100, 150, 120], 'without headers every row is data')
+  eq(noHead.series[0].name, 'Series 1', 'and series get generated names')
+
+  const single = extractChartData(m, { r1: 0, c1: 1, r2: 3, c2: 1 }, { headers: true })
+  eq(single.series.length, 1, 'a single column is one series')
+  eq(single.categories, ['1', '2', '3'], 'with row numbers for categories')
+}
+
+{
+  // Non-numeric cells become gaps rather than zeros, so a line chart
+  // breaks instead of diving to the axis.
+  const m = chartModel()
+  m.setCell(2, 1, 'n/a')
+  const data = extractChartData(m, { r1: 0, c1: 0, r2: 3, c2: 1 }, { headers: true })
+  eq(data.series[0].values, [100, null, 120], 'text in a data cell is a gap, not a zero')
+}
+
+{
+  // A chart's range is stored by id, so structural edits move with it.
+  const m = chartModel()
+  const chart = m.addChart({ r1: 0, c1: 0, r2: 3, c2: 1 })
+  eq(m.chartRect(chart), { r1: 0, c1: 0, r2: 3, c2: 1 }, 'the range resolves to where it was made')
+
+  m.insertRows(0)
+  eq(m.chartRect(m.charts()[0]), { r1: 1, c1: 0, r2: 4, c2: 1 },
+    'inserting above shifts the whole range down')
+
+  m.insertRows(3)
+  m.setCell(3, 0, '2026-02-15'); m.setCell(3, 1, '130')
+  const grown = m.chartRect(m.charts()[0])
+  eq(grown, { r1: 1, c1: 0, r2: 5, c2: 1 }, 'a row inserted inside the range extends the chart')
+  eq(extractChartData(m, grown, m.charts()[0]).series[0].values, [100, 130, 150, 120],
+    'and its data appears in the chart')
+}
+
+{
+  // Deleting an endpoint row re-anchors rather than stranding the chart.
+  const m = chartModel()
+  m.addChart({ r1: 0, c1: 0, r2: 3, c2: 1 })
+  m.deleteRows(3) // the last row of the range
+  eq(m.chartRect(m.charts()[0]), { r1: 0, c1: 0, r2: 2, c2: 1 }, 'the range re-anchors to a survivor')
+
+  m.deleteRows(0, 3) // everything the chart pointed at
+  eq(m.chartRect(m.charts()[0]), null, 'and a chart whose range is entirely gone reports it')
+}
+
+{
+  const m = chartModel()
+  const chart = m.addChart({ r1: 0, c1: 0, r2: 3, c2: 2 }, { type: 'line', title: 'Q1' })
+  eq([chart.type, chart.title, chart.headers], ['line', 'Q1', true], 'chart spec round-trips')
+  m.updateChart(chart.id, { type: 'pie', w: 500 })
+  eq([m.charts()[0].type, m.charts()[0].w, m.charts()[0].title], ['pie', 500, 'Q1'],
+    'a patch changes only what it names')
+  m.removeChart(chart.id)
+  eq(m.charts().length, 0, 'charts can be deleted')
+}
+
+{
+  // Charts sync like everything else.
+  const dA = new Y.Doc(), dB = new Y.Doc()
+  const a = newModel(dA), b = newModel(dB)
+  a.setCell(0, 0, 'x'); a.setCell(1, 0, '5'); a.setCell(1, 1, '6')
+  a.addChart({ r1: 0, c1: 0, r2: 1, c2: 1 }, { title: 'Shared' })
+  syncBoth(dA, dB)
+  eq(b.charts().map((c) => c.title), ['Shared'], 'a chart reaches the other client')
+  eq(b.chartRect(b.charts()[0]), { r1: 0, c1: 0, r2: 1, c2: 1 }, 'pointing at the same cells')
+}
+
+{
+  // drawChart needs a real canvas to produce pixels, but a recording stub
+  // still catches the failure that matters here: a mistyped or missing
+  // context call, which in a browser shows up only as a blank chart.
+  function stubCtx() {
+    const calls = []
+    const rec = (name) => (...args) => { calls.push([name, ...args]) }
+    const ctx = { calls, measureText: (t) => ({ width: String(t).length * 6 }) }
+    for (const fn of ['clearRect', 'fillRect', 'strokeRect', 'beginPath', 'moveTo',
+      'lineTo', 'arc', 'closePath', 'fill', 'stroke', 'fillText', 'save', 'restore',
+      'setLineDash', 'clip', 'rect']) ctx[fn] = rec(fn)
+    return ctx
+  }
+
+  const m = chartModel()
+  const rect = { r1: 0, c1: 0, r2: 3, c2: 2 }
+  const data = extractChartData(m, rect, { headers: true })
+  const tick = (v) => String(v)
+
+  for (const type of ['column', 'line', 'pie']) {
+    const ctx = stubCtx()
+    drawChart(ctx, 400, 240, { type, title: 'T', headers: true }, data, tick)
+    const names = ctx.calls.map((c) => c[0])
+    eq(names.includes('fillText'), true, `${type}: draws text`)
+    if (type === 'pie') eq(names.includes('arc'), true, 'pie: draws slices')
+    if (type === 'line') eq(names.includes('lineTo'), true, 'line: draws segments')
+    if (type === 'column') {
+      // More than just the background and legend swatches.
+      eq(ctx.calls.filter((c) => c[0] === 'fillRect').length > 6, true, 'column: draws bars')
+    }
+  }
+
+  // Degenerate inputs must not throw — an empty range is a normal state
+  // while a user is still selecting data.
+  const empty = { categories: [], series: [] }
+  for (const type of ['column', 'line', 'pie']) {
+    const ctx = stubCtx()
+    drawChart(ctx, 300, 200, { type }, empty, tick)
+    eq(ctx.calls.some((c) => c[0] === 'fillText' && String(c[1]).includes('No data')), true,
+      `${type}: says so when the range is empty`)
+  }
+
+  // A chart squeezed smaller than its own axes must bail, not draw garbage.
+  const ctx = stubCtx()
+  drawChart(ctx, 40, 30, { type: 'column' }, data, tick)
+  eq(true, true, 'a tiny chart does not throw')
+
+  // All-null series (a range of text) must not throw either.
+  const textOnly = { categories: ['a', 'b'], series: [{ name: 's', values: [null, null] }] }
+  for (const type of ['column', 'line', 'pie']) {
+    const c2 = stubCtx()
+    drawChart(c2, 300, 200, { type }, textOnly, tick)
+  }
+  eq(true, true, 'a series with no numbers does not throw')
 }
 
 // ---- A1 helpers -----------------------------------------------------------

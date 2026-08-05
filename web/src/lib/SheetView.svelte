@@ -14,7 +14,8 @@
   import { Workbook, FIRST_SHEET } from '../sheet/model.js'
   import { colName } from '../sheet/engine.js'
   import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
-  import { NUMBER_FORMATS } from '../sheet/format.js'
+  import { NUMBER_FORMATS, formatNumber } from '../sheet/format.js'
+  import { CHART_TYPES, extractChartData, drawChart } from '../sheet/chart.js'
   import { scheduleCompaction } from '../compaction.js'
 
   let { me, doc, onBack, onShare } = $props()
@@ -25,6 +26,7 @@
   const HEADER_W = 48
   const HEADER_H = 24
   const BASE_FONT = '13px system-ui, sans-serif'
+  const CHART_BAR_H = 26 // the chart's own title/controls strip
 
   function fontFor(fmt) {
     if (!fmt || (!fmt.b && !fmt.i)) return BASE_FONT
@@ -51,6 +53,14 @@
   let tabs = $state([])
   let activeId = $state(FIRST_SHEET)
   let renamingId = $state(null)
+
+  // Charts float over the grid inside the scroll container, so they scroll
+  // with the sheet without any bookkeeping. Their canvases are collected
+  // here by bind:this and repainted from draw(), alongside the grid.
+  let charts = $state([])
+  let selectedChart = $state(null)
+  let chartCanvases = $state({})
+  let chartDrag = null // {id, mode, startX, startY, orig} while dragging
 
   let containerEl, canvasEl
   // $state because the overlay input mounts and unmounts with {#if edit}:
@@ -99,6 +109,7 @@
     unobserve = workbook.onChange(() => {
       revision++
       tabs = workbook.list()
+      charts = model.charts()
       // A collaborator can delete the sheet being looked at; fall back to
       // the first remaining one rather than rendering a ghost.
       if (!tabs.some((t) => t.id === activeId)) selectSheet(tabs[0].id)
@@ -340,6 +351,9 @@
     ctx.lineWidth = 1
     ctx.strokeRect(0.5, 0.5, w - 1, HEADER_H - 1)
     ctx.strokeRect(0.5, 0.5, HEADER_W - 1, h - 1)
+
+    // Charts repaint with the grid, so they can never show stale data.
+    for (const chart of charts) renderChart(chart)
   }
 
   // ---- selection & editing ------------------------------------------------
@@ -411,6 +425,68 @@
     })
   }
 
+  // ---- charts -------------------------------------------------------------
+
+  function insertChart() {
+    const s = selRect()
+    if (s.r1 === s.r2 && s.c1 === s.c2) {
+      alert('Select the data to chart first, including its header row.')
+      return
+    }
+    // Drop it just right of the selection, where the data is still visible.
+    const x = HEADER_W + layout.colX[Math.min(s.c2 + 1, layout.C - 1)] + 12
+    const y = HEADER_H + layout.rowY[s.r1]
+    const chart = model.addChart(s, { x, y })
+    if (chart) selectedChart = chart.id
+    scheduleDraw()
+  }
+
+  // Repainted from draw(), so charts and grid always agree about the data.
+  function renderChart(chart) {
+    const el = chartCanvases[chart.id]
+    if (!el) return
+    const box = el.parentElement
+    const w = box.clientWidth
+    const h = box.clientHeight - CHART_BAR_H
+    if (w <= 0 || h <= 0) return
+    const dpr = window.devicePixelRatio || 1
+    el.width = w * dpr
+    el.height = h * dpr
+    el.style.width = w + 'px'
+    el.style.height = h + 'px'
+    const ctx = el.getContext('2d')
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+    const rect = model.chartRect(chart)
+    if (!rect) {
+      ctx.clearRect(0, 0, w, h)
+      ctx.fillStyle = '#fff'
+      ctx.fillRect(0, 0, w, h)
+      ctx.fillStyle = '#c62828'
+      ctx.font = '12px system-ui, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('Data range no longer exists', w / 2, h / 2)
+      return
+    }
+    const data = extractChartData(model, rect, chart)
+    // Tick labels borrow the first series' cell format, so a currency
+    // chart gets currency ticks and a plain one gets plain numbers.
+    const fmt = data.series[0]?.fmt
+    drawChart(ctx, w, h, chart, data, (v) => formatNumber(v, fmt) ?? String(Math.round(v * 1e6) / 1e6))
+  }
+
+  function onChartMouseDown(e, chart, mode) {
+    if (readOnly) return
+    e.stopPropagation() // never let this reach the grid's selection handling
+    selectedChart = chart.id
+    chartDrag = {
+      id: chart.id, mode,
+      startX: e.clientX, startY: e.clientY,
+      orig: { x: chart.x, y: chart.y, w: chart.w, h: chart.h },
+    }
+  }
+
   // ---- formatting ---------------------------------------------------------
 
   // A selection made by clicking a column or row header formats the whole
@@ -450,6 +526,8 @@
     if (edit) commitEdit(0, 0)
     activeId = id
     model = workbook.sheet(id)
+    charts = model.charts()
+    selectedChart = null
     sel = { r: 0, c: 0, r2: 0, c2: 0 }
     cutRegion = null
     if (containerEl) {
@@ -616,6 +694,21 @@
   }
 
   function onMouseMove(e) {
+    if (chartDrag) {
+      const dx = e.clientX - chartDrag.startX
+      const dy = e.clientY - chartDrag.startY
+      const o = chartDrag.orig
+      const patch = chartDrag.mode === 'move'
+        ? { x: Math.max(0, o.x + dx), y: Math.max(0, o.y + dy) }
+        : { w: Math.max(160, o.w + dx), h: Math.max(120, o.h + dy) }
+      // Live-update the local copy so the drag looks immediate; the
+      // document write happens once on mouseup, so a drag is one undo step
+      // and one update on the wire rather than one per mouse event.
+      charts = charts.map((c) => (c.id === chartDrag.id ? { ...c, ...patch } : c))
+      chartDrag.patch = patch
+      scheduleDraw()
+      return
+    }
     if (resizing) {
       resizing.curW = Math.max(24, resizing.startW + e.clientX - resizing.startX)
       scheduleDraw()
@@ -667,6 +760,12 @@
   }
 
   function onMouseUp() {
+    if (chartDrag) {
+      if (chartDrag.patch) model.updateChart(chartDrag.id, chartDrag.patch)
+      chartDrag = null
+      scheduleDraw()
+      return
+    }
     if (resizing) {
       model.setColWidth(resizing.c, resizing.curW)
       resizing = null
@@ -874,6 +973,8 @@
     <button onclick={() => applyFormat({ bg: null })} title="Clear background">×</button>
     <span class="sep"></span>
     <button onclick={() => { model.clearFormat(selRect()); scheduleDraw() }} title="Clear all formatting">clear</button>
+    <span class="sep"></span>
+    <button onclick={insertChart} title="Chart the selected range">📊 chart</button>
   </div>
 {/if}
 
@@ -914,6 +1015,77 @@
       onkeydown={onInputKeyDown}
     />
   {/if}
+
+  <!-- Charts live inside the scroll container, so they scroll with the
+       sheet for free. Positions are stored in grid pixels. -->
+  {#each charts as chart (chart.id)}
+    <!-- The body is a mouse affordance only: it selects the chart and
+         stops the click reaching the grid underneath. Everything the chart
+         can do is on its toolbar strip, which is keyboard reachable, so
+         there is no keyboard handler to add here. -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="chart"
+      class:selected={selectedChart === chart.id}
+      style="left:{chart.x}px; top:{chart.y}px; width:{chart.w}px; height:{chart.h}px"
+      role="figure"
+      onmousedown={(e) => { e.stopPropagation(); selectedChart = chart.id }}
+    >
+      <!-- The strip is the drag handle; the canvas below is not, so a
+           click on the chart body doesn't move it by accident. -->
+      <div
+        class="chart-bar"
+        role="toolbar"
+        tabindex="-1"
+        onmousedown={(e) => onChartMouseDown(e, chart, 'move')}
+      >
+        {#if selectedChart === chart.id && !readOnly}
+          <select
+            value={chart.type}
+            onmousedown={(e) => e.stopPropagation()}
+            onchange={(e) => model.updateChart(chart.id, { type: e.target.value })}
+          >
+            {#each CHART_TYPES as t (t.id)}<option value={t.id}>{t.label}</option>{/each}
+          </select>
+          <input
+            class="chart-title"
+            placeholder="Chart title"
+            value={chart.title}
+            onmousedown={(e) => e.stopPropagation()}
+            onchange={(e) => model.updateChart(chart.id, { title: e.target.value })}
+          />
+          <!-- stopPropagation on the input itself, not a wrapping label:
+               the strip is a drag handle, and mousedown must not start a
+               drag when the user is aiming at the checkbox. -->
+          <input
+            type="checkbox"
+            aria-label="First row holds the series names"
+            title="First row holds the series names"
+            checked={chart.headers !== false}
+            onmousedown={(e) => e.stopPropagation()}
+            onchange={(e) => model.updateChart(chart.id, { headers: e.target.checked })}
+          />
+          <button
+            onmousedown={(e) => e.stopPropagation()}
+            onclick={() => { model.removeChart(chart.id); selectedChart = null }}
+            title="Delete chart"
+          >×</button>
+        {:else}
+          <span class="chart-name">{chart.title || 'Chart'}</span>
+        {/if}
+      </div>
+      <canvas bind:this={chartCanvases[chart.id]}></canvas>
+      {#if !readOnly}
+        <span
+          class="chart-resize"
+          role="button"
+          tabindex="-1"
+          title="Resize"
+          onmousedown={(e) => onChartMouseDown(e, chart, 'resize')}
+        ></span>
+      {/if}
+    </div>
+  {/each}
 </div>
 
 <div class="tabs">
@@ -1070,6 +1242,60 @@
     top: 0;
     left: 0;
     display: block;
+  }
+  .chart {
+    position: absolute;
+    z-index: 3;
+    background: #fff;
+    border: 1px solid #d0d1d3;
+    border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .chart.selected {
+    border-color: #1565c0;
+    box-shadow: 0 0 0 1px #1565c0, 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+  .chart-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 26px;
+    padding: 0 4px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #e2e3e5;
+    cursor: move;
+    font-size: 0.75rem;
+  }
+  .chart-bar select,
+  .chart-bar input {
+    font-size: 0.75rem;
+  }
+  .chart-title {
+    flex: 1;
+    min-width: 3rem;
+  }
+  .chart-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.7;
+  }
+  .chart canvas {
+    display: block;
+    flex: 1;
+  }
+  .chart-resize {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 12px;
+    height: 12px;
+    cursor: nwse-resize;
+    background: linear-gradient(135deg, transparent 50%, #9aa0a6 50%);
   }
   .cell-edit {
     position: absolute;

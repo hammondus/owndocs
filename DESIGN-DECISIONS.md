@@ -677,6 +677,44 @@ already built.
 - Fill series work on the **stored serial**, not the displayed text, which
   is what makes dragging two consecutive dates continue the run.
 
+### Charts: a range consumer, exactly as reserved
+
+The sheets design promised that "ranges are subscribable by *anything*" and
+reserved an `objects` container. Charts are the first thing to collect on
+that promise, and they needed no new machinery:
+
+- **A chart's range is stored as row/column IDS**, exactly like a formula
+  reference. That is what makes a chart follow its data: inserting a row
+  inside a charted range extends the chart, and moving data never
+  re-points it at the wrong cells. Positions would have broken on the
+  first insert.
+- **Deleting an endpoint row re-anchors** to the nearest survivor inside
+  the range, because losing a range's anchor to an ordinary row delete
+  would be a nasty surprise. If the whole range goes, the chart says so
+  rather than rendering nonsense.
+- **`objects` is a Y.Map keyed by object id.** Concurrent inserts of
+  different ids never conflict. A chart is stored as one JSON object and
+  updated by whole-object replace, so edits to the *same* chart are
+  last-writer-wins — charts are edited rarely and by one person at a time,
+  and finer granularity would buy nothing for the complexity.
+- **Rendered on canvas, in DOM panels floating inside the scroll
+  container**, so they scroll with the sheet for free and never fight the
+  sticky-canvas trick the grid uses. Repainted from the same `draw()` as
+  the grid, so a chart can never show stale data.
+- **Labels and axis ticks reuse the display layer**: categories come from
+  `display()` and tick labels from the first series' cell format. A chart
+  of a date column reads as dates and a chart of a currency column gets
+  currency ticks, with no chart-specific formatting code.
+- Non-numeric cells become **gaps rather than zeros**, so a line breaks
+  instead of diving to the axis.
+- Axis bounds use a 1/2/5 "nice scale"; ticks are rebuilt from the step
+  rather than accumulated, so the top tick lands exactly on the axis.
+- Drag and resize write **once on mouse-up**, so a drag is one undo step
+  and one update on the wire rather than one per mouse event.
+
+Types are column, line and pie. Scatter, area and stacked variants are
+deferred, as is picking a range by dragging rather than selecting first.
+
 ### v1 scope cuts (deliberate, recorded)
 
 ~~Single sheet per doc (tabs need a container restructure — decide before,

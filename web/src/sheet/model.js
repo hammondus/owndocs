@@ -13,7 +13,8 @@
 //   dims  / s.<id>.dims   Y.Map keyed "w.<colId>" / "h.<rowId>" -> px size
 //   fmt   / s.<id>.fmt    Y.Map keyed "rowId.colId" (cell), "c.<colId>",
 //                         "r.<rowId>" -> format record (see format.js)
-// Reserved for later phases: objects (charts), scripts.
+//   objects / s.<id>.objects  Y.Map keyed object id -> chart spec
+// Reserved for a later phase: scripts.
 import * as Y from 'yjs'
 import { parseFormula, mapRefs, collectRefs, serialize, evaluate, isErr, ERR, fmtNum } from './engine.js'
 import { formatNumber, resolveFormat, mergeFormat, parseTypedNumber } from './format.js'
@@ -193,9 +194,13 @@ export class SheetModel {
     // different keys and both survive. Folding format into the cell value
     // would make last-writer-wins throw one of them away.
     this.fmt = this.ydoc.getMap(p + 'fmt')
+    // Charts (and whatever floats over the grid later) keyed by object id.
+    // A Map rather than an Array because concurrent inserts of different
+    // ids never conflict, and nothing here needs an order.
+    this.objects = this.ydoc.getMap(p + 'objects')
     this.indexesStale = true
 
-    workbook.undo.addToScope([this.rows, this.cols, this.cells, this.dims, this.fmt])
+    workbook.undo.addToScope([this.rows, this.cols, this.cells, this.dims, this.fmt, this.objects])
 
     const structural = () => { this._invalidate(); workbook.notify() }
     const contents = () => { this._invalidateValues(); workbook.notify() }
@@ -206,6 +211,7 @@ export class SheetModel {
     // Formatting changes appearance, never a computed value, so there is
     // nothing to recompute — just repaint.
     this.fmt.observe(() => workbook.notify())
+    this.objects.observe(() => workbook.notify())
   }
 
   get undo() { return this.wb.undo }
@@ -368,6 +374,86 @@ export class SheetModel {
         }
       }
     })
+  }
+
+  // ---- charts -------------------------------------------------------------
+
+  charts() {
+    return [...this.objects.values()].filter((o) => o && o.kind === 'chart')
+  }
+
+  // A chart's range is stored as row/column IDS, so inserting a row inside
+  // it extends the chart and moving data around never silently re-points
+  // it at the wrong cells — the same reason formulas store ids.
+  addChart(rect, spec = {}) {
+    this._index()
+    const r1 = this.rowIds[rect.r1], r2 = this.rowIds[rect.r2]
+    const c1 = this.colIds[rect.c1], c2 = this.colIds[rect.c2]
+    if (!r1 || !r2 || !c1 || !c2) return null
+    const id = newId()
+    const chart = {
+      kind: 'chart', id,
+      type: spec.type || 'column',
+      title: spec.title || '',
+      headers: spec.headers !== false,
+      range: { r1, c1, r2, c2 },
+      x: spec.x ?? 40, y: spec.y ?? 40,
+      w: spec.w ?? 420, h: spec.h ?? 260,
+    }
+    this.tx(() => this.objects.set(id, chart))
+    return chart
+  }
+
+  updateChart(id, patch) {
+    const cur = this.objects.get(id)
+    if (!cur) return
+    // Whole-object replace: per-chart last-writer-wins. Charts are edited
+    // rarely and by one person at a time, so finer granularity would buy
+    // nothing for the complexity.
+    this.tx(() => this.objects.set(id, { ...cur, ...patch }))
+  }
+
+  removeChart(id) {
+    this.tx(() => this.objects.delete(id))
+  }
+
+  // Current positions of a chart's range, or null if an endpoint's row or
+  // column has been deleted outright.
+  chartRect(chart) {
+    this._index()
+    const r1 = this.rowPos.get(chart.range.r1)
+    const r2 = this.rowPos.get(chart.range.r2)
+    const c1 = this.colPos.get(chart.range.c1)
+    const c2 = this.colPos.get(chart.range.c2)
+    if (r1 === undefined || r2 === undefined || c1 === undefined || c2 === undefined) return null
+    return {
+      r1: Math.min(r1, r2), r2: Math.max(r1, r2),
+      c1: Math.min(c1, c2), c2: Math.max(c1, c2),
+    }
+  }
+
+  // Called from deleteRows/deleteCols BEFORE the ids go, while positions
+  // still resolve. Deleting a row in the middle of a charted range needs
+  // no help — both endpoints survive — but deleting an endpoint would
+  // strand the chart, so it re-anchors to the nearest survivor inside the
+  // range instead.
+  _reanchorCharts(deleted, axis) {
+    const gone = new Set(deleted)
+    for (const chart of this.charts()) {
+      const rect = this.chartRect(chart)
+      if (!rect) continue
+      const ids = axis === 'row' ? this.rowIds : this.colIds
+      const [lo, hi] = axis === 'row' ? [rect.r1, rect.r2] : [rect.c1, rect.c2]
+      if (!gone.has(ids[lo]) && !gone.has(ids[hi])) continue
+      let a = lo
+      let b = hi
+      while (a <= b && gone.has(ids[a])) a++
+      while (b >= a && gone.has(ids[b])) b--
+      if (a > b) continue // whole range deleted: leave it dangling and say so
+      const range = { ...chart.range }
+      if (axis === 'row') { range.r1 = ids[a]; range.r2 = ids[b] } else { range.c1 = ids[a]; range.c2 = ids[b] }
+      this.objects.set(chart.id, { ...chart, range })
+    }
   }
 
   // ---- cell input ---------------------------------------------------------
@@ -832,6 +918,7 @@ export class SheetModel {
     const ids = this.rowIds.slice(at, at + n)
     if (ids.length === 0) return
     this.tx(() => {
+      this._reanchorCharts(ids, 'row')
       this.rows.delete(at, ids.length)
       // Delete the row's cells too: without this they'd sit as orphans and,
       // worse, resurrect if a same-position row were ever re-created.
@@ -854,6 +941,7 @@ export class SheetModel {
     const ids = this.colIds.slice(at, at + n)
     if (ids.length === 0) return
     this.tx(() => {
+      this._reanchorCharts(ids, 'col')
       this.cols.delete(at, ids.length)
       for (const key of [...this.cells.keys()]) {
         if (ids.includes(key.split('.')[1])) this.cells.delete(key)

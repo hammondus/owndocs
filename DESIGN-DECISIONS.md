@@ -630,19 +630,66 @@ Other decisions here:
 - Deleting a row or column removes its formats, so a later id occupying
   that position cannot inherit a ghost.
 
+### Dates are numbers, not a new type
+
+A date is a **serial**: days since 1899-12-30, with the fraction being time
+of day — the Excel/Sheets model. Adding a distinct date type to the value
+model was the obvious alternative and the wrong one: serials give date
+arithmetic for free (`=B1-A1` is days between, `=A1+7` is a week later),
+keep comparison, sorting and every existing function working unchanged,
+and let the formula engine stay a two-type (number/string) evaluator. The
+"type" is carried entirely by the format, which the formatting phase had
+already built.
+
+- **Serials are timezone-free civil date-times.** 2026-08-05 is that
+  calendar day everywhere, not an instant. Every conversion goes through
+  UTC accessors so daylight saving can never shift a date by a day; the
+  test suite is run under `Australia/Sydney`, `America/New_York` and
+  `Pacific/Kiritimati` to keep that honest.
+- **Excel's 1900 leap-year bug is not replicated.** Excel believes
+  1900-02-29 existed and Sheets copies it; we keep the real calendar.
+  Serials agree with Excel for every date from 1900-03-01 onward and
+  differ by one before it — an era nobody puts in a spreadsheet. Recorded
+  because "compatible except where Excel is wrong" is a decision, not an
+  accident.
+- **Typed input is validated; `DATE()` rolls over.** `2026-02-30` typed
+  into a cell stays text rather than silently becoming 2 March, but
+  `=DATE(2026,13,1)` is January 2027 on purpose, because that is what
+  makes month arithmetic work. Both match Excel.
+- **Ambiguous numeric dates follow the viewer's locale**, asked of `Intl`
+  rather than assumed, so `5/8/2026` is 5 August in Sydney and May 8 in
+  New York — the same text, each user's own reading. Dashed pairs without
+  a year (`1-2`) stay text, being far more often a range.
+- **A date-producing formula gets a date format automatically**, or
+  `=TODAY()` would display 46239 and be useless. The rule is narrow and
+  deliberately unlike Excel in one place: `=A1+7` is a date, but
+  `=B1-A1` is a *number of days*, because subtracting a date from a date
+  yields a count. Excel's habit of showing that as a date in 1900 is a
+  well-known annoyance.
+- **`TODAY`/`NOW` are the engine's only impure functions.** Each client
+  computes them from its own clock and timezone, since nothing is ever
+  computed on the server — so two people in different zones can briefly
+  read a different `TODAY()`. The stored document is identical either
+  way, because computed values are never stored. They refresh on
+  recalculation rather than continuously. The engine takes its clock
+  through a seam so tests pin "now" instead of asserting against the wall
+  clock.
+- Fill series work on the **stored serial**, not the displayed text, which
+  is what makes dragging two consecutive dates continue the run.
+
 ### v1 scope cuts (deliberate, recorded)
 
 ~~Single sheet per doc (tabs need a container restructure — decide before,
 not after, people have data)~~ (shipped — see Multiple sheets; still
 missing: tab reordering by drag, moving/copying a sheet); ~~no cell
-formatting~~ (shipped — see Formatting; still missing: date formats and a
-date type at all, borders, merged cells, conditional formatting, font
-size/family); ~~no fill handle or
+formatting~~ (shipped — see Formatting and Dates; still missing: borders,
+merged cells, conditional formatting, font size/family); ~~no fill handle or
 copy-paste of formulas (hence `$` inert)~~ (both shipped — see Copy/paste
-and fill; still missing: double-click-to-fill-down, date/weekday series,
-paste-special); no volatile functions
-(`TODAY`/`NOW` make clients disagree and recalc time-dependent — needs
-thought, not code); history *browsing* UI for sheets deferred (the log and
+and fill; still missing: double-click-to-fill-down, weekday/month-step
+series, paste-special); ~~no volatile functions (`TODAY`/`NOW` make clients
+disagree and recalc time-dependent — needs thought, not code)~~ (thought
+applied, then shipped — see Dates for exactly what "disagree" amounts to);
+history *browsing* UI for sheets deferred (the log and
 replay already work — only the preview renderer is markdown-specific);
 CSV/xlsx export later; the git exporter keeps skipping `kind=sheet` until
 a text serialization is chosen (likely CSV alongside the .md files).

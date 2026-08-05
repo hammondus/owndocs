@@ -17,6 +17,14 @@
 import * as Y from 'yjs'
 import { parseFormula, mapRefs, collectRefs, serialize, evaluate, isErr, ERR, fmtNum } from './engine.js'
 import { formatNumber, resolveFormat, mergeFormat, parseTypedNumber } from './format.js'
+import { formatDate, isDateFormat } from './dates.js'
+
+// Functions whose result is a date or time, and the format it should wear.
+// Without this, =TODAY() would display as 46239 — technically correct and
+// completely useless.
+const DATE_RETURNING = {
+  TODAY: 'date', DATE: 'date', EDATE: 'date', NOW: 'datetime', TIME: 'time',
+}
 
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 function newId() {
@@ -377,7 +385,17 @@ export class SheetModel {
   getInput(r, c) {
     const raw = this.getRaw(r, c)
     if (raw === undefined) return ''
-    if (!raw.startsWith('=')) return raw
+    if (!raw.startsWith('=')) {
+      // A date is stored as its serial. Show it back as a date, or the
+      // formula bar would read 46239 and editing would destroy it. Every
+      // format this produces re-parses, so the round-trip is closed.
+      const f = this.formatOf(r, c)
+      if (f && isDateFormat(f.n)) {
+        const n = Number(raw)
+        if (Number.isFinite(n)) return formatDate(n, f.n) ?? raw
+      }
+      return raw
+    }
     const ast = this._ast(raw.slice(1))
     if (ast === null) return raw // unparseable survives verbatim
     this._index()
@@ -471,6 +489,17 @@ export class SheetModel {
             }
           }
           stored = '=' + serialize(mapRefs(ast, toId))
+
+          // Give a date-producing formula a date format, unless the cell
+          // already says otherwise. Same spirit as typed punctuation: the
+          // input tells us how the result should read.
+          const suggested = this._suggestedDateFormat(ast)
+          if (suggested) {
+            const own = this.fmt.get(this.rowIds[r] + '.' + this.colIds[c])
+            if (!own || !own.n) {
+              this._patchKey(this.rowIds[r] + '.' + this.colIds[c], { n: suggested })
+            }
+          }
         }
       }
       this.ensureSize(r, c)
@@ -483,6 +512,33 @@ export class SheetModel {
       this.cells.set(rid + '.' + cid, stored)
       this._invalidateValues()
     })
+  }
+
+  // Which date format, if any, a formula's result should wear:
+  //   =TODAY(), =DATE(...)  the function says so
+  //   =A1                   a bare reference inherits the date format
+  //   =A1+7, =TODAY()+7     a date plus a count of days is still a date
+  //   =B1-A1                NOT a date — the gap between two dates is a
+  //                         number of days. Excel's habit of formatting
+  //                         that as a date in 1900 is a well-known
+  //                         annoyance, not something to copy, and the
+  //                         rule that avoids it is simply "subtracting a
+  //                         date from a date yields a number".
+  _suggestedDateFormat(ast) {
+    if (ast.n === 'call') return DATE_RETURNING[ast.fn] || null
+    if (ast.n === 'ref' && ast.ref.kind === 'a1') {
+      const m = ast.ref.sheet === undefined ? this : this.wb.sheetByName(ast.ref.sheet)
+      if (!m) return null
+      const f = m.formatOf(ast.ref.row, ast.ref.col)
+      return f && isDateFormat(f.n) ? f.n : null
+    }
+    if (ast.n === 'bin' && (ast.op === '+' || ast.op === '-')) {
+      const l = this._suggestedDateFormat(ast.l)
+      const r = this._suggestedDateFormat(ast.r)
+      if (ast.op === '-') return l && !r ? l : null
+      return l || r
+    }
+    return null
   }
 
   // Store `input` — A1-notation text as produced by getInput — at (r,c),
@@ -614,7 +670,11 @@ export class SheetModel {
   _fillLine(srcCells, targets, forward) {
     if (targets.length === 0) return
     const inputs = srcCells.map(([r, c]) => this.getInput(r, c))
-    const nums = inputs.map(numericLiteral)
+    // Series detection reads the STORED text, not the displayed input: a
+    // date shows as "05/08/2026" but is stored as a serial, and it is the
+    // serial that extrapolates. This is what makes dragging two
+    // consecutive dates continue the run.
+    const nums = srcCells.map(([r, c]) => numericLiteral(this.getRaw(r, c)))
 
     // A single number copies rather than counting — matching Excel and
     // Sheets, where 1 dragged down gives 1,1,1 and 1,2 gives 3,4,5.

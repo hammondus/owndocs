@@ -12,6 +12,8 @@
 //   bg  background      '#rrggbb'
 //   cur currency symbol '$' (only meaningful with n:'cur')
 
+import { formatDate, parseDate, isDateFormat } from './dates.js'
+
 export const NUMBER_FORMATS = [
   { id: 'auto', label: 'Automatic' },
   { id: 'int', label: 'Number (1,235)' },
@@ -19,7 +21,14 @@ export const NUMBER_FORMATS = [
   { id: 'plain', label: 'Plain (1234.57)' },
   { id: 'pct', label: 'Percent (12.34%)' },
   { id: 'cur', label: 'Currency ($1,234.57)' },
+  { id: 'date', label: 'Date (05/08/2026)' },
+  { id: 'isodate', label: 'Date (2026-08-05)' },
+  { id: 'datelong', label: 'Date (5 August 2026)' },
+  { id: 'datetime', label: 'Date and time' },
+  { id: 'time', label: 'Time' },
 ]
+
+export { isDateFormat }
 
 // Intl.NumberFormat is built into the browser and node: correct grouping
 // and rounding for the viewer's locale, with no dependency and no
@@ -44,6 +53,8 @@ function formatter(min, max) {
 // a number format on a text cell is inert, not an error.
 export function formatNumber(n, fmt) {
   const spec = fmt?.n
+  // A date is a number with a date format on it — see dates.js.
+  if (isDateFormat(spec)) return formatDate(n, spec)
   switch (spec) {
     case 'int': return formatter(0, 0).format(n)
     case 'dec2': return formatter(2, 2).format(n)
@@ -89,6 +100,11 @@ const CURRENCY_SYMBOLS = ['$', '£', '€', '¥', 'A$', 'NZ$', 'R$', '₹']
 export function parseTypedNumber(text) {
   let s = String(text).trim()
   if (s === '') return null
+
+  // A typed date is a number too: store the serial, let the format carry
+  // the fact that it should read as a date.
+  const date = parseDate(s)
+  if (date) return { value: date.serial, fmt: { n: date.kind } }
 
   let negative = false
   if (s.startsWith('-')) { negative = true; s = s.slice(1).trim() }

@@ -2,10 +2,11 @@
 // the CRDT cases the whole design exists for (concurrent structural edits).
 // Run from web/: node scripts/sheet_test.mjs
 import * as Y from 'yjs'
-import { parseFormula, serialize, evaluate, isErr, fmtNum, colName, parseColName } from '../src/sheet/engine.js'
+import { parseFormula, serialize, evaluate, isErr, fmtNum, colName, parseColName, setClock } from '../src/sheet/engine.js'
 import { Workbook, SheetModel, FIRST_SHEET } from '../src/sheet/model.js'
 import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../src/sheet/clipboard.js'
 import { parseTypedNumber, formatNumber, mergeFormat, resolveFormat } from '../src/sheet/format.js'
+import { serialFromParts, partsFromSerial, parseDate, formatDate, setDayFirst } from '../src/sheet/dates.js'
 
 let failures = 0
 function eq(got, want, what) {
@@ -690,6 +691,153 @@ for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A
   eq(a.formatOf(0, 0), { b: 1 }, 'and the concurrent formatting is not lost')
   eq(val(b, 0, 0), 'goodbye', 'both sides agree on content')
   eq(b.formatOf(0, 0), { b: 1 }, 'and on format')
+}
+
+// ---- dates ------------------------------------------------------------------
+
+// Pin the locale ordering and the clock so these assertions don't depend on
+// the machine they run on.
+setDayFirst(true) // day/month/year, as in Australia and most of the world
+setClock(() => new Date(2026, 7, 5, 14, 30, 0)) // 5 Aug 2026, 14:30 local
+
+const SER_2026_08_05 = serialFromParts(2026, 8, 5)
+
+{
+  eq(serialFromParts(2026, 8, 5), 46239, 'modern dates carry the same serial as Excel')
+  // The deliberate deviation: Excel believes 1900-02-29 existed, so every
+  // date before 1900-03-01 is one higher there (1900-01-01 is Excel's 1).
+  // We keep the correct calendar; see dates.js.
+  eq(serialFromParts(1900, 1, 1), 2, 'pre-March-1900 differs from Excel by one day, on purpose')
+  eq(serialFromParts(1900, 3, 1), 61, 'and from March 1900 onward the two agree')
+  const p = partsFromSerial(46239.5)
+  eq([p.y, p.mo, p.d, p.hh], [2026, 8, 5, 12], 'the fraction is time of day: .5 is noon')
+
+  // Serials are civil, not instants: no timezone can shift the day.
+  eq(partsFromSerial(serialFromParts(2026, 4, 5)).d, 5, 'a date survives a DST boundary')
+  eq(partsFromSerial(serialFromParts(2026, 10, 4)).d, 4, 'and the other one')
+}
+
+{
+  const p = (s) => { const r = parseDate(s); return r && [Math.round(r.serial * 1e6) / 1e6, r.kind] }
+  eq(p('2026-08-05'), [SER_2026_08_05, 'isodate'], 'ISO dates parse')
+  eq(p('5/8/2026'), [SER_2026_08_05, 'date'], 'day-first locale reads 5/8 as 5 August')
+  eq(p('05-08-2026'), [SER_2026_08_05, 'date'], 'dashes with a year parse')
+  eq(p('5 Aug 2026'), [SER_2026_08_05, 'date'], 'day month-name year')
+  eq(p('August 5, 2026'), [SER_2026_08_05, 'date'], 'month-name day, year')
+  eq(p('5/8/26'), [SER_2026_08_05, 'date'], 'a two-digit year under 30 is this century')
+  eq(p('2026-08-05 14:30'), [SER_2026_08_05 + 0.604167, 'datetime'], 'date with a time')
+  eq(p('2:30 pm'), [0.604167, 'time'], 'a bare time is a fraction of a day')
+  eq(p('14:30'), [0.604167, 'time'], '24-hour time')
+
+  eq(parseDate('2026-02-30'), null, 'an impossible date is rejected, not rolled over')
+  eq(parseDate('32/1/2026'), null, 'day 32 is rejected')
+  eq(parseDate('1-2'), null, 'a dashed pair without a year stays text — it is usually a range')
+  eq(parseDate('hello'), null, 'text is not a date')
+  eq(parseDate('25:00'), null, 'hour 25 is not a time')
+
+  setDayFirst(false)
+  eq(p('5/8/2026'), [serialFromParts(2026, 5, 8), 'date'], 'a month-first locale reads the same text as May 8')
+  setDayFirst(true)
+}
+
+{
+  eq(formatDate(SER_2026_08_05, 'isodate'), '2026-08-05', 'ISO display')
+  eq(formatDate(SER_2026_08_05 + 0.604167, 'datetime').includes('2026'), true, 'datetime includes the year')
+  // Whatever a date format renders must parse back, or editing destroys it.
+  for (const kind of ['date', 'isodate', 'datelong', 'datetime', 'time']) {
+    const text = formatDate(SER_2026_08_05 + 0.604167, kind)
+    const back = parseDate(text)
+    eq(back !== null, true, `${kind} renders to something re-parseable ("${text}")`)
+  }
+}
+
+{
+  // Typed dates become serials with a date format, so arithmetic works.
+  const m = newModel()
+  m.setCell(0, 0, '2026-08-05')
+  eq(val(m, 0, 0), SER_2026_08_05, 'a typed date stores its serial')
+  eq(m.display(0, 0).text, '2026-08-05', 'and displays as a date')
+  eq(m.getInput(0, 0), '2026-08-05', 'and the formula bar shows the date, not the serial')
+
+  m.setCell(1, 0, '=A1+7')
+  eq(m.display(1, 0).text, '2026-08-12', 'adding 7 to a date gives a week later')
+
+  m.setCell(2, 0, '2026-08-20')
+  m.setCell(3, 0, '=A3-A1')
+  eq(val(m, 3, 0), 15, 'subtracting two dates gives days between')
+  eq(m.display(3, 0).text, '15', 'and reads as a number, not a date in 1900')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '=TODAY()')
+  eq(m.display(0, 0).text, '05/08/2026', 'TODAY is auto-formatted as a date')
+  m.setCell(1, 0, '=NOW()')
+  eq(m.display(1, 0).text.startsWith('05/08/2026'), true, 'NOW carries the time too')
+  m.setCell(2, 0, '=TODAY()+1')
+  eq(m.display(2, 0).text, '06/08/2026', 'arithmetic on a date function stays a date')
+  m.setCell(3, 0, '=A1')
+  eq(m.display(3, 0).text, '05/08/2026', 'a bare reference inherits the date format')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '=DATE(2026,8,5)')
+  eq(m.display(0, 0).text, '05/08/2026', 'DATE builds a date')
+  m.setCell(1, 0, '=DATE(2026,13,1)')
+  eq(m.display(1, 0).text, '01/01/2027', 'DATE rolls over on purpose, unlike typed input')
+  m.setCell(2, 0, '=YEAR(A1)&"-"&MONTH(A1)&"-"&DAY(A1)')
+  eq(val(m, 2, 0), '2026-8-5', 'YEAR/MONTH/DAY pull components out')
+  m.setCell(3, 0, '=WEEKDAY(A1)')
+  eq(val(m, 3, 0), 4, 'WEEKDAY: 5 Aug 2026 is a Wednesday (Sunday = 1)')
+  m.setCell(4, 0, '=WEEKDAY(A1,2)')
+  eq(val(m, 4, 0), 3, 'and Monday = 1 in mode 2')
+  m.setCell(5, 0, '=DAYS(DATE(2026,8,20),DATE(2026,8,5))')
+  eq(val(m, 5, 0), 15, 'DAYS counts between two dates')
+  m.setCell(6, 0, '=EDATE(DATE(2026,1,31),1)')
+  eq(m.display(6, 0).text, '28/02/2026', 'EDATE clamps to a shorter month')
+  m.setCell(7, 0, '=HOUR(0.75)&":"&MINUTE(0.5)')
+  eq(val(m, 7, 0), '18:0', 'HOUR and MINUTE read the fractional part')
+}
+
+{
+  // Dragging two consecutive dates continues the run — this works only
+  // because the SERIAL extrapolates, not the displayed text.
+  const m = newModel()
+  m.setCell(0, 0, '2026-08-05')
+  m.setCell(1, 0, '2026-08-06')
+  m.fill({ r1: 0, c1: 0, r2: 1, c2: 0 }, { r1: 0, c1: 0, r2: 4, c2: 0 })
+  eq([m.display(2, 0).text, m.display(4, 0).text], ['2026-08-07', '2026-08-09'],
+    'a date series fills daily and keeps its format')
+
+  // A weekly step is just a step of 7.
+  const w = newModel()
+  w.setCell(0, 0, '2026-08-05')
+  w.setCell(1, 0, '2026-08-12')
+  w.fill({ r1: 0, c1: 0, r2: 1, c2: 0 }, { r1: 0, c1: 0, r2: 3, c2: 0 })
+  eq(w.display(3, 0).text, '2026-08-26', 'a weekly date series continues weekly')
+}
+
+{
+  // Dates survive the clipboard round-trip as dates.
+  const m = newModel()
+  m.setCell(0, 0, '2026-08-05')
+  const { inputs, values, formats } = m.readRect(0, 0, 0, 0)
+  eq(values[0][0], '2026-08-05', 'copied text is the date, not the serial')
+  m.writeRect(3, 3, inputs, { origin: { r: 0, c: 0 }, formats })
+  eq(val(m, 3, 3), SER_2026_08_05, 'pasting reproduces the serial')
+  eq(m.display(3, 3).text, '2026-08-05', 'and the date format')
+}
+
+{
+  // Formatting a plain number as a date, and back.
+  const m = newModel()
+  m.setCell(0, 0, '46239')
+  eq(m.display(0, 0).text, '46239', 'a bare serial reads as a number')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { n: 'isodate' })
+  eq(m.display(0, 0).text, '2026-08-05', 'formatting it as a date reveals the date')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { n: null })
+  eq(m.display(0, 0).text, '46239', 'and removing the format shows the number again')
 }
 
 // ---- A1 helpers -----------------------------------------------------------

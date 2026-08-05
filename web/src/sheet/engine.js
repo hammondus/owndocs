@@ -6,6 +6,15 @@
 // Values are: number | string | boolean | null (empty cell) | {error: code}.
 // Errors propagate through operators and most functions, Excel-style.
 
+import { serialFromParts, partsFromSerial } from './dates.js'
+
+// The clock TODAY/NOW read. A seam, so tests can pin "now" instead of
+// asserting against the wall clock.
+let clock = () => new Date()
+export function setClock(fn) {
+  clock = fn
+}
+
 // ---- values ---------------------------------------------------------------
 
 export const ERR = (code) => ({ error: code })
@@ -592,6 +601,66 @@ export const FUNCTIONS = {
   UPPER: str1((s) => s.toUpperCase()),
   LOWER: str1((s) => s.toLowerCase()),
   TRIM: str1((s) => s.trim().replace(/ +/g, ' ')),
+  // ---- dates (serials — see dates.js) ----
+  // TODAY and NOW are the engine's only impure functions. Each client
+  // computes them from its OWN clock and timezone, because nothing is ever
+  // computed on the server. Two people in different zones can therefore
+  // briefly read a different TODAY(); the stored document is identical
+  // either way, since computed values are never stored. They refresh on
+  // recalculation, not continuously.
+  TODAY: (args) => {
+    if (args.length) return ERR('#VALUE!')
+    const d = clock()
+    return serialFromParts(d.getFullYear(), d.getMonth() + 1, d.getDate())
+  },
+  NOW: (args) => {
+    if (args.length) return ERR('#VALUE!')
+    const d = clock()
+    return serialFromParts(d.getFullYear(), d.getMonth() + 1, d.getDate(),
+      d.getHours(), d.getMinutes(), d.getSeconds())
+  },
+  // DATE rolls over deliberately: DATE(2026,13,1) is January 2027, which
+  // is what makes month arithmetic work. Typed input is validated instead.
+  DATE: (args) => date3(args, (y, mo, d) => serialFromParts(y, mo, d)),
+  TIME: (args) => date3(args, (h, mi, s) => (h * 3600 + mi * 60 + s) / 86400),
+  YEAR: datePart((p) => p.y),
+  MONTH: datePart((p) => p.mo),
+  DAY: datePart((p) => p.d),
+  HOUR: datePart((p) => p.hh),
+  MINUTE: datePart((p) => p.mi),
+  SECOND: datePart((p) => p.ss),
+  WEEKDAY: (args) => {
+    if (args.length < 1 || args.length > 2) return ERR('#VALUE!')
+    const n = toNum(args[0])
+    if (isErr(n)) return n
+    const type = args.length === 2 ? toNum(args[1]) : 1
+    if (isErr(type)) return type
+    const dow = partsFromSerial(n).dow // 0 = Sunday
+    if (type === 1) return dow + 1 // Sunday = 1, Excel's default
+    if (type === 2) return ((dow + 6) % 7) + 1 // Monday = 1
+    if (type === 3) return (dow + 6) % 7 // Monday = 0
+    return ERR('#NUM!')
+  },
+  DAYS: (args) => {
+    if (args.length !== 2) return ERR('#VALUE!')
+    const end = toNum(args[0]), start = toNum(args[1])
+    if (isErr(end)) return end
+    if (isErr(start)) return start
+    return Math.trunc(end) - Math.trunc(start)
+  },
+  EDATE: (args) => {
+    if (args.length !== 2) return ERR('#VALUE!')
+    const n = toNum(args[0]), months = toNum(args[1])
+    if (isErr(n)) return n
+    if (isErr(months)) return months
+    const p = partsFromSerial(n)
+    const target = p.mo - 1 + Math.trunc(months)
+    const y = p.y + Math.floor(target / 12)
+    const mo = ((target % 12) + 12) % 12 + 1
+    // Clamp to the end of a shorter month: 31 Jan + 1 month is 28 Feb.
+    const lastDay = partsFromSerial(serialFromParts(y, mo + 1, 1) - 1).d
+    return serialFromParts(y, mo, Math.min(p.d, lastDay))
+  },
   LEFT: (args) => sub(args, (s, n) => s.slice(0, n)),
   RIGHT: (args) => sub(args, (s, n) => (n === 0 ? '' : s.slice(-n))),
   MID: (args) => {
@@ -603,6 +672,30 @@ export const FUNCTIONS = {
     if (start < 1 || n < 0) return ERR('#VALUE!')
     return s.slice(start - 1, start - 1 + n)
   },
+}
+
+// Three numeric args, no ranges: DATE(y,m,d) and TIME(h,m,s).
+function date3(args, fn) {
+  if (args.length !== 3) return ERR('#VALUE!')
+  const ns = []
+  for (const a of args) {
+    if (a !== null && typeof a === 'object' && 'range' in a) return ERR('#VALUE!')
+    const n = toNum(a)
+    if (isErr(n)) return n
+    ns.push(Math.trunc(n))
+  }
+  return fn(...ns)
+}
+
+// YEAR, MONTH, DAY and friends: one serial in, one component out.
+function datePart(pick) {
+  return (args) => {
+    if (args.length !== 1) return ERR('#VALUE!')
+    const n = toNum(args[0])
+    if (isErr(n)) return n
+    if (n < 0) return ERR('#NUM!')
+    return pick(partsFromSerial(n))
+  }
 }
 
 function boolFold(args, init, op) {

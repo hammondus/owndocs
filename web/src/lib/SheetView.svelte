@@ -560,6 +560,20 @@
     renamingId = null
   }
 
+  // Interactive things live INSIDE the scroll container — the cell editor
+  // overlay, and every chart with its title and controls — so their key,
+  // clipboard and dblclick events bubble up to the grid's own handlers.
+  // Without this guard the grid treated a keystroke aimed at a chart title
+  // as cell entry: it called preventDefault (swallowing the character) and
+  // started editing a cell with it.
+  //
+  // Note it tests for controls and chart panels, NOT `target !== container`:
+  // the grid's own canvas is a child too, and every ordinary click and
+  // double-click on a cell targets it.
+  const OVERLAY_SELECTOR = 'input, select, button, textarea, .chart'
+  const fromOverlay = (e) =>
+    e.target !== containerEl && !!e.target?.closest?.(OVERLAY_SELECTOR)
+
   // ---- clipboard ----------------------------------------------------------
 
   // These ride the browser's own copy/cut/paste events, so Cmd+C/X/V and the
@@ -567,7 +581,7 @@
   // cell is being edited the events belong to that input, not to the grid.
 
   function onCopy(e) {
-    if (edit) return
+    if (fromOverlay(e) || edit) return
     e.preventDefault()
     const s = selRect()
     const { inputs, values, formats } = model.readRect(s.r1, s.c1, s.r2, s.c2)
@@ -580,7 +594,7 @@
   }
 
   function onCut(e) {
-    if (edit || readOnly) return
+    if (fromOverlay(e) || edit || readOnly) return
     onCopy(e)
     // Excel/Sheets semantics: the source empties when the paste lands, not
     // now — so a cut that is never pasted changes nothing.
@@ -589,7 +603,7 @@
   }
 
   function onPaste(e) {
-    if (edit || readOnly) return
+    if (fromOverlay(e) || edit || readOnly) return
     e.preventDefault()
     const html = e.clipboardData.getData('text/html')
     const text = e.clipboardData.getData('text/plain')
@@ -785,6 +799,10 @@
   }
 
   function onDblClick(e) {
+    // Double-clicking a chart's title to select a word must not also open
+    // the cell editor underneath it. (mousedown is already safe: the chart
+    // handlers stop propagation, but dblclick has no such stop.)
+    if (fromOverlay(e)) return
     const { x, y } = gridPos(e)
     if (x < HEADER_W || y < HEADER_H) return
     startEdit()
@@ -793,6 +811,7 @@
   // ---- keyboard -----------------------------------------------------------
 
   function onKeyDown(e) {
+    if (fromOverlay(e)) return
     if (edit) return // the overlay input handles its own keys
     const move = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key]
     if (move) {

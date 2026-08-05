@@ -709,6 +709,15 @@ that promise, and they needed no new machinery:
   instead of diving to the axis.
 - Axis bounds use a 1/2/5 "nice scale"; ticks are rebuilt from the step
   rather than accumulated, so the top tick lands exactly on the axis.
+- **Putting interactive DOM inside the grid means every grid handler needs
+  a source check.** Charts are real elements inside the scroll container,
+  so their key, clipboard and dblclick events bubble into the grid's own
+  handlers — which is how typing a chart title ended up creating a cell
+  edit (the grid called preventDefault, swallowed the character and
+  started editing the cell underneath). One `fromOverlay(e)` guard now
+  fronts keydown, copy, cut, paste and dblclick. It tests for controls and
+  chart panels rather than `target !== container`, because the grid's own
+  canvas is a child too and every ordinary click on a cell targets it.
 - Drag and resize write **once on mouse-up**, so a drag is one undo step
   and one update on the wire rather than one per mouse event. The **body**
   is the drag surface, not the title strip: ~~the strip is the drag handle

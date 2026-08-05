@@ -18,7 +18,7 @@
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
   import { scheduleCompaction } from '../compaction.js'
 
-  let { me, doc, onBack, onShare } = $props()
+  let { me, doc, onBack, onShare, onHistory } = $props()
 
   // $derived, not a plain const: props can change, and a const would keep
   // the value from the first render forever.
@@ -945,6 +945,7 @@
   {#if doc.role === 'owner'}
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}
+  <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
   <span class="status">{status}</span>
   {#if peerCount > 1}
     <span class="status">{peerCount} online</span>

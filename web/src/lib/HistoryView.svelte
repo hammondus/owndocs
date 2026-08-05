@@ -9,22 +9,38 @@
   import { iterFrames } from '../frames.js'
   import { mountPreview } from '../editor.js'
   import { Provider } from '../provider.js'
+  import { Workbook } from '../sheet/model.js'
+  import SheetPreview from './SheetPreview.svelte'
 
   let { doc, onBack } = $props()
+
+  // Docs and sheets share the whole history mechanism — the log, the
+  // sessions, named versions, replay — and differ only in how a past state
+  // is rendered and how it is written back.
+  // $derived, not const: props can change, and a const would freeze the
+  // value from the first render.
+  let isSheet = $derived(doc.kind === 'sheet')
 
   let sessions = $state([])
   let versions = $state([])
   let selectedSeq = $state(null)
-  let previewText = $state(null) // null = nothing selected yet
+  let loaded = $state(false) // a point has been replayed and is on screen
+  let previewText = null // docs: the markdown at that point
+  let previewDoc = $state(null) // sheets: the reconstructed Y.Doc
   let versionName = $state('')
   let error = $state('')
   let busy = $state(false)
 
-  let previewEl // bound to the preview container div
-  let previewView // the read-only CodeMirror instance
+  // $state because the div now mounts conditionally (docs only): bind:this
+  // writes to it each time that branch appears.
+  let previewEl = $state(null)
+  let previewView // the read-only CodeMirror instance (docs only)
 
   onMount(load)
-  onDestroy(() => previewView?.destroy())
+  onDestroy(() => {
+    previewView?.destroy()
+    previewDoc?.destroy()
+  })
 
   async function load() {
     const h = await api(`/api/docs/${doc.id}/history`)
@@ -47,11 +63,19 @@
     const frames = new Uint8Array(await res.arrayBuffer())
     const replayDoc = new Y.Doc()
     for (const update of iterFrames(frames)) Y.applyUpdate(replayDoc, update)
-    previewText = replayDoc.getText('text').toString()
-    replayDoc.destroy()
 
-    previewView?.destroy()
-    previewView = mountPreview({ parent: previewEl, content: previewText })
+    if (isSheet) {
+      // The reconstructed doc stays alive: SheetPreview reads through a
+      // Workbook built on it, and restore copies straight out of it.
+      previewDoc?.destroy()
+      previewDoc = replayDoc
+    } else {
+      previewText = replayDoc.getText('text').toString()
+      replayDoc.destroy()
+      previewView?.destroy()
+      previewView = mountPreview({ parent: previewEl, content: previewText })
+    }
+    loaded = true
   }
 
   async function pinVersion(event) {
@@ -79,8 +103,8 @@
   // edit syncs to anyone currently in the doc and lands in history as a
   // new session — nothing is rewritten.
   async function restore() {
-    if (previewText === null || busy) return
-    if (!confirm('Replace the current document content with this version? The current state stays in history.')) return
+    if (!loaded || busy) return
+    if (!confirm('Replace the current content with this version? The current state stays in history.')) return
     busy = true
     error = ''
     try {
@@ -92,11 +116,17 @@
       })
       const provider = new Provider(ydoc, doc.id, { onSynced: () => markSynced() })
       await synced
-      const ytext = ydoc.getText('text')
-      ydoc.transact(() => {
-        ytext.delete(0, ytext.length)
-        ytext.insert(0, previewText)
-      })
+      if (isSheet) {
+        // One transaction, so the restore is a single update on the wire
+        // and a single undo step for anyone watching.
+        new Workbook(ydoc).restoreFrom(new Workbook(previewDoc))
+      } else {
+        const ytext = ydoc.getText('text')
+        ydoc.transact(() => {
+          ytext.delete(0, ytext.length)
+          ytext.insert(0, previewText)
+        })
+      }
       provider.destroy()
       ydoc.destroy()
       onBack() // back to the editor, which reloads the live doc
@@ -165,12 +195,22 @@
   </div>
 
   <div class="preview">
-    {#if previewText === null}
+    {#if !loaded}
       <p class="hint">Select a point in the timeline to preview it.</p>
     {:else if doc.role !== 'viewer'}
       <p><button onclick={restore} disabled={busy}>Restore this version</button></p>
     {/if}
-    <div bind:this={previewEl}></div>
+    {#if isSheet}
+      {#if previewDoc}
+        <!-- #key rebuilds the preview when a different point is selected,
+             so no state from the previous version can leak into it. -->
+        {#key selectedSeq}
+          <SheetPreview ydoc={previewDoc} />
+        {/key}
+      {/if}
+    {:else}
+      <div bind:this={previewEl}></div>
+    {/if}
   </div>
 </div>
 

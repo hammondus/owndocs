@@ -1023,6 +1023,108 @@ function chartModel() {
   eq(true, true, 'a series with no numbers does not throw')
 }
 
+// ---- version-history restore -------------------------------------------------
+
+{
+  // Build a workbook, snapshot it by cloning the doc, wreck the original,
+  // then restore — the exact shape of what history does, minus the server.
+  const past = new Y.Doc()
+  const wbPast = new Workbook(past)
+  const p1 = wbPast.sheet(FIRST_SHEET)
+  p1.setCell(0, 0, 'Item'); p1.setCell(1, 0, 'bolt'); p1.setCell(1, 1, '10')
+  p1.setCell(2, 0, '=A2&"!"')
+  p1.setFormat({ r1: 1, c1: 1, r2: 1, c2: 1 }, { n: 'cur', cur: '$' })
+  p1.setColWidth(0, 180)
+  const pastChartId = p1.addChart({ r1: 0, c1: 0, r2: 1, c2: 1 }, { title: 'Old chart' }).id
+  const two = wbPast.addSheet('Notes')
+  wbPast.sheet(two).setCell(0, 0, 'keep me')
+
+  // The live doc starts as a copy of that past state.
+  const live = new Y.Doc()
+  Y.applyUpdate(live, Y.encodeStateAsUpdate(past))
+  const wbLive = new Workbook(live)
+  const l1 = wbLive.sheet(FIRST_SHEET)
+
+  // Now wreck it: change values, delete a row, add a sheet, drop the chart.
+  l1.setCell(1, 0, 'WRONG')
+  l1.setCell(5, 5, 'junk')
+  l1.clearFormat({ r1: 1, c1: 1, r2: 1, c2: 1 })
+  l1.removeChart(pastChartId)
+  const added = wbLive.addSheet('Accident')
+  wbLive.sheet(added).setCell(0, 0, 'oops')
+  wbLive.renameSheet(two, 'Renamed')
+  eq(val(l1, 1, 0), 'WRONG', 'the live doc is wrecked before restoring')
+
+  wbLive.restoreFrom(wbPast)
+
+  eq(val(l1, 1, 0), 'bolt', 'restore brings cell values back')
+  eq(val(l1, 5, 5), null, 'and removes cells added since')
+  eq(l1.display(1, 1).text, '$10.00', 'formatting comes back too')
+  eq(l1.colWidth(0), 180, 'and column widths')
+  eq(l1.getInput(2, 0), '=A2&"!"', 'formulas resolve against the restored ids')
+  eq(val(l1, 2, 0), 'bolt!', 'and evaluate correctly')
+  eq(l1.charts().map((c) => c.title), ['Old chart'], 'a deleted chart comes back')
+  eq(wbLive.list().map((s) => s.name), ['Sheet1', 'Notes'],
+    'the tab list and names are restored, dropping the tab added since')
+  eq(val(wbLive.sheet(two), 0, 0), 'keep me', 'other sheets are restored as well')
+}
+
+{
+  // A restore is ONE update on the wire and one undo step, like every
+  // other bulk operation.
+  const past = new Y.Doc()
+  const wbPast = new Workbook(past)
+  wbPast.sheet(FIRST_SHEET).setCell(0, 0, 'original')
+
+  const live = new Y.Doc()
+  Y.applyUpdate(live, Y.encodeStateAsUpdate(past))
+  const wbLive = new Workbook(live)
+  wbLive.sheet(FIRST_SHEET).setCell(0, 0, 'changed')
+
+  let updates = 0
+  live.on('update', () => updates++)
+  wbLive.restoreFrom(wbPast)
+  eq(updates, 1, 'a restore is a single update')
+  eq(val(wbLive.sheet(FIRST_SHEET), 0, 0), 'original', 'and it restored')
+  wbLive.undo.undo()
+  eq(val(wbLive.sheet(FIRST_SHEET), 0, 0), 'changed', 'undo reverses the whole restore at once')
+}
+
+{
+  // Restoring to a point where a sheet did not exist yet must not resurrect
+  // it, and restoring identical content must be a no-op on the wire.
+  const past = new Y.Doc()
+  const wbPast = new Workbook(past)
+  wbPast.sheet(FIRST_SHEET).setCell(0, 0, 'a')
+
+  const live = new Y.Doc()
+  Y.applyUpdate(live, Y.encodeStateAsUpdate(past))
+  const wbLive = new Workbook(live)
+  let updates = 0
+  live.on('update', () => updates++)
+  wbLive.restoreFrom(wbPast)
+  eq(updates, 0, 'restoring to the state you are already in writes nothing')
+}
+
+{
+  // Restore is an ordinary collaborative edit: it must reach other clients.
+  const dA = new Y.Doc(), dB = new Y.Doc()
+  const wa = new Workbook(dA), wbk = new Workbook(dB)
+  wa.sheet(FIRST_SHEET).setCell(0, 0, 'v1')
+  syncBoth(dA, dB)
+
+  const snapshot = new Y.Doc()
+  Y.applyUpdate(snapshot, Y.encodeStateAsUpdate(dA))
+
+  wa.sheet(FIRST_SHEET).setCell(0, 0, 'v2')
+  syncBoth(dA, dB)
+  eq(val(wbk.sheet(FIRST_SHEET), 0, 0), 'v2', 'both clients see the newer value')
+
+  wa.restoreFrom(new Workbook(snapshot))
+  syncBoth(dA, dB)
+  eq(val(wbk.sheet(FIRST_SHEET), 0, 0), 'v1', 'the restore syncs to the other client')
+}
+
 // ---- A1 helpers -----------------------------------------------------------
 
 eq(colName(0), 'A', 'colName A')

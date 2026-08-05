@@ -163,6 +163,42 @@ export class Workbook {
   // a replay of every cell, and formulas pointing into it can come back to
   // life intact. Yjs keeps tombstones anyway, so deleting the cells would
   // not reclaim the space it appears to.
+  // Replace this workbook's contents with another's, in ONE transaction —
+  // the sheet equivalent of the document editor's "delete all, insert the
+  // old text". Used by version-history restore, where `snapshot` is a
+  // workbook rebuilt by replaying the update log to a past point.
+  //
+  // Row and column ids are replaced wholesale rather than reconciled, so
+  // formulas stored against the historical ids resolve again exactly as
+  // they did. Sheets that exist here but not in the snapshot are unlinked
+  // from the tab order rather than emptied, matching removeSheet: undo
+  // stays cheap and nothing is destroyed that a later restore might want.
+  restoreFrom(snapshot) {
+    // Every sheet either side knows about: the snapshot's sheets get their
+    // contents back, and any sheet created since is left behind when the
+    // tab order is replaced.
+    const touched = new Set([
+      ...snapshot.list().map((s) => s.id),
+      ...this.list().map((s) => s.id),
+    ])
+    this.tx(() => {
+      for (const id of touched) {
+        const src = snapshot.sheet(id)
+        const dst = this.sheet(id)
+        copyArray(src.rows, dst.rows)
+        copyArray(src.cols, dst.cols)
+        copyMap(src.cells, dst.cells)
+        copyMap(src.dims, dst.dims)
+        copyMap(src.fmt, dst.fmt)
+        copyMap(src.objects, dst.objects)
+        dst._invalidate()
+      }
+      copyArray(snapshot.sheetIds, this.sheetIds)
+      copyMap(snapshot.sheetNames, this.sheetNames)
+      this.valueCache.clear()
+    })
+  }
+
   removeSheet(id) {
     const ids = this.list()
     if (ids.length <= 1) return false
@@ -975,6 +1011,27 @@ export class SheetModel {
     this.ensureSize(0, c)
     this._index()
     this.tx(() => this.dims.set('w.' + this.colIds[c], Math.max(24, Math.round(px))))
+  }
+}
+
+// Both copiers skip work when the contents already match, so restoring to
+// the state you are already in writes nothing at all — a no-op restore
+// should not appear in history or travel over the wire.
+function copyArray(src, dst) {
+  const a = src.toArray()
+  const b = dst.toArray()
+  if (a.length === b.length && a.every((v, i) => v === b[i])) return
+  dst.delete(0, dst.length)
+  dst.insert(0, a)
+}
+
+// Set every key the source has and drop the ones it doesn't, rather than
+// clear-then-fill: a key whose value is unchanged then produces no
+// operation at all, which keeps a restore's update small.
+function copyMap(src, dst) {
+  for (const k of [...dst.keys()]) if (!src.has(k)) dst.delete(k)
+  for (const [k, v] of src.entries()) {
+    if (JSON.stringify(dst.get(k)) !== JSON.stringify(v)) dst.set(k, v)
   }
 }
 

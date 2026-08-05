@@ -97,7 +97,7 @@
        stale CodeMirror/provider from the previous doc can never leak. -->
   {#key route.doc.id}
     {#if route.doc.kind === 'sheet'}
-      <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} />
+      <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
     {:else}
       <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
     {/if}

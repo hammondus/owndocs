@@ -388,6 +388,37 @@ Verified by `web/scripts/exporter_e2e.mjs` (needs a running server, like
 count, per-commit content, ordering, author, trailers, idempotent rerun,
 and retitle-as-rename.
 
+### Version history for sheets
+
+Docs and sheets share the entire history mechanism — the append-only log,
+session bucketing, named versions, the replay endpoint — because the
+server has never known what a document contains. Only two things are
+kind-specific, and both are client-side:
+
+- **Preview** renders an HTML table rather than the canvas grid. A preview
+  needs no scrolling, editing, selection or virtualization, and a table is
+  selectable and copyable for free. Cell text, alignment and formatting
+  come from the same `display()`/`formatOf()` the live grid uses, so the
+  preview cannot drift from what a restore would actually give back.
+  Capped at 200x40 cells: a preview is for recognising a version, not
+  reading all of it.
+- **Restore** is `Workbook.restoreFrom(snapshot)` — the sheet equivalent of
+  the editor's "delete all text, insert the old text", but across rows,
+  columns, cells, dimensions, formats, charts, the tab order and tab
+  names. Row and column ids are replaced *wholesale* rather than
+  reconciled, so formulas stored against the historical ids resolve
+  exactly as they did. Sheets created since the snapshot are unlinked from
+  the tab order rather than emptied, matching `removeSheet`.
+
+Two properties worth keeping: the whole restore is **one transaction**, so
+it is a single update on the wire and a single undo step; and the copy
+skips keys that already match, so **restoring to the state you are already
+in writes nothing** and cannot pollute history with a no-op.
+
+Like the document restore, this is an ordinary collaborative edit: it
+syncs to anyone with the sheet open, is undoable, and itself appears in
+history. Nothing is ever rewritten.
+
 ### Import/export
 
 xlsx via `excelize` (mature, justified). Doc export is now trivial: the
@@ -741,8 +772,9 @@ and fill; still missing: double-click-to-fill-down, weekday/month-step
 series, paste-special); ~~no volatile functions (`TODAY`/`NOW` make clients
 disagree and recalc time-dependent — needs thought, not code)~~ (thought
 applied, then shipped — see Dates for exactly what "disagree" amounts to);
-history *browsing* UI for sheets deferred (the log and
-replay already work — only the preview renderer is markdown-specific);
+~~history *browsing* UI for sheets deferred (the log and
+replay already work — only the preview renderer is markdown-specific)~~
+(shipped — see Version history for sheets);
 CSV/xlsx export later; the git exporter keeps skipping `kind=sheet` until
 a text serialization is chosen (likely CSV alongside the .md files).
 

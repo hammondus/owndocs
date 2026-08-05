@@ -69,6 +69,20 @@ export function formatNumber(n, fmt) {
   }
 }
 
+// A format record as CSS. Shared by the clipboard's HTML flavour and the
+// history preview, so a cell looks the same wherever it is rendered
+// outside the grid's canvas.
+export function formatCss(f) {
+  if (!f) return ''
+  const css = []
+  if (f.b) css.push('font-weight:bold')
+  if (f.i) css.push('font-style:italic')
+  if (f.a) css.push(`text-align:${f.a === 'l' ? 'left' : f.a === 'c' ? 'center' : 'right'}`)
+  if (f.c) css.push(`color:${f.c}`)
+  if (f.bg) css.push(`background-color:${f.bg}`)
+  return css.join(';')
+}
+
 // Cell over row over column, so a currency column can be overridden one
 // cell at a time. Absent keys fall through; an explicit null does not
 // occur (removing a key deletes it — see the model's setFormat).

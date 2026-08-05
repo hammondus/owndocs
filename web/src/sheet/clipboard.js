@@ -11,6 +11,8 @@
 // Google Sheets uses the same trick (data-sheets-value), so browsers are
 // known to preserve data attributes across a copy.
 
+import { formatCss } from './format.js'
+
 const MARK = 'data-docs-sheet'
 
 // ---- TSV ------------------------------------------------------------------
@@ -66,14 +68,8 @@ const unescapeHTML = (s) =>
 // Inline styles on each cell, so formatting survives a paste into Excel or
 // Google Sheets — they read the HTML flavour's CSS, not our attribute.
 function cellStyle(f) {
-  if (!f) return ''
-  const css = []
-  if (f.b) css.push('font-weight:bold')
-  if (f.i) css.push('font-style:italic')
-  if (f.a) css.push(`text-align:${f.a === 'l' ? 'left' : f.a === 'c' ? 'center' : 'right'}`)
-  if (f.c) css.push(`color:${f.c}`)
-  if (f.bg) css.push(`background-color:${f.bg}`)
-  return css.length ? ` style="${escapeHTML(css.join(';'))}"` : ''
+  const css = formatCss(f)
+  return css ? ` style="${escapeHTML(css)}"` : ''
 }
 
 // payload: {inputs, formats, origin} — raw cell inputs and their formats

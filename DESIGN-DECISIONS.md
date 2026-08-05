@@ -5,7 +5,8 @@ Svelte frontend. This file records *why* each non-obvious route was taken, for
 future me, reviewers, and Claude. Newest decisions at the bottom of each
 section; superseded decisions get struck through, not deleted.
 
-Last updated: 2026-08-04 (pre-code planning phase).
+Decided-but-unbuilt work lives in `ROADMAP.md`, not here. When something on
+that list ships, delete it there and record the reasoning here.
 
 ---
 

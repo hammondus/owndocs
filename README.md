@@ -2,7 +2,8 @@
 
 Self-hosted collaborative documents + spreadsheets. Go backend, Svelte 5
 frontend, markdown-native editor over CodeMirror 6 + Yjs. See
-`DESIGN-DECISIONS.md` for the architecture and the reasoning behind it.
+`DESIGN-DECISIONS.md` for the architecture and the reasoning behind it, and
+`ROADMAP.md` for what is decided but not yet built.
 
 ## Run
 

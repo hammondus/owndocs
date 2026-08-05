@@ -938,6 +938,58 @@ The event a script receives is the sheet name, the bounding range of the
 change and a cell count — derived from the changed keys, skipping any
 whose row or column has since been deleted.
 
+### The headless runner: Sobek running the browser's own model
+
+Scripts in a browser only run while a browser is open, which leaves
+scheduled and unattended work undone. The runner (`cmd/runner`) fills that
+gap as **just another client**, the same shape as the git exporter: it logs
+in with an ordinary account, speaks the ordinary WebSocket protocol, and
+the server is unchanged and still cannot read a document.
+
+The hard part is that last clause. Because updates are opaque blobs,
+*anything* that wants to read a document needs a CRDT, and there is no Go
+Yjs implementation worth betting a document's integrity on. Two obvious
+routes were rejected:
+
+- **cgo to Rust's `yrs`** — reintroduces cgo, which is exactly what the
+  `CGO_ENABLED=0` linux/arm64 cross-compile exists to avoid.
+- **Writing a Yjs-compatible CRDT in Go** — a research project whose
+  failure mode is silently corrupting documents in ways the browser never
+  would.
+
+Instead the binary embeds **Sobek** (a pure-Go JavaScript engine) and runs
+the *same bundled model the browser runs*: `web/src/runner.js` pulls in
+`sheet/model.js` and `sheet/scriptapi.js` and is bundled by `make
+runner-js` into an embedded `runtime.js`. **Go owns the socket, the clock
+and the loop; JavaScript owns the CRDT.** Neither half can drift from the
+browser, because one of them *is* the browser's code — a formula, a date,
+a currency format and a script all behave identically by construction
+rather than by discipline.
+
+Things learned building it, all verified rather than assumed:
+
+- **Yjs runs in Sobek** given three host globals: `crypto.getRandomValues`,
+  `performance.now` and `Intl`. Sobek is a language engine with no ICU, so
+  `Intl` is a small fixed-locale shim covering exactly the option sets
+  `format.js` and `dates.js` ask for. Fixed-locale on purpose: a headless
+  runner wants output identical on every machine far more than it wants to
+  guess a locale from a server's environment.
+- **No JavaScript event loop is needed.** The API resolves calls
+  immediately, so a script's `await` settles on values already present.
+- **But run and collect must be two calls.** A promise callback is a
+  microtask and cannot run until the JavaScript job that queued it returns
+  to Go, so checking a script's result inside the same call always saw an
+  unsettled promise — however trivial the script. The first version did
+  exactly that and reported every script as unfinished.
+- Startup is ~25ms to load the bundle and single-digit milliseconds to run
+  a script. The binary is ~19 MB, which is Sobek plus a 350 KB bundle —
+  cheap for a tool invoked from cron.
+
+Scripts receive the same `event` argument as an on-edit trigger, so one
+script can be run by hand, by the browser on edit, or on a schedule. What
+is deliberately *not* here yet: the runner is invoked per document and per
+script, leaving scheduling to cron, and it does not watch for edits.
+
 ### v1 scope cuts (deliberate, recorded)
 
 ~~Single sheet per doc (tabs need a container restructure — decide before,

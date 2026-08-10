@@ -138,7 +138,7 @@
   {#each [...open, ...(showResolved ? closed : [])] as t (t.id)}
     <div class="thread" class:resolved={t.resolved_at}>
       <div class="thread-head">
-        <button class="where" onclick={() => onGoTo(t)} title="Go to this cell">
+        <button class="where" onclick={() => onGoTo(t)} title="Go to what this points at">
           {label(t)}
         </button>
         <span class="spacer"></span>
@@ -200,9 +200,9 @@
 
   {#if !open.length && !(showResolved && closed.length)}
     <p class="hint">
-      {canComment
-        ? 'No open comments. Select a cell and write one above.'
-        : 'No open comments. Your access is read-only.'}
+      {!canComment
+        ? 'No open comments. Your access is read-only.'
+        : anchorNote || `No open comments. Write one on ${newLabel} above.`}
     </p>
   {/if}
 </div>

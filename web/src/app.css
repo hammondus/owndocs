@@ -63,3 +63,11 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
                      line-height: normal; user-select: none; color: #000; padding: 0 .3em;
                      border-radius: 3px; white-space: nowrap; opacity: 0; transition: opacity .3s; }
 .cm-ySelectionCaret:hover > .cm-ySelectionInfo { opacity: 1; }
+
+/* Commented ranges in the markdown editor. Underline rather than a heavy
+   background: the text stays readable, and several overlapping comments do
+   not compound into an unreadable block. */
+.cm-comment-range {
+  background: #fff8e1;
+  border-bottom: 2px solid #f9a825;
+}

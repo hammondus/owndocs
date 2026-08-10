@@ -350,6 +350,29 @@ try {
     )
   })
 
+  // Comments on a markdown document. Asserts the panel mounts and renders
+  // against a real document without throwing — the failure mode that has bitten
+  // this project three times, where a component throws inside {#if} and the
+  // control merely looks dead. This step is also what caught the repaint being
+  // dispatched from inside a Yjs observer.
+  //
+  // NOT covered, and deliberately so rather than silently: selecting text and
+  // composing a comment on it. The selection itself drives fine (select-all
+  // through CodeMirror's own keymap), but the compose click does not produce a
+  // thread here and I have not found why within a sensible budget. The anchor
+  // logic underneath is covered properly in diff_test.mjs against a real
+  // Y.Doc — round trip, survives an insert before it, unaffected by one after
+  // it, does not swallow text typed at its boundary, does not resolve to its
+  // old word once deleted. What remains unverified is the click path.
+  await step('open the comments panel on a document', async () => {
+    await clickText(page, 'button', 'comments')
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('strong')].some((s) => s.textContent === 'Comments'),
+      { timeout: 3000 },
+    )
+    await clickText(page, 'button', 'close')
+  })
+
   // Smoke coverage of the restore *flow*: pin, edit, restore, land back on the
   // document without a console error. Text-level correctness of the patcher is
   // diff_test.mjs's job, including the anchor-survival property that is the

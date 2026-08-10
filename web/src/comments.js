@@ -13,6 +13,7 @@
 // fallback for an anchor that no longer resolves — the document's own content
 // is garbage-collected once deleted, so without this a comment on deleted text
 // would have nothing to show at all.
+import * as Y from 'yjs'
 import { api } from './lib/api.js'
 
 function toBase64(str) {
@@ -42,6 +43,50 @@ export function decodeAnchor(b64) {
 }
 
 export const cellAnchor = (sheet, row, col, quote) => ({ k: 'cell', sheet, row, col, quote })
+
+// ---- text anchors ----------------------------------------------------------
+// A Yjs RelativePosition survives arbitrary concurrent editing: it names a
+// position by the *item* it sits beside, not by an offset. Encoded to bytes it
+// travels in the anchor blob, and only a client holding the Y.Doc can turn it
+// back into an index — which is why the server can store these and still know
+// nothing about the document.
+
+const b64FromBytes = (u8) => {
+  let s = ''
+  for (const b of u8) s += String.fromCharCode(b)
+  return btoa(s)
+}
+const bytesFromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
+
+// The two ends associate in opposite directions so that typing at either
+// boundary lands *outside* the comment rather than silently extending it:
+// start sticks to the character after it, end to the character before.
+export function textAnchor(ytext, from, to, quote) {
+  const rel = (index, assoc) =>
+    b64FromBytes(Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(ytext, index, assoc)))
+  return { k: 'text', start: rel(from, 0), end: rel(to, -1), quote }
+}
+
+// Returns {from, to} in the document as it is now, or null when the anchor no
+// longer resolves — the text it named has been deleted and garbage-collected.
+// Null is an ordinary outcome, not an error: it is what the quoted snippet in
+// the anchor exists to cover.
+export function resolveTextAnchor(anchor, ydoc) {
+  if (!anchor || anchor.k !== 'text') return null
+  try {
+    const at = (b64) =>
+      Y.createAbsolutePositionFromRelativePosition(
+        Y.decodeRelativePosition(bytesFromB64(b64)),
+        ydoc,
+      )
+    const s = at(anchor.start)
+    const e = at(anchor.end)
+    if (!s || !e || e.index < s.index) return null
+    return { from: s.index, to: e.index }
+  } catch {
+    return null
+  }
+}
 
 // anchorKey indexes threads by the cell they sit on, for marker drawing.
 export const cellKey = (sheet, row, col) => `${sheet}.${row}.${col}`

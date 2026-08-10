@@ -1175,6 +1175,41 @@ typed, sent a doc update and had their socket closed for a policy violation.
 Both now go through `canEdit()` in `roles.js`, which mirrors `roleRank` — with
 a test asserting the two agree, since nothing else would catch them drifting.
 
+### Comments on documents: encoded RelativePositions
+
+A sheet comment names a cell by its stable ids. A document comment has no such
+handle, so it names its range with two Yjs **RelativePositions**, encoded to
+bytes and carried in the same opaque anchor blob (`{k:'text', start, end,
+quote}`). A relative position identifies a spot by the *item* it sits beside,
+not by an offset, so it survives arbitrary concurrent editing — and only a
+client holding the Y.Doc can turn it back into an index, which is how the
+server stores these while still knowing nothing about the document.
+
+- **The two ends associate in opposite directions**: start to the character
+  after it, end to the character before. Text typed at either boundary
+  therefore lands *outside* the comment rather than silently extending it.
+- **An anchor that no longer resolves is an ordinary outcome**, not an error.
+  The text it named was deleted and garbage-collected; the panel says
+  "(deleted)" and falls back to the quoted snippet rather than showing whatever
+  has since moved into that position.
+- **Highlights live in a StateField, pushed in by an effect.** Where the
+  commented ranges are is not something the editor can work out — it comes from
+  threads fetched over HTTP and resolved against the Y.Doc. A ViewPlugin
+  rebuilding from the viewport would drop a highlight the moment it scrolled
+  out of view.
+- **Anything a commenter can select, they can comment on.** Unlike a sheet,
+  nothing has to be created first: the text already exists, so no document
+  write is involved and the editor/commenter asymmetry does not arise here.
+
+The bug this shipped with, caught by `make test-ui` before it reached anyone:
+the repaint was called straight from `ytext.observe`, and that observer runs
+inside the transaction — which for a local edit is inside CodeMirror's own
+update. Dispatching there throws *"Calls to EditorView.update are not allowed
+while an update is in progress"*, which CodeMirror reports as a crashed plugin
+and which corrupts the editor's state; typed characters went missing several
+steps later, so the symptom did not resemble the cause at all. The repaint is
+now queued on a microtask, coalesced, so it runs once the update has unwound.
+
 ### Notifications: in-app always, email only if configured
 
 The filter is **"did this happen while you were not looking?"** Anything you

@@ -17,16 +17,15 @@ Decided: bodies, identity and resolved-state in SQLite; anchors as opaque
 blobs. See *Comments* for why, and for the two traps. Build order — each step
 is useful on its own:
 
-1. Docs UI: encoded `RelativePosition` anchors + quoted-snippet fallback
-2. Mentions, and in-app notifications: mention inbox, unresolved count in the
+1. Mentions, and in-app notifications: mention inbox, unresolved count in the
    document list
-3. Email, optional: unset SMTP config means none, and the app is whole
+2. Email, optional: unset SMTP config means none, and the app is whole
    without it. Two events only — mentioned, and shared-with-you
-4. Share UI: offer the `commenter` role (the API takes it already)
+3. Share UI: offer the `commenter` role (the API takes it already)
 
-Prerequisite, and a defect in its own right: **doc restore is
-delete-all-then-insert-all**, which orphans every anchor. It needs to become
-diff-and-patch before step 1 ships.
+Not yet covered by `make test-ui`: composing a comment on a text selection.
+The selection drives fine; the compose click does not produce a thread under
+automation and the reason is unfound. Verify that path by hand until it is.
 
 ## Sheets — formatting
 

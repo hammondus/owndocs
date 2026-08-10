@@ -6,6 +6,7 @@
 // thousand random pairs instead of trusted.
 import * as Y from 'yjs'
 import { splices, apply } from '../src/diff.js'
+import { textAnchor, resolveTextAnchor, encodeAnchor, decodeAnchor } from '../src/comments.js'
 
 let failures = 0
 const ok = (what) => console.log('ok:', what)
@@ -145,6 +146,64 @@ if (bad === 0) ok('3000 random round trips')
   const resolved = Y.createAbsolutePositionFromRelativePosition(anchor, doc)
   eq(text.toString().slice(resolved?.index ?? 0, (resolved?.index ?? 0) + 6) !== 'DOOMED', true,
      'an anchor inside the replaced region does not resolve to its old word')
+}
+
+// ---- text anchors ----------------------------------------------------------
+// What the docs comment UI anchors with. These travel through the same opaque
+// blob as a sheet anchor, so they must survive the JSON/base64 round trip too.
+
+{
+  const doc = new Y.Doc()
+  const text = doc.getText('text')
+  text.insert(0, 'alpha beta gamma')
+  const at = text.toString().indexOf('beta')
+  const anchor = textAnchor(text, at, at + 4, 'beta')
+
+  eq(decodeAnchor(encodeAnchor(anchor)), anchor, 'a text anchor round-trips through the blob')
+  eq(resolveTextAnchor(anchor, doc), { from: 6, to: 10 }, 'resolves to where it was made')
+
+  text.insert(0, 'PREFIX ')
+  const moved = resolveTextAnchor(anchor, doc)
+  eq(text.toString().slice(moved.from, moved.to), 'beta', 'still names the same word after an insert before it')
+
+  text.insert(text.length, ' trailing words')
+  const after = resolveTextAnchor(anchor, doc)
+  eq(text.toString().slice(after.from, after.to), 'beta', 'unaffected by an insert after it')
+}
+
+{
+  // Typing at either boundary must not silently swallow the new text into the
+  // comment: start associates right, end associates left.
+  const doc = new Y.Doc()
+  const text = doc.getText('text')
+  text.insert(0, 'one two three')
+  const at = text.toString().indexOf('two')
+  const anchor = textAnchor(text, at, at + 3, 'two')
+  text.insert(at + 3, 'XX')
+  const r = resolveTextAnchor(anchor, doc)
+  eq(text.toString().slice(r.from, r.to), 'two', 'text typed at the end boundary stays outside')
+}
+
+{
+  // Deleting the anchored text: the anchor must not silently point at whatever
+  // moved into its place. Failing to resolve, or collapsing to empty, are both
+  // honest — the quoted snippet covers the display.
+  const doc = new Y.Doc()
+  const text = doc.getText('text')
+  text.insert(0, 'keep DELETEME keep')
+  const at = text.toString().indexOf('DELETEME')
+  const anchor = textAnchor(text, at, at + 8, 'DELETEME')
+  text.delete(at, 8)
+  const r = resolveTextAnchor(anchor, doc)
+  eq(r === null || text.toString().slice(r.from, r.to) !== 'DELETEME', true,
+     'a deleted anchor does not resolve to its old text')
+}
+
+{
+  eq(resolveTextAnchor(null, new Y.Doc()), null, 'a missing anchor resolves to null')
+  eq(resolveTextAnchor({ k: 'cell' }, new Y.Doc()), null, 'a cell anchor is not a text anchor')
+  eq(resolveTextAnchor({ k: 'text', start: 'garbage', end: 'garbage' }, new Y.Doc()), null,
+     'an undecodable anchor is null, not a throw')
 }
 
 if (failures > 0) {

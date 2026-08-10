@@ -3,7 +3,7 @@
 // layer over the syntax tree, and marker characters (**, #, `…) are hidden
 // unless the selection touches the construct they belong to.
 import { EditorView, keymap, ViewPlugin, Decoration, WidgetType } from '@codemirror/view'
-import { EditorState, StateField } from '@codemirror/state'
+import { EditorState, StateField, StateEffect } from '@codemirror/state'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { syntaxTree, ensureSyntaxTree } from '@codemirror/language'
 import { defaultKeymap } from '@codemirror/commands'
@@ -270,6 +270,53 @@ const tableDecorations = StateField.define({
   provide: (field) => EditorView.decorations.from(field),
 })
 
+// ---- comment highlights ---------------------------------------------------
+// Where the commented ranges are is not something the editor can work out: it
+// comes from threads fetched over HTTP and resolved against the Y.Doc. So the
+// component pushes them in with an effect, and a StateField holds them.
+//
+// A StateField rather than a ViewPlugin because these decorations must survive
+// viewport changes and map through edits — a plugin rebuilding from the
+// viewport would lose a highlight the moment it scrolled out of view.
+
+const setCommentRangesEffect = StateEffect.define()
+const commentMark = Decoration.mark({ class: 'cm-comment-range' })
+
+const commentRanges = StateField.define({
+  create: () => Decoration.none,
+  update(value, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setCommentRangesEffect)) {
+        return Decoration.set(
+          e.value
+            .filter((r) => r.to > r.from && r.to <= tr.state.doc.length)
+            .map((r) => commentMark.range(r.from, r.to)),
+          true,
+        )
+      }
+    }
+    // No effect this transaction: carry the highlights through the edit so they
+    // track the text until the next refresh replaces them outright.
+    return tr.docChanged ? value.map(tr.changes) : value
+  },
+  provide: (field) => EditorView.decorations.from(field),
+})
+
+export function setCommentRanges(view, ranges) {
+  view.dispatch({ effects: setCommentRangesEffect.of(ranges) })
+}
+
+// Scroll a commented range into view and select it, so following a thread from
+// the panel lands you on the text it is about.
+export function revealRange(view, from, to) {
+  const end = Math.min(to, view.state.doc.length)
+  view.dispatch({
+    selection: { anchor: Math.min(from, end), head: end },
+    effects: EditorView.scrollIntoView(Math.min(from, end), { y: 'center' }),
+  })
+  view.focus()
+}
+
 const livePreview = ViewPlugin.fromClass(
   class {
     constructor(view) {
@@ -496,17 +543,31 @@ export function mountPreview({ parent, content }) {
   return view
 }
 
-export function mountEditor({ parent, ytext, awareness, readOnly }) {
+export function mountEditor({ parent, ytext, awareness, readOnly, onSelectionChange }) {
   const undoManager = new Y.UndoManager(ytext)
   const extensions = [
     keymap.of([...yUndoManagerKeymap, ...formatKeymap, ...defaultKeymap]),
     markdown({ base: markdownLanguage }),
     livePreview,
     tableDecorations,
+    commentRanges,
     EditorView.domEventHandlers({ mousedown: handleCheckboxClick }),
     EditorView.lineWrapping,
     yCollab(ytext, awareness, { undoManager }),
   ]
+  if (onSelectionChange) {
+    // The comment composer anchors to the selection, so it has to hear about
+    // every change to it — including the ones caused by a collaborator's edit
+    // shifting the cursor, which is why this listens to the editor rather than
+    // to DOM selection events.
+    extensions.push(
+      EditorView.updateListener.of((u) => {
+        if (!u.selectionSet && !u.docChanged) return
+        const r = u.state.selection.main
+        onSelectionChange(r.from, r.to)
+      }),
+    )
+  }
   if (readOnly) {
     extensions.push(EditorState.readOnly.of(true), EditorView.editable.of(false))
   }

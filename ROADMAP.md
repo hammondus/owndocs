@@ -27,6 +27,28 @@ Not yet covered by `make test-ui`: composing a comment on a text selection.
 The selection drives fine; the compose click does not produce a thread under
 automation and the reason is unfound. Verify that path by hand until it is.
 
+## Kanban: a third document kind
+
+Boards alongside docs and sheets, riding the same sync, sharing, history and
+comment machinery. Nothing about the collaboration engine changes; what changes
+is one more `kind` and everything that branches on it:
+
+- `documents.kind` CHECK is `('doc','sheet')` — widening it means rebuilding
+  the table, as `commenter` did (schema v5)
+- A `KanbanView`, and the routing in `App.svelte` that picks a view
+- Columns and cards in Yjs: fractional-index order, exactly as sheet rows and
+  columns already do, so concurrent inserts merge without coordination
+- History: a board preview renderer, and a `restoreFrom` like `Workbook`'s
+  rather than the text patcher
+- Git exporter: it skips any kind it has no text serialization for
+
+Comments need no new mechanism — a card carries a stable id, so the anchor is
+`{k:'card', card, quote}` in the envelope that already exists. Same reason
+sheet comments were the cheap half.
+
+Undecided, and worth deciding before there is data: what a board *is* on disk
+(see *Open questions*).
+
 ## Sheets — formatting
 
 - Borders

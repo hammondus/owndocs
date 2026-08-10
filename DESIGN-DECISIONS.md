@@ -1418,3 +1418,12 @@ disabled.
   deliverability burden never lands on this app.
 - Search: without server-side document reads, any full-text search must be
   client-fed. Deferred until wanted.
+- **Kanban boards** (see `ROADMAP.md`) — the container shape, which is the part
+  that gets expensive once boards have data in them. Is a card a title plus a
+  markdown body in the same Yjs doc, or a *reference* to a document, so a card
+  can be opened as a full doc and commented on as one? The second is closer to
+  how this project already thinks — one sync layer, one history mechanism — but
+  it makes a board partly a view over other documents, with the sharing
+  question that implies: who sees a card whose document they cannot open?
+  Related and cheaper to answer: what text serialization the git exporter
+  writes for a board (markdown with a heading per column is the obvious one).

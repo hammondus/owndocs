@@ -1109,16 +1109,25 @@ export const toolbarCommands = [
   { label: 'x₂', title: 'Subscript', run: toggleInline('~') },
   { sep: true },
   {
-    label: 'Heading',
-    title: 'Heading level',
+    // Google Docs' vocabulary, which maps one-to-one onto markdown's six
+    // levels and reads better than counting to six: nobody writing a document
+    // thinks "this is a heading 1 and that is a heading 2", they think "this
+    // is the title and that is a section".
+    //
+    // Worth knowing when reading the source it produces: "Subtitle" is `##`,
+    // which markdown treats as a second-level section heading. The label names
+    // the role it plays under a Title; the level it writes is unchanged, so a
+    // document written here reads correctly in any other markdown tool.
+    label: 'Style',
+    title: 'Text style',
     options: [
-      { label: 'Paragraph', value: 0 },
-      { label: 'Heading 1', value: 1 },
-      { label: 'Heading 2', value: 2 },
-      { label: 'Heading 3', value: 3 },
-      { label: 'Heading 4', value: 4 },
-      { label: 'Heading 5', value: 5 },
-      { label: 'Heading 6', value: 6 },
+      { label: 'Normal text', value: 0 },
+      { label: 'Title', value: 1 },
+      { label: 'Subtitle', value: 2 },
+      { label: 'Heading 1', value: 3 },
+      { label: 'Heading 2', value: 4 },
+      { label: 'Heading 3', value: 5 },
+      { label: 'Heading 4', value: 6 },
     ],
     run: (view, value) => setHeading(Number(value))(view),
   },
@@ -1149,6 +1158,13 @@ export const toolbarCommands = [
     options: Object.entries(INSERTS).map(([value, { label }]) => ({ label, value })),
     run: (view, value) => INSERTS[value]?.run(view),
   },
+  // Everything to the left acts on the document. What follows is about how it
+  // looks to you, so it sits at the other end of the bar.
+  { grow: true },
+  // `display: true` marks the entries that are not editing commands, and so
+  // survive for a viewer or a commenter — who see no toolbar otherwise, and
+  // are exactly the people a *reading* preference is for.
+  { label: 'Aa', title: 'Reading preferences', panel: 'reading', display: true },
 ]
 
 // Nesting is Tab, list continuation is Enter — and Enter is already bound, at

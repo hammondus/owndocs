@@ -52,8 +52,9 @@
   />
 {:else}
   <strong
+    class="name"
     class:renamable={canRename}
-    title={canRename ? 'Double-click to rename' : ''}
+    title={canRename ? 'Rename — double-click' : ''}
     ondblclick={start}
     role="presentation"
   >{doc.title}</strong>
@@ -63,17 +64,38 @@
 {/if}
 
 <style>
+  /* The subject of the screen, so it is the largest thing in the bar — every
+     other readout around it is deliberately smaller. */
+  .name {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    /* Matched to .renamable's border and padding, so nothing shifts when the
+       outline appears under the pointer or when the field replaces it. */
+    border: 1px solid transparent;
+    border-radius: var(--r);
+    padding: 2px 6px;
+    margin-left: -6px;
+  }
+  /* An affordance you can see. A tooltip alone cannot tell you a thing is
+     editable — you have to already suspect it to hover, which is the position
+     nobody is in. */
   .renamable {
     cursor: text;
   }
+  .renamable:hover {
+    border-color: var(--line-strong);
+    background: var(--surface);
+  }
   .title {
-    font: inherit;
-    font-weight: 700;
-    padding: 1px 4px;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    padding: 2px 6px;
+    margin-left: -6px;
   }
   .err {
-    font-size: 0.8rem;
-    color: #b00020;
-    margin-left: 0.4rem;
+    font-size: var(--t-small);
+    color: var(--danger);
   }
 </style>

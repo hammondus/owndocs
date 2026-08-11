@@ -618,7 +618,7 @@ try {
   // before and H4–H6 are what the menu was added for.
   await step('the heading menu sets a level the old buttons could not', async () => {
     await page.keyboard.type('Deep heading')
-    await page.select('.toolbar select[aria-label="Heading level"]', '4')
+    await page.select('.toolbar select[aria-label="Text style"]', '4')
     await page.waitForFunction(
       () =>
         document.querySelector('.md-h4') &&
@@ -627,7 +627,7 @@ try {
     )
     // Back to a paragraph: the menu's first real entry has to undo as well as
     // apply, or it is a one-way door.
-    await page.select('.toolbar select[aria-label="Heading level"]', '0')
+    await page.select('.toolbar select[aria-label="Text style"]', '0')
     await page.waitForFunction(() => !document.querySelector('.md-h4'), { timeout: 3000 })
   })
 

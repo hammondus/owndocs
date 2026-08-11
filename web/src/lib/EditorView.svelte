@@ -32,11 +32,16 @@
   let ydoc, provider, view
 
   let showComments = $state(false)
-  let showReading = $state(false)
   // Which toolbar drawer is open, by the `panel` id its entry carries. A
   // single value rather than one flag per panel: two open at once would push
   // the editor off the screen, and only one can be wanted at a time.
   let openPanel = $state('')
+
+  // A viewer and a commenter get no editing controls, but they do get the
+  // reading ones — the toolbar is where those live now, so it renders for
+  // everyone and drops what they may not use. Separators have no `display`,
+  // so they fall away with the commands they were dividing.
+  let bar = $derived(canEdit(doc.role) ? toolbarCommands : toolbarCommands.filter((c) => c.display))
   let threads = $state([])
   let selection = $state({ from: 0, to: 0 })
   let mayComment = $derived(canComment(doc.role))
@@ -228,9 +233,6 @@
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}
   <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
-  <button class="linkish" onclick={() => (showReading = !showReading)} title="How this renders for you">
-    Aa
-  </button>
 
   <!-- A status light: the dot carries the state, the words explain it. Green
        only when the document is actually reconciled with the server. -->
@@ -239,58 +241,58 @@
   </span>
 </div>
 
-<!-- canEdit, not `role !== 'viewer'`. A commenter is mounted read-only for the
-     reason roles.js states — the provider would send a doc update and the
-     server would close the socket — but EditorState.readOnly only stops *user
-     input*. A toolbar button is a programmatic dispatch and goes straight
-     through it, so a commenter clicking Bold used to edit the document and
-     lose the connection. -->
-{#if canEdit(doc.role)}
-  <div class="toolbar">
-    {#each toolbarCommands as cmd, i (i)}
-      {#if cmd.sep}
-        <span class="sep" aria-hidden="true"></span>
-      {:else if cmd.options}
-        <!-- A menu, not a mode: it never reports the current heading level, so
-             it resets to its own label after every choice. Unlike the buttons
-             this one cannot preventDefault on mousedown — that would stop it
-             opening — so it takes focus away from the editor. Harmless: the
-             selection lives in CodeMirror's state, not in the DOM, and the
-             command puts focus back when it is done. -->
-        <select
-          title={cmd.title}
-          aria-label={cmd.title}
-          onchange={(e) => { cmd.run(view, e.currentTarget.value); e.currentTarget.value = '' }}
-        >
-          <option value="" disabled selected>{cmd.label}</option>
-          {#each cmd.options as opt (opt.value)}
-            <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
-      {:else}
-        <!-- onmousedown preventDefault keeps focus (and the text selection)
-             inside the editor while the button is clicked -->
-        <button
-          title={cmd.title}
-          aria-label={cmd.title}
-          class:pressed={cmd.panel && openPanel === cmd.panel}
-          aria-pressed={cmd.panel ? openPanel === cmd.panel : undefined}
-          onmousedown={(e) => e.preventDefault()}
-          onclick={() =>
-            cmd.panel
-              ? (openPanel = openPanel === cmd.panel ? '' : cmd.panel)
-              : cmd.run(view)}
-        >{cmd.label}</button>
-      {/if}
-    {/each}
-  </div>
+<!-- Rendered for every role, and filtered by `bar`. What a commenter must not
+     reach is the editing commands: they are mounted read-only for the reason
+     roles.js states — the provider would send a doc update and the server
+     would close the socket — but EditorState.readOnly only stops *user input*,
+     and a toolbar button is a programmatic dispatch that goes straight through
+     it. So the filter is the gate, not the {#if} that used to wrap this. -->
+<div class="toolbar">
+  {#each bar as cmd, i (i)}
+    {#if cmd.sep}
+      <span class="sep" aria-hidden="true"></span>
+    {:else if cmd.grow}
+      <span class="grow"></span>
+    {:else if cmd.options}
+      <!-- A menu, not a mode: it never reports the current style, so it resets
+           to its own label after every choice. Unlike the buttons this one
+           cannot preventDefault on mousedown — that would stop it opening — so
+           it takes focus away from the editor. Harmless: the selection lives
+           in CodeMirror's state, not in the DOM, and the command puts focus
+           back when it is done. -->
+      <select
+        title={cmd.title}
+        aria-label={cmd.title}
+        onchange={(e) => { cmd.run(view, e.currentTarget.value); e.currentTarget.value = '' }}
+      >
+        <option value="" disabled selected>{cmd.label}</option>
+        {#each cmd.options as opt (opt.value)}
+          <option value={opt.value}>{opt.label}</option>
+        {/each}
+      </select>
+    {:else}
+      <!-- onmousedown preventDefault keeps focus (and the text selection)
+           inside the editor while the button is clicked -->
+      <button
+        title={cmd.title}
+        aria-label={cmd.title}
+        class:pressed={cmd.panel && openPanel === cmd.panel}
+        aria-pressed={cmd.panel ? openPanel === cmd.panel : undefined}
+        onmousedown={(e) => e.preventDefault()}
+        onclick={() =>
+          cmd.panel
+            ? (openPanel = openPanel === cmd.panel ? '' : cmd.panel)
+            : cmd.run(view)}
+      >{cmd.label}</button>
+    {/if}
+  {/each}
+</div>
 
-  {#if openPanel === 'emoji'}
-    <EmojiPicker onPick={(name) => insertEmoji(view, name)} onClose={() => (openPanel = '')} />
-  {/if}
+{#if openPanel === 'emoji'}
+  <EmojiPicker onPick={(name) => insertEmoji(view, name)} onClose={() => (openPanel = '')} />
 {/if}
 
-{#if showReading}
+{#if openPanel === 'reading'}
   <!-- Changing size or family changes line heights, and CodeMirror does not
        find that out on its own — it caches measurements per line. -->
   <ReadingPrefs
@@ -301,7 +303,7 @@
       refreshHeadings()
       view?.requestMeasure()
     }}
-    onClose={() => (showReading = false)}
+    onClose={() => (openPanel = '')}
   />
 {/if}
 

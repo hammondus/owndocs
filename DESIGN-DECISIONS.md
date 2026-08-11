@@ -618,6 +618,34 @@ button read "comment on nothing". The button now names what will happen
 (`Comment on A1`) or just says `Comment`; the empty state invites rather than
 repeating the composer's instructions.
 
+**A second pass, on user feedback:**
+
+- **The style menu speaks Google Docs**, not markdown: *Normal text, Title,
+  Subtitle, Heading 1–4*. Nobody writing a document thinks "this is a heading 1
+  and that is a heading 2"; they think "this is the title and that is a
+  section". The mapping is one-to-one onto `#`–`######`, so the file is
+  unchanged and reads correctly in any other tool. Worth knowing when reading
+  that file: **"Subtitle" writes `##`**, which markdown treats as a
+  second-level section heading — the label names the role it plays under a
+  Title, not a different level.
+- **Six heading levels now render at six sizes.** H4–H6 were identical at
+  1.02em, which was tolerable when the menu counted to six and is a menu that
+  lies once four of them are called "Heading". H6 is smaller than body text, as
+  it is in every browser's default sheet; weight and colour keep it reading as
+  a heading.
+- **Renaming a document is visible.** The gesture was double-click with no
+  affordance at all — a tooltip cannot tell you a thing is editable, because
+  you have to already suspect it to hover. The title is now the largest thing
+  in the bar, and grows a bordered field under the pointer, sized so nothing
+  shifts when the real input replaces it.
+- **`Aa` moved from the view bar into the toolbar**, at the far end behind a
+  spacer: acting on the document is on the left, how it looks to you is on the
+  right. That meant the toolbar can no longer be gated on `canEdit` — a viewer
+  is exactly who a *reading* preference is for. Entries carry `display: true`
+  when they are not editing commands, and a non-editor gets that subset. The
+  filter is now the permission gate that the wrapping `{#if}` used to be, which
+  keeps the guard in one place rather than two.
+
 Not in scope, and deliberately so: the information design of the history
 timeline, share dialog and sheet chrome. They inherit the tokens and the view
 bar, and read consistently, but their content layout is untouched.

@@ -379,6 +379,9 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
 }
 .toolbar select:hover { background: var(--surface-2); }
 .toolbar .sep { align-self: stretch; width: 1px; background: var(--line); margin: 2px 3px; }
+/* Pushes what follows to the far end: acting on the document is on the left,
+   how it looks to you is on the right. */
+.toolbar .grow { flex: 1; }
 
 .cm-editor {
   border: 1px solid var(--line);
@@ -402,10 +405,18 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
 .md-link { color: var(--signal); text-decoration: underline; }
 .md-dim { opacity: .4; }
 .md-heading { font-weight: 700; letter-spacing: -0.01em; }
-.md-h1 { font-size: 1.6em; }
-.md-h2 { font-size: 1.35em; }
-.md-h3 { font-size: 1.15em; }
-.md-h4, .md-h5, .md-h6 { font-size: 1.02em; }
+/* Six sizes, one per level, because the Style menu offers six and three of
+   them looking identical is a menu that lies. The names it uses are Google
+   Docs' — Title, Subtitle, Heading 1–4 — but what is written to the file is
+   `#` through `######`, so the sizes stay the semantic markdown scale. */
+.md-h1 { font-size: 1.7em; }
+.md-h2 { font-size: 1.4em; }
+.md-h3 { font-size: 1.2em; }
+.md-h4 { font-size: 1.06em; }
+.md-h5 { font-size: 0.96em; }
+/* The last level is smaller than body text, as h6 is in every browser's
+   default sheet. Weight and colour are what keep it reading as a heading. */
+.md-h6 { font-size: 0.88em; color: var(--ink-2); }
 /* `.cm-line` qualified, on every rule that sets padding. CodeMirror's base
    theme sets `.cm-line { padding: 0 2px 0 6px }`, and its injected styles beat
    an app rule of EQUAL specificity — the same trap the reading preferences hit,

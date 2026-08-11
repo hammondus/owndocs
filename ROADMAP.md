@@ -72,6 +72,65 @@ copying the board and every card document. Decide the copy strategy and
 whether template variables are substituted — see *Open questions*, since the
 second answer settles the first.
 
+## Document formatting: what markdown can and cannot express
+
+Not scheduled — a reference for deciding later. The constraint that shapes all
+of it: **the document is plain markdown text**, so anything here has to survive
+a round trip through a `.md` file the git exporter writes, and be decoratable
+from the CodeMirror syntax tree. That second part is the real cost driver:
+`@codemirror/lang-markdown` parses CommonMark + GFM, and anything beyond that
+needs a Lezer parser extension before it can be styled at all.
+
+### Already shipped
+
+Bold, italic, strikethrough, inline code, H1–H3, bullet lists, task lists,
+blockquotes, links, images, tables (rendered as real HTML tables).
+
+### Free — plain markdown, nothing new to invent
+
+- **H4–H6** — parsed and decorated already, just absent from the toolbar
+- **Numbered lists**, and nested lists of both kinds
+- **Fenced code blocks** with a language tag, and syntax highlighting inside
+  them (a `@codemirror/language-data` lookup — one dependency, already in the
+  CodeMirror family)
+- **Horizontal rules**
+- **Hard line breaks** (trailing backslash) as distinct from paragraph breaks
+- **Table column alignment** — left/centre/right, which markdown *does* encode
+  (`:---`, `:---:`, `---:`); the parser already reports it and `table.js`
+  already reads it
+
+### Cheap extensions — still plain text, widely understood
+
+Each needs a small Lezer extension to be decorated, and each stays readable in
+the exported `.md` even where another tool does not render it.
+
+- **Highlight** — `==marked text==`
+- **Superscript / subscript** — `x^2^`, `H~2~O`
+- **Footnotes** — `[^1]`
+- **Callouts / admonitions** — `> [!NOTE]`, `> [!WARNING]`: Obsidian's syntax,
+  and *already valid blockquotes*, so it degrades gracefully everywhere
+- **Emoji shortcodes** — `:warning:`
+- **Definition lists**
+- **Math** — `$…$` / `$$…$$`, needs KaTeX or MathJax, so a real dependency
+- **Mermaid diagrams** in a fenced block — likewise a real dependency
+
+### Not expressible in markdown at all
+
+Markdown encodes **meaning**, not **appearance**. These are appearance, and
+none of them has a text representation:
+
+- Font family
+- Arbitrary font size (headings give six semantic sizes; nothing else)
+- Text colour, background colour beyond a highlight convention
+- Paragraph alignment — centred or right-aligned body text
+- Line spacing, indentation, margins, columns, page breaks
+- Letter spacing, small caps
+
+Any of these needs an **escape hatch**, and there are only three shapes of one:
+raw inline HTML, a directive syntax this project defines (`::: center`,
+`[text]{.red}`), or attributes stored outside the text. Each has a real cost
+and none is obviously right — see *Open questions* before building any of them.
+
 ## Sheets — formatting
 
 - Borders

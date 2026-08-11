@@ -1584,6 +1584,29 @@ see *Open questions*.
   delivery channel.~~ Also answered — see Notifications: in-app first and
   always, email optional and submission-only to an existing relay, so the
   deliverability burden never lands on this app.
+- **The formatting escape hatch**, if arbitrary colour/size/alignment is ever
+  wanted in documents (see `ROADMAP.md`). Three shapes, and the choice is
+  effectively permanent because it lands in every exported `.md`:
+  - **Raw inline HTML** (`<span style=…>`). Markdown permits it and every
+    renderer understands it. Costs a sanitizer — an allowlist, hand-rolled or
+    a dependency — because the document is shared and rendered; makes the git
+    export noisy; and CommonMark's raw-HTML block rules are genuinely fiddly
+    to decorate correctly.
+  - **A directive syntax we define** (`::: center`, `[text]{.red}`). No
+    injection surface, exports as readable text, decorates cleanly. But it is
+    ours: another markdown tool shows the literal syntax, which weakens the
+    "it is just a markdown file" property the git export exists for.
+  - **Attributes outside the text** (front matter, or a side map keyed by
+    position). Keeps the prose clean, but breaks the property that the
+    document *is* the markdown — and position-keyed anything has the same
+    problem comment anchors have, only without a RelativePosition to solve it.
+
+  The prior worth stating before the choice is made: this project picked a
+  markdown-native editor on purpose, and every one of these trades some of that
+  away. A middle path is to add *semantic* constructs only — callouts,
+  highlight — and refuse arbitrary styling, which keeps documents meaningful
+  and exports readable at the price of never matching a word processor.
+
 - Search: without server-side document reads, any full-text search must be
   client-fed. Deferred until wanted.
 - ~~Kanban: is a card a body inside the board, or a reference to a document?~~

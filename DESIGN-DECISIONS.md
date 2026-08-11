@@ -1310,6 +1310,69 @@ that on submit exactly as typing would; commenters cannot, since it is a
 document write, and the composer says so instead of sitting inexplicably
 disabled.
 
+## Kanban (decided, not built)
+
+### A card *is* a document, and inherits the board's access
+
+Decided 2026-08-05. A card opens as a full document — same editor, same
+history, same comments, same sync — rather than being a title plus a body
+stored inside the board. One document kind fewer to special-case, and the
+machinery already exists.
+
+Access follows: **anyone who can open the board can open its cards.** Card
+documents are reached through the board, not shared individually.
+
+The load-bearing consequence, worth getting right before there is data:
+
+- **Derive access, never copy it.** The tempting shortcut is to write a
+  `permissions` row per card whenever the board is shared. That turns one
+  share into N writes, makes every card creation copy the board's *current*
+  permissions, and guarantees drift the first time the two disagree. Instead
+  `documents` gains `parent_id`, and `roleFor` falls back to the parent's
+  permissions. Depth is exactly one — a card's parent is a board, and boards
+  have no parent — so it is a single join, not a tree walk.
+- **`handleListDocs` must exclude cards** (`WHERE parent_id IS NULL`), or a
+  20-item induction board buries the document list it belongs to.
+- **`parent_id ... ON DELETE CASCADE`**, so deleting a board takes its cards
+  with it rather than leaving 20 documents nobody can reach.
+- **Removing a card from a board needs a decided answer**: delete its document,
+  or promote it to top level. Silently orphaning it is the one option that is
+  wrong, because `parent_id` is also what makes it visible.
+- **The share UI has to say this out loud.** "Share this board" now means
+  "share every card in it", and a permission surprise is the kind users only
+  discover the wrong way.
+- Note the boundary this is *not*: a card document still has a URL, and anyone
+  with board access can open it directly. "Only reachable via the board" is a
+  navigation statement, not a security one — the security statement is the
+  board's own permission row.
+
+### Templates: instantiate by copying documents
+
+Decided 2026-08-05, wanted concretely: a "new staff member" template that
+creates an induction board of 15–20 cards.
+
+A template is an ordinary board flagged as one, and instantiating it copies the
+board plus every card document. The interesting constraint is the same one that
+shapes everything else here — **the server cannot read document content**, so
+it cannot merge or rewrite a Yjs document. That leaves two honest options, and
+they differ in what history the copy starts with:
+
+- **Server-side blob copy.** Duplicate the template's stored update rows under
+  a new document id. Correct without parsing anything: replaying the same
+  frames reproduces the same state. Fast, and no client has to load 20
+  documents. Cost: the copy inherits the *template's* editing history, so a new
+  starter's induction board opens with a timeline of someone drafting the
+  template.
+- **Client-side copy.** The instantiating client loads each template document,
+  `encodeStateAsUpdate`s it, and posts that as the new document's first update.
+  History starts clean, at instantiation. Cost: it must load every card
+  document first, and it is the client's session that has to survive the loop.
+
+Open underneath this: whether instantiating substitutes per-instance values
+(the staff member's name, a start date) into card content. That is a content
+rewrite, so it forces the client-side path regardless of the choice above —
+see *Open questions*.
+
 ## Incidents
 
 - **2026-08-05, the comments panel threw before it could render.** User
@@ -1418,12 +1481,17 @@ disabled.
   deliverability burden never lands on this app.
 - Search: without server-side document reads, any full-text search must be
   client-fed. Deferred until wanted.
-- **Kanban boards** (see `ROADMAP.md`) — the container shape, which is the part
-  that gets expensive once boards have data in them. Is a card a title plus a
-  markdown body in the same Yjs doc, or a *reference* to a document, so a card
-  can be opened as a full doc and commented on as one? The second is closer to
-  how this project already thinks — one sync layer, one history mechanism — but
-  it makes a board partly a view over other documents, with the sharing
-  question that implies: who sees a card whose document they cannot open?
-  Related and cheaper to answer: what text serialization the git exporter
-  writes for a board (markdown with a heading per column is the obvious one).
+- ~~Kanban: is a card a body inside the board, or a reference to a document?~~
+  Answered — a card *is* a document, inheriting the board's access. See
+  *Kanban*. Still open underneath it:
+  - **Template variables.** Does instantiating a template substitute
+    per-instance values (staff name, start date) into card content? If yes,
+    that is a content rewrite, which forces the client-side copy — the server
+    cannot read a document, let alone edit one. Placeholder syntax would want
+    to be something markdown leaves alone, e.g. `{{name}}`.
+  - **Which copy strategy** for instantiation (blob copy inherits the
+    template's history; client copy starts clean and must load every card).
+    Moot if template variables are wanted: that decides it.
+  - **What a board serializes to for the git exporter** — markdown with a
+    heading per column is the obvious shape, with each card either inlined or
+    linked to its own exported file.

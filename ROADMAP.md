@@ -42,12 +42,24 @@ is one more `kind` and everything that branches on it:
   rather than the text patcher
 - Git exporter: it skips any kind it has no text serialization for
 
-Comments need no new mechanism — a card carries a stable id, so the anchor is
-`{k:'card', card, quote}` in the envelope that already exists. Same reason
-sheet comments were the cheap half.
+A card **is** a document, and inherits the board's access — decided, see
+*Kanban* for why and for what it costs. That adds:
 
-Undecided, and worth deciding before there is data: what a board *is* on disk
-(see *Open questions*).
+- `documents.parent_id`, `ON DELETE CASCADE`, and `roleFor` falling back to the
+  parent's permissions — derived, never copied
+- `handleListDocs` filtered to `parent_id IS NULL`, or a 20-card board buries
+  the list
+- The share UI saying that sharing a board shares every card in it
+
+Comments on the board itself need no new mechanism — a card carries a stable
+id, so the anchor is `{k:'card', card, quote}` in the envelope that already
+exists. A comment *inside* a card is just a document comment.
+
+**Templates**, wanted concretely (a "new staff member" template producing a
+15–20 card induction board): a board flagged as a template, instantiated by
+copying the board and every card document. Decide the copy strategy and
+whether template variables are substituted — see *Open questions*, since the
+second answer settles the first.
 
 ## Sheets — formatting
 

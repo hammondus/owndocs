@@ -1449,6 +1449,41 @@ The rules, chosen to be defensible rather than merely Excel-compatible:
   has no number format of its own, which also means it does not re-derive
   when a formula is later edited.
 
+### Selection readout: the sum you didn't want to write a formula for
+
+Selecting a block shows `Sum · Avg · Min · Max · Count` at the bottom right
+of the tab bar. Every spreadsheet has this because the commonest question
+about a column ("what does that add up to?") is asked far more often than it
+is worth committing a formula to answer.
+
+- **The numbers must agree with the formulas.** `model.stats(rect)` uses the
+  engine's *range* rule — only real numbers count; text, booleans and errors
+  are skipped — because that is what `numbersIn` does for `SUM(A1:B9)`. Two
+  places in the same app answering "what is the total of this block?"
+  differently is a bug report waiting to happen, so the test asserts the
+  readout against `=SUM`/`=AVERAGE`/`=MIN`/`=MAX`/`=COUNTA` over the same
+  range rather than against hand-computed constants.
+- **`Count` is COUNTA, not COUNT**: every non-empty cell, whatever is in it.
+  That is what the other spreadsheets show and what "how many rows did I just
+  select?" means. When it disagrees with the count that was actually totalled
+  the tooltip says so — the bar has no room to explain itself, and the
+  disagreement is exactly the thing a user would otherwise misread.
+- **No numbers means no numbers shown**, not `Sum 0`. `=SUM` over a column of
+  names is legitimately `0`; a status bar that reports `Sum 0` for a column of
+  names is just wrong-looking. `stats` returns null for all four and the bar
+  falls back to `Count` alone.
+- **Errors are skipped and admitted to**, with a `⚠` and a count in the
+  tooltip. Silently totalling around a `#DIV/0!` is the failure mode that
+  makes a readout untrustworthy.
+- **A single cell shows nothing.** There is nothing to aggregate, and the
+  formula bar is already showing that cell.
+- The rect is clamped to the materialized grid, so a whole-column selection —
+  which the view extends through its padding rows — is measured by what is in
+  it. Above 100k selected cells the bar says the range is too large instead of
+  scanning it: the readout recomputes once per frame during a drag, and that
+  is the only place where the O(cells) scan could be felt. It has to say so
+  rather than quietly showing nothing, or a missing total reads as zero data.
+
 ### Charts: a range consumer, exactly as reserved
 
 The sheets design promised that "ranges are subscribable by *anything*" and

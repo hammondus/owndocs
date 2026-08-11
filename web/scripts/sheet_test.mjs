@@ -212,6 +212,71 @@ const val = (m, r, c) => {
   eq(val(m, 0, 0), 'a', 'redo restores it')
 }
 
+// ---- selection stats (the readout under the grid) --------------------------
+// The contract that matters: these numbers must equal what the same range
+// produces through a formula, or the bar and the sheet disagree in front of
+// the user. Each case below is checked against the engine as well.
+
+{
+  const m = newModel()
+  const rect = { r1: 0, c1: 0, r2: 2, c2: 1 }
+  //  A   B
+  //  10  hello
+  //  2   TRUE
+  //  (blank)  6
+  m.setCell(0, 0, '10')
+  m.setCell(0, 1, 'hello')
+  m.setCell(1, 0, '2')
+  m.setCell(1, 1, '=TRUE') // a literal, not a function — TRUE() is a parse error
+  m.setCell(2, 1, '6')
+  const s = m.stats(rect)
+  eq([s.sum, s.min, s.max, s.numeric], [18, 2, 10, 3], 'stats total only the real numbers')
+  eq(s.avg, 6, 'average divides by the numeric count, not the cell count')
+  eq(s.count, 5, 'count is every non-empty cell, text and booleans included')
+  eq(s.errors, 0, 'nothing broken in this range')
+
+  // The same range, asked the same questions through the engine.
+  m.setCell(4, 0, '=SUM(A1:B3)')
+  m.setCell(4, 1, '=AVERAGE(A1:B3)')
+  m.setCell(5, 0, '=MIN(A1:B3)')
+  m.setCell(5, 1, '=MAX(A1:B3)')
+  m.setCell(6, 0, '=COUNTA(A1:B3)')
+  eq([val(m, 4, 0), val(m, 4, 1), val(m, 5, 0), val(m, 5, 1), val(m, 6, 0)],
+     [s.sum, s.avg, s.min, s.max, s.count],
+     'the readout agrees with SUM/AVERAGE/MIN/MAX/COUNTA over the same range')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, 'red')
+  m.setCell(1, 0, 'blue')
+  const s = m.stats({ r1: 0, c1: 0, r2: 1, c2: 0 })
+  eq([s.sum, s.avg, s.min, s.max], [null, null, null, null],
+     'a text-only range has no numeric answers (null, not a misleading 0)')
+  eq([s.count, s.numeric], [2, 0], 'but the cells are still counted')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '5')
+  m.setCell(1, 0, '=1/0')
+  const s = m.stats({ r1: 0, c1: 0, r2: 1, c2: 0 })
+  eq([s.sum, s.numeric, s.errors, s.count], [5, 1, 1, 2],
+     'an error cell is counted and reported, not silently folded into the sum')
+}
+
+{
+  // A whole-column selection runs past the data into the padding rows the
+  // view draws. Clamping is what keeps that from being a scan of nothing.
+  const m = newModel()
+  m.setCell(0, 0, '3')
+  m.setCell(1, 0, '4')
+  const s = m.stats({ r1: 0, c1: 0, r2: 999, c2: 99 })
+  eq([s.sum, s.count], [7, 2], 'a rect past the materialized grid clamps to it')
+  eq(m.stats({ r1: 50, c1: 0, r2: 60, c2: 0 }), m.stats({ r1: 0, c1: 5, r2: 0, c2: 9 }),
+     'a rect entirely outside the grid is empty, either axis')
+}
+
 // ---- model: two docs, concurrent edits ------------------------------------
 
 function syncBoth(d1, d2) {

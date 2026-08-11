@@ -1130,6 +1130,54 @@ export class SheetModel {
     return out(v, 'left')
   }
 
+  // Aggregates over a rectangle, for the selection readout at the bottom of
+  // the grid. Two rules, both borrowed rather than invented:
+  //
+  //   - the numeric four (sum/avg/min/max) count only real numbers, which is
+  //     the engine's rule for a *range* argument (numbersIn: text, booleans
+  //     and errors are skipped). So the readout agrees with =SUM(A1:B9)
+  //     typed into a cell — if it didn't, one of the two would be a bug
+  //     report waiting to happen.
+  //   - `count` is COUNTA's rule: every non-empty cell, whatever is in it.
+  //
+  // `numeric` is returned alongside so the caller can say why the two differ,
+  // and `errors` so a readout can admit that it skipped something broken
+  // rather than quietly totalling around it.
+  //
+  // The rect is clamped to the materialized grid: a whole-column selection
+  // spans the padding rows the view draws past the data, and scanning those
+  // is pure work for a guaranteed null.
+  stats(rect) {
+    const r1 = Math.max(rect.r1, 0), c1 = Math.max(rect.c1, 0)
+    const r2 = Math.min(rect.r2, this.rowCount() - 1)
+    const c2 = Math.min(rect.c2, this.colCount() - 1)
+    let count = 0, errors = 0, numeric = 0, sum = 0, min = Infinity, max = -Infinity
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        const v = this.getValue(r, c)
+        if (v === null) continue
+        count++
+        if (isErr(v)) { errors++; continue }
+        if (typeof v !== 'number') continue
+        numeric++
+        sum += v
+        if (v < min) min = v
+        if (v > max) max = v
+      }
+    }
+    return {
+      count, errors, numeric,
+      // Null, not 0, when the rect holds no numbers: "no answer" and "the
+      // answer is zero" have to look different to whoever renders this.
+      // (=SUM over a text-only range is 0; a readout showing "Sum 0" for a
+      // column of names would be worse than showing nothing.)
+      sum: numeric ? sum : null,
+      avg: numeric ? sum / numeric : null,
+      min: numeric ? min : null,
+      max: numeric ? max : null,
+    }
+  }
+
   // ---- structure ----------------------------------------------------------
 
   insertRows(at, n = 1) {

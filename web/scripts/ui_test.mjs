@@ -274,6 +274,55 @@ try {
     await page.waitForSelector('canvas')
   })
 
+  // The selection readout. It renders inside an {#if}, which is the shape
+  // this whole file exists to catch — and it is the only sheet feature whose
+  // output is produced by a drag, so a unit test cannot reach it.
+  await step('the selection readout totals a dragged range', async () => {
+    // Cell geometry, from the component's own constants: 48/24 headers and
+    // the 100×24 default cell. Hard-coded because the alternative is asking
+    // the page for its layout, which would make the test agree with a broken
+    // layout as readily as a correct one.
+    const cellAt = async (r, c) => {
+      const box = await page.$eval('.grid', (el) => {
+        const b = el.getBoundingClientRect()
+        return { x: b.x, y: b.y }
+      })
+      return { x: box.x + 48 + c * 100 + 50, y: box.y + 24 + r * 24 + 12 }
+    }
+
+    const a1 = await cellAt(0, 0)
+    await page.mouse.click(a1.x, a1.y)
+    for (const v of ['10', '2', '6']) {
+      // focus(), not click(): the programmatic click helper dispatches the
+      // event without moving focus, and the keystrokes would go nowhere.
+      await page.focus('.formula-bar input')
+      await page.keyboard.type(v)
+      await page.keyboard.press('Enter') // commits and steps down a row
+    }
+
+    // One cell has nothing to aggregate, so there must be no readout at all.
+    await page.mouse.click(a1.x, a1.y)
+    check(
+      (await page.$('.sel-stats')) === null,
+      'no readout for a single cell',
+      'the bar appeared for a one-cell selection',
+    )
+
+    const a3 = await cellAt(2, 0)
+    await page.mouse.move(a1.x, a1.y)
+    await page.mouse.down()
+    await page.mouse.move(a3.x, a3.y, { steps: 4 })
+    await page.mouse.up()
+
+    await page.waitForSelector('.sel-stats', { timeout: 3000 })
+    const text = (await page.$eval('.sel-stats', (el) => el.innerText)).replace(/\s+/g, ' ')
+    check(
+      /Sum 18/.test(text) && /Avg 6/.test(text) && /Min 2/.test(text) && /Max 10/.test(text) && /Count 3/.test(text),
+      'readout shows sum, average, min, max and count for A1:A3',
+      `read: ${text}`,
+    )
+  })
+
   // The regression that started this file: threadLabel threw, the {#if} block
   // never rendered, and the button looked inert.
   await step('open the comments panel', async () => {

@@ -12,7 +12,7 @@
   import * as Y from 'yjs'
   import { Provider } from '../provider.js'
   import { Workbook, FIRST_SHEET } from '../sheet/model.js'
-  import { colName } from '../sheet/engine.js'
+  import { colName, fmtNum } from '../sheet/engine.js'
   import { toTSV, toCSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
   import { NUMBER_FORMATS, formatNumber } from '../sheet/format.js'
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
@@ -1130,6 +1130,56 @@
     return edit ? edit.value : model ? model.getInput(sel.r, sel.c) : ''
   })
 
+  // ---- selection readout ---------------------------------------------------
+  // The status-bar totals every spreadsheet has: select a block, read its sum
+  // at the bottom right without writing a formula for a question you only
+  // wanted answered once.
+
+  // A guard on frame cost, not on correctness. The readout recomputes on
+  // every selection change, which during a drag means once per rendered
+  // frame, and a scan is O(cells selected). Anything bigger than this says
+  // so instead of quietly costing 40ms a frame. In practice unreachable:
+  // it takes a sheet with 100k populated cells to trip it.
+  const MAX_STATS_CELLS = 100_000
+
+  // Rendered to a fixed number of significant figures, unlike sum/min/max
+  // (which are printed exactly, as the grid prints them). An average is a
+  // derived quantity read at a glance; 1/3 of a column is not improved by
+  // thirteen digits of it.
+  const fmtAvg = (n) => (Number.isInteger(n) ? String(n) : String(parseFloat(n.toPrecision(6))))
+
+  let selStats = $derived.by(() => {
+    revision // recompute when a collaborator (or a script) changes a value
+    if (!model) return null
+    const s = selRect()
+    // Clamp to real data the same way model.stats does, so a whole-column
+    // selection is measured by what's in it, not by the padding rows.
+    const rows = Math.min(s.r2, model.rowCount() - 1) - Math.max(s.r1, 0) + 1
+    const cols = Math.min(s.c2, model.colCount() - 1) - Math.max(s.c1, 0) + 1
+    if (rows <= 0 || cols <= 0) return null
+    // One cell has nothing to aggregate: the formula bar already shows it.
+    if (rows * cols < 2) return null
+    if (rows * cols > MAX_STATS_CELLS) return { tooBig: rows * cols }
+    const st = model.stats(s)
+    return st.count === 0 ? null : st
+  })
+
+  // Everything the bar hasn't room to say: why Count and the number of
+  // totalled cells disagree, and that some cells were skipped for being
+  // broken. A tooltip rather than more text, because this readout is glanced
+  // at far more often than it is interrogated.
+  let statsTitle = $derived.by(() => {
+    const st = selStats
+    if (!st || st.tooBig) return ''
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+    const bits = [`${plural(st.count, 'non-empty cell')} selected`]
+    if (st.numeric !== st.count) {
+      bits.push(`${st.numeric} numeric — text and TRUE/FALSE are never totalled, exactly as SUM() ignores them inside a range`)
+    }
+    if (st.errors) bits.push(`${plural(st.errors, 'error cell')} skipped`)
+    return bits.join('\n')
+  })
+
   function onFormulaBarInput(e) {
     if (readOnly) return
     if (!edit) edit = { r: sel.r, c: sel.c, value: '' }
@@ -1202,7 +1252,7 @@
     <button class:on={activeFormat.a === 'c'} onclick={() => setAlign('c')} title="Align centre">⇔</button>
     <button class:on={activeFormat.a === 'r'} onclick={() => setAlign('r')} title="Align right">⇥</button>
     <span class="sep"></span>
-    <select value={activeFormat.n || 'auto'} onchange={setNumberFormat} title="Number format">
+    <select class="numfmt" value={activeFormat.n || 'auto'} onchange={setNumberFormat} title="Number format">
       {#each NUMBER_FORMATS as nf (nf.id)}
         <option value={nf.id}>{nf.label}</option>
       {/each}
@@ -1409,6 +1459,26 @@
   {#if !readOnly}
     <button class="tab add" onclick={addSheet} title="Add sheet">+</button>
   {/if}
+
+  <!-- Bottom right, where every spreadsheet puts it. It sits in the tab bar
+       rather than in a bar of its own so it costs no vertical space, and it
+       shows for viewers too: reading a total is not editing. -->
+  {#if selStats}
+    <span class="sel-stats" title={statsTitle}>
+      {#if selStats.tooBig}
+        {selStats.tooBig} cells — too many to total
+      {:else}
+        {#if selStats.numeric}
+          <span>Sum <b>{fmtNum(selStats.sum)}</b></span>
+          <span>Avg <b>{fmtAvg(selStats.avg)}</b></span>
+          <span>Min <b>{fmtNum(selStats.min)}</b></span>
+          <span>Max <b>{fmtNum(selStats.max)}</b></span>
+        {/if}
+        <span>Count <b>{selStats.count}</b></span>
+        {#if selStats.errors}<span class="warn" aria-hidden="true">⚠</span>{/if}
+      {/if}
+    </span>
+  {/if}
 </div>
 
 <style>
@@ -1434,6 +1504,14 @@
     align-items: center;
     gap: 2px;
     font-size: 0.85rem;
+  }
+  /* app.css pins .toolbar select to 5rem so the editor's 24-control toolbar
+     stays on one line. This toolbar is short enough to afford the room, and
+     its labels carry the example ("Currency ($1,234.57)") that makes the
+     format legible without opening the menu — at 5rem only "Time" fit.
+     auto rather than a fixed width so adding a format cannot re-clip it. */
+  .toolbar select.numfmt {
+    width: auto;
   }
   .toolbar input[type='color'] {
     width: 22px;
@@ -1496,6 +1574,30 @@
   }
   .tab.add {
     font-weight: 600;
+  }
+  /* margin-left:auto is what puts it at the right end of the tab row. The
+     tab row wraps, so with enough sheets the readout drops to its own line
+     and stays right-aligned there — which is the right failure. */
+  .sel-stats {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 8px;
+    font-size: 0.8rem;
+    color: #5f6368;
+    white-space: nowrap;
+    cursor: default;
+    /* Digits that don't jitter as the selection grows: without this the bar
+       twitches sideways on every mousemove during a drag. */
+    font-variant-numeric: tabular-nums;
+  }
+  .sel-stats b {
+    font-weight: 600;
+    color: #202124;
+  }
+  .sel-stats .warn {
+    color: #c62828;
   }
   .tab-rename {
     font-size: 0.85rem;

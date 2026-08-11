@@ -368,7 +368,8 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
 /* Fixed width, or the select sizes itself to its widest option — "📣 Important"
    — and two menus alone push a 24-control toolbar onto a second line. The
    options are still full width when the menu is open, which is the only time
-   their length matters. */
+   their length matters. The sheet's number-format menu opts out (see
+   SheetView's .numfmt): its labels have to be readable closed. */
 .toolbar select {
   width: 5rem;
   padding: 3px 4px;

@@ -132,6 +132,10 @@ elsewhere — see *Reading preferences* below and *Formatting* in the design doc
 - Merged cells
 - Conditional formatting
 - Font size / family
+- Selection readout in the selection's own number format — a column of
+  currency totals as a bare number today, because the bar prints with the
+  engine's plain `fmtNum` rather than resolving a format the whole range
+  agrees on
 
 ## Sheets — tabs
 

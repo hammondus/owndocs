@@ -30,6 +30,16 @@
   let localFonts = $state([])
   let localState = $state('') // '' | 'loading' | 'denied' | 'unsupported'
 
+  // The chosen family may not be among the enumerated ones — typed by hand
+  // before the list was loaded, or installed on another machine — so it is
+  // added rather than silently dropped, which would leave the select showing
+  // someone else's font.
+  let families = $derived(
+    prefs.family && !localFonts.includes(prefs.family)
+      ? [prefs.family, ...localFonts]
+      : localFonts,
+  )
+
   async function loadLocalFonts() {
     localState = 'loading'
     const fonts = await listLocalFonts()
@@ -84,25 +94,36 @@
   {#if prefs.family}
     <div class="row">
       <label for="rp-family">Family</label>
-      <!-- A datalist rather than a select: it type-aheads through hundreds of
-           families, and still accepts a name typed by hand where the browser
-           will not enumerate them. -->
-      <input
-        id="rp-family"
-        list="rp-local-fonts"
-        value={prefs.family}
-        style="font-family: '{prefs.family}', system-ui"
-        onchange={(e) => set({ family: e.target.value })}
-      />
-      <datalist id="rp-local-fonts">
-        {#each localFonts as f (f)}<option value={f}></option>{/each}
-      </datalist>
-      {#if !localFonts.length}
+      {#if localFonts.length}
+        <!-- A real select once the list is known. A datalist was the first
+             attempt and is the wrong control here: the browser filters it by
+             whatever is already in the field, so choosing a font left that one
+             font as the only visible option until the text was cleared by
+             hand. A select always shows everything.
+             Each option is drawn in its own family, which is the whole reason
+             anyone opens this list. -->
+        <select
+          id="rp-family"
+          value={prefs.family}
+          onchange={(e) => set({ family: e.target.value })}
+        >
+          {#each families as f (f)}
+            <option value={f} style="font-family: '{f}', system-ui">{f}</option>
+          {/each}
+        </select>
+        <span class="note">{localFonts.length} installed</span>
+      {:else}
+        <!-- Before the list is known — or where the browser will not give it —
+             a typed name works just as well, given you know what it is called. -->
+        <input
+          id="rp-family"
+          value={prefs.family}
+          style="font-family: '{prefs.family}', system-ui"
+          onchange={(e) => set({ family: e.target.value })}
+        />
         <button onclick={loadLocalFonts} disabled={localState === 'loading'}>
           {localState === 'loading' ? 'asking…' : 'list my fonts'}
         </button>
-      {:else}
-        <span class="note">{localFonts.length} installed</span>
       {/if}
     </div>
     {#if localState === 'denied'}

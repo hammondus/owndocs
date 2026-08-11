@@ -158,9 +158,14 @@ Implementation (`prefs.js`, `ReadingPrefs.svelte`):
   lists what is actually on the machine — but it is Chromium-only, needs a
   secure context, and prompts for permission, so it is behind a button (a
   permission prompt needs a user gesture) and degrades to a plain text field
-  everywhere else. The control is one `<input list=…>` with a datalist, which
-  type-aheads through hundreds of families *and* accepts a name typed by hand,
-  so the two paths are one control rather than two.
+  everywhere else.
+
+  Once the list is known the control is a **`<select>`**, each option drawn in
+  its own family. A `<datalist>` was the first attempt and is the wrong control
+  here: the browser filters it by whatever is already in the field, so choosing
+  a font left that font as the only visible option until the text was cleared
+  by hand — a picker that hides the thing you are picking from. The typed-name
+  input remains for the case where enumeration never happens.
 - **A named family is stored beside the built-in id, not instead of it.**
   `family` wins when set; `font` stays an id. Re-stacking or relabelling a
   built-in later then does not orphan everyone's stored preference.

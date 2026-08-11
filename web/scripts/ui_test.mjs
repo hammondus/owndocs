@@ -462,6 +462,9 @@ try {
       () => /Courier New/.test(getComputedStyle(document.querySelector('.cm-content')).fontFamily),
       { timeout: 3000 },
     )
+    // Note which control this exercises: the harness cannot grant the font
+    // permission, so `localFonts` stays empty and the field is the typed-name
+    // input. The select path only exists once enumeration has succeeded.
     // Back to a built-in, and the named family must let go rather than linger.
     await page.select('#rp-font', 'serif')
     await page.waitForFunction(

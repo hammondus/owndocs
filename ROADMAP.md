@@ -126,10 +126,38 @@ none of them has a text representation:
 - Line spacing, indentation, margins, columns, page breaks
 - Letter spacing, small caps
 
-Any of these needs an **escape hatch**, and there are only three shapes of one:
-raw inline HTML, a directive syntax this project defines (`::: center`,
-`[text]{.red}`), or attributes stored outside the text. Each has a real cost
-and none is obviously right — see *Open questions* before building any of them.
+**Decided: semantic constructs only.** No escape hatch, no arbitrary styling in
+the document. Markdown says what a thing *is*; how it looks is settled
+elsewhere — see *Reading preferences* below and *Formatting* in the design doc.
+
+## Reading preferences
+
+Decided, unbuilt. Appearance belongs to the **viewer**, not the document: each
+person picks how markdown renders for them, and nothing about that choice
+enters the file, the CRDT, or the git export. It is the reader's stylesheet,
+not the author's markup.
+
+- Font family, from a short list of system stacks (system UI, serif, sans,
+  monospace) — no font files to ship, so no assets and no licensing
+- Base font size, and line height — the accessibility win, and the reason this
+  is worth building at all
+- Measure: a maximum line width, since full-window prose is hard to read
+
+Where it lives: `localStorage`, per person per machine, following the
+`safeStorage()` precedent already set for trigger consent. No schema, no
+server, no sync — and two machines means setting it twice, which is the right
+price. Making it an account setting is the upgrade path if anyone asks.
+
+Three things to get right when building it:
+
+- **Code stays monospace.** Inline code and fenced blocks ignore the body font,
+  or the preference breaks the one construct whose alignment carries meaning.
+- **It scopes to the markdown editor.** The sheet grid paints text on a canvas
+  and measures it with `ctx.font`; a body-font preference reaching that would
+  silently change column layout. Sheets get their own decision, later, or none.
+- **CodeMirror re-measures.** Changing size or family changes line heights;
+  the view needs `requestMeasure()`, exactly as the image widget already does
+  when an image finishes loading.
 
 ## Sheets — formatting
 

@@ -96,6 +96,35 @@ rank comparison. A title is document content in every sense that matters, so
 the bar is "may edit" — and equality tests written that way are precisely what
 adding `commenter` broke in three other places.
 
+### Formatting: semantic constructs in the document, appearance in the viewer
+
+Decided 2026-08-05, and it settles the escape-hatch question by refusing it.
+
+**The document gets semantic constructs only** — things markdown can say a
+piece of text *is*. Headings, lists, quotes, code, tables, and later callouts,
+highlight, footnotes, super/subscript. No font family, no arbitrary size, no
+colour, no paragraph alignment: those are appearance, markdown has no
+representation for them, and every way of smuggling them in costs something
+this project deliberately bought. Raw HTML needs a sanitizer and makes the git
+export noise; a directive syntax of our own weakens the "it is just a markdown
+file" property the exporter exists for; attributes outside the text break the
+property that the document *is* the markdown.
+
+**Appearance is the viewer's, not the author's.** Each person chooses the font,
+size, line height and measure that markdown renders as for them, and that
+choice never enters the document, the CRDT or the export. This is the reader's
+stylesheet, and it is why refusing the escape hatch costs so little: nobody
+actually wanted Times New Roman *stored in the file* — they wanted to read in
+Times New Roman.
+
+It also lands the preference in the right place for a collaborative editor. A
+document-level font is a setting one person changes and everyone else lives
+with; a viewer-level font is a setting that cannot start an argument.
+
+Stored in `localStorage`, per person per machine, following the precedent set
+by trigger consent — which is deliberately local for a different reason, but
+establishes that not every choice needs a row in the database.
+
 ### Threat model: trusted users, untrusted network
 
 The audience is **staff inside one company**, all authenticated, all known to
@@ -1584,29 +1613,6 @@ see *Open questions*.
   delivery channel.~~ Also answered — see Notifications: in-app first and
   always, email optional and submission-only to an existing relay, so the
   deliverability burden never lands on this app.
-- **The formatting escape hatch**, if arbitrary colour/size/alignment is ever
-  wanted in documents (see `ROADMAP.md`). Three shapes, and the choice is
-  effectively permanent because it lands in every exported `.md`:
-  - **Raw inline HTML** (`<span style=…>`). Markdown permits it and every
-    renderer understands it. Costs a sanitizer — an allowlist, hand-rolled or
-    a dependency — because the document is shared and rendered; makes the git
-    export noisy; and CommonMark's raw-HTML block rules are genuinely fiddly
-    to decorate correctly.
-  - **A directive syntax we define** (`::: center`, `[text]{.red}`). No
-    injection surface, exports as readable text, decorates cleanly. But it is
-    ours: another markdown tool shows the literal syntax, which weakens the
-    "it is just a markdown file" property the git export exists for.
-  - **Attributes outside the text** (front matter, or a side map keyed by
-    position). Keeps the prose clean, but breaks the property that the
-    document *is* the markdown — and position-keyed anything has the same
-    problem comment anchors have, only without a RelativePosition to solve it.
-
-  The prior worth stating before the choice is made: this project picked a
-  markdown-native editor on purpose, and every one of these trades some of that
-  away. A middle path is to add *semantic* constructs only — callouts,
-  highlight — and refuse arbitrary styling, which keeps documents meaningful
-  and exports readable at the price of never matching a word processor.
-
 - Search: without server-side document reads, any full-text search must be
   client-fed. Deferred until wanted.
 - ~~Kanban: is a card a body inside the board, or a reference to a document?~~

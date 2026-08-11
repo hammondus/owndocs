@@ -32,11 +32,32 @@ export const MEASURES = [
   { value: 90, label: 'Wide' },
 ]
 
+// The table of contents is a reading preference for the same reason the font
+// is: it is built entirely from the headings already in the document, adds
+// nothing to it, and one reader wanting it does not mean everyone gets it.
+export const TOC_SIDES = [
+  { value: 'off', label: 'Off' },
+  { value: 'left', label: 'Left' },
+  { value: 'right', label: 'Right' },
+]
+
+// How deep the contents go. Six is every heading markdown has; the useful
+// answers are 2 and 3, and the default says so.
+export const TOC_DEPTHS = [1, 2, 3, 4, 5, 6]
+
 // `family` overrides `font` when set: a specific family the reader named or
 // picked from the ones installed on their machine. Kept as a separate field so
 // the four built-ins stay ids — relabelling or re-stacking one later then does
 // not orphan everyone's stored preference.
-export const DEFAULTS = { font: 'system', size: 16, lineHeight: 1.6, measure: 75, family: '' }
+export const DEFAULTS = {
+  font: 'system',
+  size: 16,
+  lineHeight: 1.6,
+  measure: 75,
+  family: '',
+  toc: 'off',
+  tocDepth: 3,
+}
 
 // A family name is user input that ends up in a CSS declaration, so it is
 // reduced to the characters a font name can actually contain. Not a security

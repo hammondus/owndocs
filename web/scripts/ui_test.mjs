@@ -793,6 +793,109 @@ try {
       { timeout: 3000 },
     )
   })
+
+  await step('a document for the contents', async () => {
+    await clickText(page, 'a', '← documents')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI contents doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    await page.focus('.cm-content')
+  })
+
+  // Contents. Built from the headings in the document and stored nowhere, so
+  // the assertions are: it lists what is there, the depth limit removes the
+  // levels below it, the side actually moves it, and clicking an entry goes
+  // there. The last one is the reason this is a browser test at all.
+  await step('a table of contents lists the headings, to the chosen depth', async () => {
+    // Wider than the default 800px, and it has to be: the contents column is
+    // dropped below 60rem on purpose, so at the default viewport every
+    // assertion below would be measuring a display:none element.
+    await page.setViewport({ width: 1400, height: 900 })
+    await page.keyboard.type('# Alpha\n')
+    await page.keyboard.type('## Beta\n')
+    await page.keyboard.type('### Gamma\n')
+    if (!(await page.$('#rp-toc'))) await clickText(page, 'button', 'Aa')
+    await page.waitForSelector('#rp-toc', { timeout: 3000 })
+    await page.select('#rp-toc', 'left')
+    await page.waitForSelector('#rp-toc-depth', { timeout: 3000 })
+    await page.select('#rp-toc-depth', '3')
+    const entries = () =>
+      page.evaluate(() => [...document.querySelectorAll('nav.toc button')].map((b) => b.textContent.trim()))
+    await page.waitForFunction(
+      () => document.querySelectorAll('nav.toc button').length >= 3,
+      { timeout: 5000 },
+    )
+    check(
+      (await entries()).join('|').includes('Alpha|Beta|Gamma'),
+      'the headings are listed in document order',
+      JSON.stringify(await entries()),
+    )
+    // The depth limit is the feature that would silently do nothing.
+    await page.select('#rp-toc-depth', '2')
+    await page.waitForFunction(
+      () => ![...document.querySelectorAll('nav.toc button')].some((b) => b.textContent.trim() === 'Gamma'),
+      { timeout: 5000 },
+    )
+    check((await entries()).includes('Beta'), 'the levels above the limit stay')
+  })
+
+  await step('the contents move to the side that was chosen, and navigate', async () => {
+    // `left` vs `right` is a flex-direction, so it is asserted as geometry:
+    // the DOM order does not change, which is the point of doing it that way.
+    const tocIsLeftOfEditor = () =>
+      page.evaluate(() => {
+        const nav = document.querySelector('nav.toc')
+        const ed = document.querySelector('.cm-editor')
+        return nav.getBoundingClientRect().left < ed.getBoundingClientRect().left
+      })
+    check(await tocIsLeftOfEditor(), 'left puts the contents left of the text')
+    await page.select('#rp-toc', 'right')
+    await page.waitForFunction(
+      () =>
+        document.querySelector('nav.toc').getBoundingClientRect().left >
+        document.querySelector('.cm-editor').getBoundingClientRect().left,
+      { timeout: 3000 },
+    )
+    ok('right puts them on the other side')
+    await clickText(page, 'button', 'close')
+
+    // Clicking an entry moves the cursor to that heading — asserted through
+    // the contents' own active marker, which is derived from the cursor. Not
+    // on scroll position: this document fits on screen, so nothing would
+    // scroll and such an assertion could never fail.
+    //
+    // The cursor starts at the end of the document, so the LAST entry is
+    // active. Clicking the first has to move it.
+    await page.waitForFunction(
+      () => {
+        const b = [...document.querySelectorAll('nav.toc button')]
+        return b.length > 1 && b[b.length - 1].classList.contains('active')
+      },
+      { timeout: 3000 },
+    )
+    await clickText(page, 'button', 'Alpha')
+    await page.waitForFunction(
+      () => {
+        const b = [...document.querySelectorAll('nav.toc button')]
+        return b[0].classList.contains('active') && !b[b.length - 1].classList.contains('active')
+      },
+      { timeout: 3000 },
+    )
+  })
+
+  await step('turning the contents off gives the width back', async () => {
+    const width = () => page.evaluate(() => document.querySelector('.page').getBoundingClientRect().width)
+    const wide = await width()
+    if (!(await page.$('#rp-toc'))) await clickText(page, 'button', 'Aa')
+    await page.waitForSelector('#rp-toc', { timeout: 3000 })
+    await page.select('#rp-toc', 'off')
+    await page.waitForFunction(() => !document.querySelector('nav.toc'), { timeout: 3000 })
+    check(await page.evaluate((w) => document.querySelector('.page').getBoundingClientRect().width < w, wide),
+      'the page narrows back to its reading width')
+    await clickText(page, 'button', 'close')
+  })
+
 } finally {
   await browser.close()
   server.kill()

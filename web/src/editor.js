@@ -484,6 +484,61 @@ export function setCommentRanges(view, ranges) {
   view.dispatch({ effects: setCommentRangesEffect.of(ranges) })
 }
 
+// ---- table of contents -----------------------------------------------------
+
+// The headings, in document order, for the contents panel. Nothing is stored:
+// the document already says what its headings are, and this reads them back.
+//
+// ensureSyntaxTree with a budget, not syntaxTree, for the reason
+// buildTableDecorations gives — the parser works incrementally and a heading
+// far below the viewport need not be in the tree yet. Falling back to the
+// partial tree if the budget runs out is deliberate: a contents list that is
+// briefly short is better than one that blocks typing.
+export function documentHeadings(state, maxLevel = 6) {
+  const out = []
+  const tree = ensureSyntaxTree(state, state.doc.length, 100) || syntaxTree(state)
+  tree.iterate({
+    enter(node) {
+      const m = /^(?:ATX|Setext)Heading([1-6])$/.exec(node.name)
+      if (!m) return
+      const level = Number(m[1])
+      if (level <= maxLevel) {
+        // The node's own text, not the line's. A heading inside a blockquote
+        // starts after the `>`, and reading the line would put the quote
+        // marker in the contents. Setext headings span two lines, so only the
+        // first is the title.
+        const text = state.sliceDoc(node.from, node.to)
+          .split('\n')[0]
+          .replace(/^#{1,6}\s*/, '')
+          // An optional closing run of hashes: `## Thing ##`. The space before
+          // it is required, so `# C#` keeps its hash, as CommonMark says.
+          .replace(/\s+#+\s*$/, '')
+          .trim()
+        if (text) out.push({ pos: node.from, level, text })
+      }
+      return false // headings do not nest, and their inline markup is not wanted
+    },
+  })
+  return out
+}
+
+// How long after the last keystroke the contents are rebuilt. Walking the tree
+// per keypress is the cost worth avoiding here; being 300ms stale is not a cost
+// anyone can perceive in a list of headings.
+const HEADINGS_DEBOUNCE = 300
+
+// Put the cursor at a position and scroll it to the top of the view. Distinct
+// from revealRange, which *selects* — following a heading should leave you
+// ready to type there, not with the heading highlighted.
+export function goToPos(view, pos) {
+  const at = Math.min(pos, view.state.doc.length)
+  view.dispatch({
+    selection: { anchor: at },
+    effects: EditorView.scrollIntoView(at, { y: 'start', yMargin: 8 }),
+  })
+  view.focus()
+}
+
 // Scroll a commented range into view and select it, so following a thread from
 // the panel lands you on the text it is about.
 export function revealRange(view, from, to) {
@@ -1001,7 +1056,7 @@ const readingTheme = EditorView.theme({
   },
 })
 
-export function mountEditor({ parent, ytext, awareness, readOnly, onSelectionChange }) {
+export function mountEditor({ parent, ytext, awareness, readOnly, onSelectionChange, onHeadingsChange }) {
   const undoManager = new Y.UndoManager(ytext)
   const extensions = [
     keymap.of([...yUndoManagerKeymap, ...formatKeymap, ...defaultKeymap]),
@@ -1025,6 +1080,34 @@ export function mountEditor({ parent, ytext, awareness, readOnly, onSelectionCha
         const r = u.state.selection.main
         onSelectionChange(r.from, r.to)
       }),
+    )
+  }
+  if (onHeadingsChange) {
+    // Coalesced, and on docChanged only. A collaborator's edit arrives as a
+    // transaction here too, so this one plugin covers remote headings as well
+    // as local ones — which is why it is not hung off the Y.Text.
+    //
+    // A ViewPlugin rather than a plain updateListener, for destroy(): leaving
+    // the document while a rebuild is pending would otherwise fire it against
+    // an editor that no longer exists.
+    extensions.push(
+      ViewPlugin.fromClass(
+        class {
+          constructor() {
+            this.queued = null
+          }
+          update(u) {
+            if (!u.docChanged || this.queued) return
+            this.queued = setTimeout(() => {
+              this.queued = null
+              onHeadingsChange()
+            }, HEADINGS_DEBOUNCE)
+          }
+          destroy() {
+            clearTimeout(this.queued)
+          }
+        },
+      ),
     )
   }
   if (readOnly) {

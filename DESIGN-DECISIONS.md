@@ -396,6 +396,59 @@ a colour nobody chose. The colours are CSS custom properties defined in
 unlike the `#8884` alpha trick used elsewhere, a syntax colour is a real hue and
 cannot serve both grounds.
 
+### Table of contents: a reading preference, not a document feature
+
+Shipped 2026-08-11. Off by default; left or right; a depth limit from H1 to
+H1–H6.
+
+It belongs with the font and the measure, and for the same reason (*Formatting*
+above): it is built entirely from headings the document already has, adds
+nothing to it, and one reader wanting it does not mean everyone gets it. So it
+is two more fields in the `localStorage` blob and nothing in SQLite, the CRDT
+or the export. **Nothing is stored** — no anchors, no ids, no slugs, and
+therefore no migration when a heading is renamed. The document says what its
+headings are and the panel reads them back.
+
+- **Read from the syntax tree, not from a regex over the text.** `# hash` in a
+  fenced code block is not a heading, and only the parser knows that.
+- **The heading's node, not its line.** A heading inside a blockquote starts
+  after the `>`, and reading the line put the quote marker in the contents —
+  found by the browser test, which is exactly the sort of thing it is for.
+  Setext headings span two lines, so only the first is the title.
+- **`ensureSyntaxTree` with a budget, and a fallback**, for the reason
+  `buildTableDecorations` records: the parser works incrementally and a heading
+  below the viewport need not be in the tree yet. If the budget runs out the
+  partial tree is used — contents that are briefly short beat contents that
+  block typing.
+- **Debounced 300 ms, and on `docChanged` only.** Walking the tree per keypress
+  is the cost worth avoiding; being 300 ms stale in a list of headings is not a
+  cost anyone can perceive. A `ViewPlugin` rather than a bare `updateListener`,
+  purely for `destroy()` — leaving the document with a rebuild pending would
+  otherwise fire it against an editor that no longer exists.
+- **One listener covers collaborators too.** A remote edit arrives as a
+  CodeMirror transaction like any other, so this does not need to hang off the
+  `Y.Text` the way the comment repaint does.
+- **Hidden when a document has no headings.** An empty column beside the text
+  is worse than no column, and it is exactly what a new document has.
+- **Left/right is `flex-direction: row-reverse`**, so the contents stay first
+  in the DOM whichever side they are drawn on — which is where a screen reader
+  wants a nav landmark. The editor needs `min-width: 0`, or a long unbreakable
+  line inside CodeMirror pushes the column off the page; flex items refuse to
+  shrink below their content by default.
+- **The page widens via `:has()`.** The `.page` wrapper is `App.svelte`'s and
+  the contents panel is `EditorView`'s; `:has()` lets the width follow the
+  editor's markup without either learning about the other. The alternative was
+  a custom property set on the root at mount and cleared on destroy, which is
+  the same fact in two places plus a lifecycle to get wrong.
+- **Dropped below 60rem.** There is no room for two columns on a narrow window
+  and the text is what matters, so the contents go rather than being squeezed.
+- **The active entry is derived from the cursor**, using the selection the
+  editor already reports for the comment composer. No new listener.
+- **`apply()` sets nothing for it**, unlike every other reading preference —
+  this one is a layout decision, not a CSS custom property. There is a test
+  asserting that, so adding a `--toc-…` property later is a deliberate act
+  rather than an accident that puts the same fact in two places.
+
 ### Threat model: trusted users, untrusted network
 
 The audience is **staff inside one company**, all authenticated, all known to

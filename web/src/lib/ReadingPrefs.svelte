@@ -2,7 +2,7 @@
   // The reading-preferences drawer. Everything here is a display choice that
   // belongs to the reader, never to the document — see prefs.js.
   import {
-    FONTS, SIZES, LINE_HEIGHTS, MEASURES, DEFAULTS,
+    FONTS, SIZES, LINE_HEIGHTS, MEASURES, TOC_SIDES, TOC_DEPTHS, DEFAULTS,
     load, save, apply, listLocalFonts, localFontsSupported,
   } from '../prefs.js'
 
@@ -139,8 +139,28 @@
     {/if}
   {/if}
 
+  <div class="row">
+    <label for="rp-toc">Contents</label>
+    <select id="rp-toc" value={prefs.toc} onchange={(e) => set({ toc: e.target.value })}>
+      {#each TOC_SIDES as s (s.value)}<option value={s.value}>{s.label}</option>{/each}
+    </select>
+
+    <!-- Only worth showing once there is a panel to apply it to. -->
+    {#if prefs.toc !== 'off'}
+      <label for="rp-toc-depth">Down to</label>
+      <select
+        id="rp-toc-depth"
+        value={prefs.tocDepth}
+        onchange={(e) => set({ tocDepth: Number(e.target.value) })}
+      >
+        {#each TOC_DEPTHS as d (d)}<option value={d}>{d === 1 ? 'H1 only' : `H1–H${d}`}</option>{/each}
+      </select>
+    {/if}
+  </div>
+
   <p class="note">
     Code stays monospace whatever you pick here — its alignment carries meaning.
+    Contents are built from the headings in the document, and add nothing to it.
   </p>
 </div>
 

@@ -10,6 +10,11 @@ body { margin: 0; padding: 1rem; }
    screen. So it lives on the page wrapper, and the sheet view opts out. */
 .page { max-width: 52rem; margin: 0 auto; }
 .page.wide { max-width: none; }
+/* A contents column needs room that is not taken from the prose. `:has()` so
+   the width follows the editor's own markup: the page wrapper lives in
+   App.svelte, the contents panel is EditorView's, and neither should have to
+   learn about the other to get this right. */
+.page:has(.doc-layout.with-toc) { max-width: 66rem; }
 
 /* The sheet editor fills the window instead of guessing at a height. The
    grid is the flex child that absorbs whatever is left, so opening the

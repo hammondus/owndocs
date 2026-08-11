@@ -6,10 +6,15 @@
   import { onMount, onDestroy } from 'svelte'
   import * as Y from 'yjs'
   import { Provider } from '../provider.js'
-  import { mountEditor, toolbarCommands, setCommentRanges, revealRange } from '../editor.js'
+  import {
+    mountEditor, toolbarCommands, setCommentRanges, revealRange,
+    documentHeadings, goToPos,
+  } from '../editor.js'
   import CommentsPanel from './CommentsPanel.svelte'
   import DocTitle from './DocTitle.svelte'
   import ReadingPrefs from './ReadingPrefs.svelte'
+  import Toc from './Toc.svelte'
+  import { load as loadPrefs } from '../prefs.js'
   import { listThreads, textAnchor, resolveTextAnchor } from '../comments.js'
   import { scheduleCompaction } from '../compaction.js'
   import { canEdit, canComment } from '../roles.js'
@@ -31,6 +36,30 @@
   let selection = $state({ from: 0, to: 0 })
   let mayComment = $derived(canComment(doc.role))
   let openComments = $derived(threads.filter((t) => !t.resolved_at).length)
+
+  // ---- contents ---------------------------------------------------------------
+  // Side and depth are reading preferences, so they live in localStorage with
+  // the font. Held here as state rather than read on every render because the
+  // preferences panel has to be able to change them under us.
+  let reading = $state(loadPrefs())
+  let headings = $state([])
+
+  // Hidden when a document has no headings at all: an empty column beside the
+  // text is worse than no column, and it is exactly what a new document has.
+  let tocSide = $derived(reading.toc !== 'off' && headings.length ? reading.toc : '')
+
+  function refreshHeadings() {
+    if (!view) return
+    headings = documentHeadings(view.state, reading.tocDepth)
+  }
+
+  // Which heading the cursor is under: the last one at or before it. Recomputed
+  // from the selection the editor already reports for the comment composer.
+  let activeHeading = $derived.by(() => {
+    let i = -1
+    for (let n = 0; n < headings.length; n++) if (headings[n].pos <= selection.from) i = n
+    return i
+  })
 
   const cursorColors = [
     ['#30bced', '#a8dff2'], ['#6eeb83', '#c6f7cf'], ['#fa69d1', '#fcc4ea'],
@@ -67,7 +96,14 @@
       // The composer anchors to whatever is selected, so the panel needs to
       // know when that changes.
       onSelectionChange: (from, to) => { selection = { from, to } },
+      // Coalesced inside the editor; a collaborator's edit reaches this too.
+      onHeadingsChange: refreshHeadings,
     })
+
+    // The first pass. The document arrives from the provider a moment after
+    // mount, and that arrival is a doc change, so the debounced rebuild covers
+    // it — this only fills the panel for a document that was already synced.
+    refreshHeadings()
 
     loadComments()
     // Anchors resolve against the document, so re-resolve after remote edits
@@ -227,7 +263,16 @@
 {#if showReading}
   <!-- Changing size or family changes line heights, and CodeMirror does not
        find that out on its own — it caches measurements per line. -->
-  <ReadingPrefs onChanged={() => view?.requestMeasure()} onClose={() => (showReading = false)} />
+  <ReadingPrefs
+    onChanged={() => {
+      // Re-read rather than being handed a patch: the panel owns the shape of
+      // a preference blob, and this only needs to know it changed.
+      reading = loadPrefs()
+      refreshHeadings()
+      view?.requestMeasure()
+    }}
+    onClose={() => (showReading = false)}
+  />
 {/if}
 
 {#if showComments}
@@ -248,7 +293,16 @@
   />
 {/if}
 
-<div bind:this={editorEl}></div>
+<!-- The contents column and the editor are siblings in a flex row, with `row-
+     reverse` doing the left/right switch. The editor keeps `min-width: 0`, or
+     a long unbreakable line inside CodeMirror would push the column off the
+     page — flex items refuse to shrink below their content by default. -->
+<div class="doc-layout" class:with-toc={tocSide} class:toc-right={tocSide === 'right'}>
+  {#if tocSide}
+    <Toc {headings} active={activeHeading} onGo={(pos) => goToPos(view, pos)} />
+  {/if}
+  <div class="editor" bind:this={editorEl}></div>
+</div>
 
 
 <style>
@@ -268,5 +322,33 @@
     font-size: 0.85rem;
     opacity: 0.7;
     margin-left: 0.5rem;
+  }
+
+  .doc-layout {
+    display: flex;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+  /* Without this the editor refuses to shrink below its content width and
+     shoves the contents column out of the page. */
+  .editor {
+    flex: 1;
+    min-width: 0;
+  }
+  /* Reversing the row rather than reordering the markup keeps the contents
+     first in the DOM, which is where a screen reader wants a nav landmark
+     whichever side it is drawn on. */
+  .doc-layout.toc-right {
+    flex-direction: row-reverse;
+  }
+  .doc-layout.with-toc :global(nav.toc) {
+    flex: 0 0 13rem;
+  }
+  @media (max-width: 60rem) {
+    /* Below this there is no room for two columns and the text column is what
+       matters, so the contents drop out entirely rather than being squeezed. */
+    .doc-layout.with-toc :global(nav.toc) {
+      display: none;
+    }
   }
 </style>

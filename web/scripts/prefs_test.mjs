@@ -79,6 +79,24 @@ try {
   eq(propsOf(root)['--reading-font'], FONTS[0].stack, 'an unknown font falls back to the first')
 }
 
+// The contents panel is a layout decision, not a CSS custom property, so it is
+// the one preference apply() has nothing to do with. Asserted so that stays
+// deliberate: adding a `--toc-…` property here would put the same fact in two
+// places, and the component reads the preference directly.
+{
+  const root = fakeRoot()
+  apply({ ...DEFAULTS, toc: 'left', tocDepth: 2 }, root)
+  eq(Object.keys(propsOf(root)).some((k) => k.includes('toc')), false, 'the contents preference sets no CSS property')
+}
+
+// The upgrade path that matters: everyone's stored blob predates these two
+// fields, so a reader who set a font last week must get the new defaults and
+// keep their font.
+globalThis.window = { localStorage: fakeStorage({ 'docs:reading': JSON.stringify({ font: 'serif', size: 18 }) }) }
+eq(load().toc, 'off', 'a blob written before the contents existed defaults it off')
+eq(load().tocDepth, DEFAULTS.tocDepth, 'and picks up the default depth')
+eq(load().font, 'serif', 'without losing what it did store')
+
 // ---- named families --------------------------------------------------------
 // A family the reader typed or picked from their installed fonts. It ends up
 // in a CSS declaration, where one stray character invalidates the whole thing

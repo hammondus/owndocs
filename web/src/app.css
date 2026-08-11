@@ -50,7 +50,45 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
 .md-h2 { font-size: 1.4em; }
 .md-h3 { font-size: 1.2em; }
 .md-h4, .md-h5, .md-h6 { font-size: 1.05em; }
-.md-blockquote { border-left: 3px solid #8886; padding-left: .6rem; opacity: .85; }
+/* `.cm-line` qualified, on every rule that sets padding. CodeMirror's base
+   theme sets `.cm-line { padding: 0 2px 0 6px }`, and its injected styles beat
+   an app rule of EQUAL specificity — the same trap the reading preferences hit,
+   recorded in DESIGN-DECISIONS. A bare `.md-blockquote { padding-left }` lost
+   silently, so quotes have been shipping with their text flush against the
+   rule since blockquotes landed. Two classes is (0,2,0) against (0,1,0), which
+   wins on specificity rather than on load order. */
+.cm-line.md-blockquote { border-left: 3px solid #8886; padding-left: .6rem; opacity: .85; }
+
+/* Highlight keeps its own text colour. A highlighter pen is a light ground by
+   definition, so inheriting the dark-mode foreground would make it unreadable
+   — this is the one place in the editor that pins a colour rather than
+   letting the scheme decide. */
+.md-highlight { background: #ffe066; color: #1a1a1a; border-radius: 2px; padding: 0 .1em; }
+/* Positioned rather than vertical-align: super/sub, which grow the line box.
+   CodeMirror caches per-line heights, so a construct that silently changes
+   them is a construct that makes it re-measure. */
+.md-sup, .md-sub { font-size: .78em; position: relative; }
+.md-sup { top: -.4em; }
+.md-sub { top: .25em; }
+/* The reading font is the reader's choice and may have no emoji coverage at
+   all, so a rendered shortcode names the emoji fonts explicitly. */
+.md-emoji { font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
+
+/* Callouts: a blockquote whose first line names a kind. The colour is set per
+   kind on the line, and the label reads it back, so there is one source for
+   both the rule and the heading. */
+.cm-line.md-callout { border-left: 3px solid var(--callout); padding-left: .6rem; background: #8881; }
+.md-callout-label { font-weight: 700; color: var(--callout); }
+.md-callout-note      { --callout: #4a8fdd; }
+.md-callout-tip       { --callout: #2e9e5b; }
+.md-callout-important { --callout: #8b5cf6; }
+.md-callout-warning   { --callout: #d99000; }
+.md-callout-caution   { --callout: #d9534f; }
+
+/* Definition lists. The `: ` is hidden like any other marker, so the indent is
+   the only thing left saying which lines are definitions. */
+.md-dt { font-weight: 600; }
+.cm-line.md-dd { padding-left: 1.6rem; }
 .md-codeblock { font-family: ui-monospace, monospace; font-size: .9em; background: #8881; }
 .md-task-checkbox { margin: 0 .35em 0 0; vertical-align: middle; cursor: pointer; }
 .md-table { border-collapse: collapse; margin: .3em 0; cursor: default; }

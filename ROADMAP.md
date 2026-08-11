@@ -86,31 +86,23 @@ needs a Lezer parser extension before it can be styled at all.
 Bold, italic, strikethrough, inline code, H1–H6, bullet lists, numbered lists,
 nested lists, task lists, blockquotes, links, images, tables (rendered as real
 HTML tables, with writable column alignment), fenced code blocks with syntax
-highlighting, horizontal rules, hard line breaks.
+highlighting, horizontal rules, hard line breaks, `==highlight==`, superscript
+and subscript, `:emoji:` shortcodes, `> [!NOTE]` callouts, definition lists.
 
-That is the whole of plain markdown as this editor means to support it. What
-is left below needs a Lezer parser extension before it can be decorated at
-all — see *The plain-markdown constructs* in the design doc for where that line
-falls and why.
+Everything above is plain text that survives the round trip through the `.md`
+file the exporter writes. See *The plain-markdown constructs* and *The extended
+constructs* in the design doc for what each one cost.
 
-### Cheap extensions — still plain text, widely understood
+### Still open — each needs a real dependency or a grammar
 
-Each needs a Lezer extension to be decorated, and each stays readable in the
-exported `.md` even where another tool does not render it.
-
-Three of these are cheaper than the rest: `@lezer/markdown` already ships
-`Superscript`, `Subscript` and `Emoji` as parser extensions, so they are a
-line in the `markdown()` config plus a CSS class, not a grammar to write.
-
-- **Superscript / subscript** — `x^2^`, `H~2~O` (extension exists)
-- **Emoji shortcodes** — `:warning:` (extension exists)
-- **Highlight** — `==marked text==`, a delimiter extension of our own
-- **Footnotes** — `[^1]`
-- **Callouts / admonitions** — `> [!NOTE]`, `> [!WARNING]`: Obsidian's syntax,
-  and *already valid blockquotes*, so it degrades gracefully everywhere
-- **Definition lists**
-- **Math** — `$…$` / `$$…$$`, needs KaTeX or MathJax, so a real dependency
+- **Footnotes** — `[^1]`. Plain text and no dependency, but unlike the rest it
+  is not a local construct: the marker and the note are in different places, so
+  it needs a document-wide pass to pair them and number them
+- **Math** — `$…$` / `$$…$$`, needs KaTeX or MathJax
 - **Mermaid diagrams** in a fenced block — likewise a real dependency
+
+Emoji ships a **curated** shortcode table (~250 entries), not the full ~1800.
+An unknown shortcode stays literal text; adding one is a line in `emoji.js`.
 
 ### Not expressible in markdown at all
 

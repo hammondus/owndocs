@@ -12,6 +12,8 @@ import { defaultKeymap } from '@codemirror/commands'
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 import * as Y from 'yjs'
 import { parseTableData } from './table.js'
+import { markdownExtensions } from './mdext.js'
+import { emojiFor } from './emoji.js'
 import {
   listMarker,
   toggleList,
@@ -146,17 +148,24 @@ class RuleWidget extends WidgetType {
   }
 }
 
-// The `\` of a hard line break, shown as the return arrow it means. Only the
-// backslash is replaced — a replace decoration spanning the newline would have
-// to be a block decoration, and this is not one.
-class BreakWidget extends WidgetType {
-  eq() {
-    return true
+// Source replaced by a short piece of literal text: the `\` of a hard line
+// break shown as the return arrow it means, `:warning:` shown as the character
+// it names, `[!NOTE]` shown as its label. Only the backslash of a hard break is
+// replaced, never the newline with it — a replace decoration spanning a line
+// break would have to be a block decoration, and none of these are.
+class TextWidget extends WidgetType {
+  constructor(text, cls) {
+    super()
+    this.text = text
+    this.cls = cls
+  }
+  eq(other) {
+    return other.text === this.text && other.cls === this.cls
   }
   toDOM() {
     const span = document.createElement('span')
-    span.className = 'md-break'
-    span.textContent = '↵'
+    span.className = this.cls
+    span.textContent = this.text
     return span
   }
   ignoreEvent() {
@@ -175,11 +184,65 @@ const inlineMarks = {
   InlineCode: mark('md-code'),
   Strikethrough: mark('md-strike'),
   Link: mark('md-link'),
+  Highlight: mark('md-highlight'),
+  Superscript: mark('md-sup'),
+  Subscript: mark('md-sub'),
 }
 
 // Marker nodes hidden when the selection does not touch their parent
-// construct. HeaderMark also swallows the space that follows it.
-const markerParents = ['EmphasisMark', 'CodeMark', 'StrikethroughMark', 'LinkMark', 'URL', 'HeaderMark']
+// construct. HeaderMark and DefinitionMark also swallow the space after them.
+const markerParents = [
+  'EmphasisMark',
+  'CodeMark',
+  'StrikethroughMark',
+  'LinkMark',
+  'URL',
+  'HeaderMark',
+  'HighlightMark',
+  'SuperscriptMark',
+  'SubscriptMark',
+  'DefinitionMark',
+]
+const markersEatingSpace = ['HeaderMark', 'DefinitionMark']
+
+// ---- callouts --------------------------------------------------------------
+// `> [!NOTE]` — Obsidian's and GitHub's syntax, and the reason it was chosen:
+// it is *already a valid blockquote*, so it needs no parser extension and
+// degrades to an ordinary quote in every other markdown tool.
+//
+// The five GitHub kinds. Anything else in the brackets is still recognised as
+// a callout and styled as a note, rather than being rejected — a `[!EXAMPLE]`
+// written for another tool should not read as broken here.
+const CALLOUTS = {
+  note: '📘 Note',
+  tip: '💡 Tip',
+  important: '📣 Important',
+  warning: '⚠️ Warning',
+  caution: '🛑 Caution',
+}
+
+// The kind named by a blockquote's first line, or null if it is an ordinary
+// quote. Takes the whole line, since the marker only counts at the start.
+function calloutKind(lineText) {
+  const m = /^\s*>\s*\[!(\w+)\]/.exec(lineText)
+  if (!m) return null
+  const kind = m[1].toLowerCase()
+  return kind in CALLOUTS ? kind : 'note'
+}
+
+// The label for a Link node that is really a callout marker, or null. The
+// text alone is not enough: `[!NOTE]` mid-sentence is a link someone typed.
+// It counts only at the very start of the first paragraph of a blockquote,
+// which is also exactly where the syntax puts it.
+function calloutLabelAt(state, node) {
+  const m = /^\[!(\w+)\]$/.exec(state.sliceDoc(node.from, node.to))
+  if (!m) return null
+  const para = node.node.parent
+  if (!para || para.name !== 'Paragraph' || para.from !== node.from) return null
+  if (para.parent?.name !== 'Blockquote') return null
+  const kind = m[1].toLowerCase()
+  return CALLOUTS[kind] || `📘 ${m[1][0].toUpperCase()}${m[1].slice(1).toLowerCase()}`
+}
 
 function selectionTouches(state, from, to) {
   for (const r of state.selection.ranges) {
@@ -234,6 +297,41 @@ function buildDecorations(view, from, to) {
           }
           return
         }
+        if (name === 'Link') {
+          // `[!NOTE]` parses as an ordinary Link — brackets and all — so
+          // without this a callout's label renders as a hyperlink. The whole
+          // node is replaced and the children skipped, the same way Image
+          // does it: a replace decoration may not contain other decorations.
+          const label = calloutLabelAt(state, node)
+          if (label) {
+            if (!selectionTouches(state, node.from, node.to)) {
+              decos.push(
+                Decoration.replace({ widget: new TextWidget(label, 'md-callout-label') }).range(
+                  node.from,
+                  node.to,
+                ),
+              )
+              return false
+            }
+            decos.push(mark('md-callout-label').range(node.from, node.to))
+            return false
+          }
+        }
+        if (name === 'Emoji') {
+          // The parser marks `:name:`; what it means is emoji.js's business,
+          // and an unknown name is left as the text that was typed.
+          const ch = emojiFor(state.sliceDoc(node.from + 1, node.to - 1))
+          if (ch && !selectionTouches(state, node.from, node.to)) {
+            decos.push(
+              Decoration.replace({ widget: new TextWidget(ch, 'md-emoji') }).range(node.from, node.to),
+            )
+          }
+          return false
+        }
+        if (name === 'DefinitionTerm' || name === 'DefinitionDesc') {
+          addLines(node.from, node.to, name === 'DefinitionTerm' ? 'md-dt' : 'md-dd')
+          return
+        }
         if (name in inlineMarks) {
           decos.push(inlineMarks[name].range(node.from, node.to))
           return
@@ -256,7 +354,9 @@ function buildDecorations(view, from, to) {
             state.sliceDoc(node.from, node.from + 1) === '\\' &&
             !selectionTouches(state, node.from, node.from + 1)
           ) {
-            decos.push(Decoration.replace({ widget: new BreakWidget() }).range(node.from, node.from + 1))
+            decos.push(
+              Decoration.replace({ widget: new TextWidget('↵', 'md-break') }).range(node.from, node.from + 1),
+            )
           }
           return false
         }
@@ -272,7 +372,7 @@ function buildDecorations(view, from, to) {
           }
           if (parent && !selectionTouches(state, parent.from, parent.to)) {
             let end = node.to
-            if (name === 'HeaderMark' && state.sliceDoc(end, end + 1) === ' ') end++
+            if (markersEatingSpace.includes(name) && state.sliceDoc(end, end + 1) === ' ') end++
             if (end > node.from) decos.push(hide.range(node.from, end))
           }
           return
@@ -291,7 +391,8 @@ function buildDecorations(view, from, to) {
           return
         }
         if (name === 'Blockquote') {
-          addLines(node.from, node.to, 'md-blockquote')
+          const kind = calloutKind(state.doc.lineAt(node.from).text)
+          addLines(node.from, node.to, kind ? `md-callout md-callout-${kind}` : 'md-blockquote')
           return
         }
         if (name === 'QuoteMark' || name === 'ListMark' || name === 'CodeInfo') {
@@ -660,6 +761,41 @@ function insertRule(view) {
   return true
 }
 
+// Wrap the selected lines in a callout — which is a blockquote whose first
+// line names a kind, so this is the quote command plus one line above it.
+function insertCallout(kind) {
+  return (view) => {
+    const { state } = view
+    const tag = `> [!${kind.toUpperCase()}]`
+    // One change per line, the tag folded into the first, rather than a
+    // separate insert at the same offset: two changes at one position is a
+    // sorting question this does not need to have.
+    const changes = selectedLines(state).map((ln, i) => ({
+      from: ln.from,
+      insert: i === 0 ? `${tag}\n> ` : '> ',
+    }))
+    dispatchKeepingCursor(view, changes)
+    return true
+  }
+}
+
+// A term and its definition, cursor on the term. The skeleton is the whole
+// interface: a definition list is two lines and a colon, and there is nothing
+// to toggle.
+function insertDefinition(view) {
+  const { state } = view
+  const line = state.doc.lineAt(state.selection.main.head)
+  const insert = (line.text.trim() ? '\n' : '') + '\nTerm\n: Definition\n'
+  const at = line.to
+  view.dispatch({
+    changes: { from: at, insert },
+    // Select the word "Term", so typing replaces it.
+    selection: { anchor: at + insert.indexOf('Term'), head: at + insert.indexOf('Term') + 4 },
+  })
+  view.focus()
+  return true
+}
+
 // A hard line break: a trailing backslash, then the newline. Distinct from
 // pressing Enter, which starts a new paragraph.
 function insertHardBreak(view) {
@@ -742,6 +878,9 @@ export const toolbarCommands = [
   { label: 'I', title: 'Italic (⌘I)', run: toggleInline('*') },
   { label: 'S̶', title: 'Strikethrough', run: toggleInline('~~') },
   { label: '<>', title: 'Inline code (⌘E)', run: toggleInline('`') },
+  { label: '🖍', title: 'Highlight', run: toggleInline('==') },
+  { label: 'x²', title: 'Superscript', run: toggleInline('^') },
+  { label: 'x₂', title: 'Subscript', run: toggleInline('~') },
   { sep: true },
   {
     label: 'Heading',
@@ -762,6 +901,13 @@ export const toolbarCommands = [
   { label: '1.', title: 'Numbered list', run: toggleListCmd('ordered') },
   { label: '☑', title: 'Task list', run: toggleListCmd('task') },
   { label: '❝', title: 'Quote', run: toggleLinePrefix('> ') },
+  {
+    label: 'Callout',
+    title: 'Callout',
+    options: Object.entries(CALLOUTS).map(([value, label]) => ({ label, value })),
+    run: (view, value) => insertCallout(value)(view),
+  },
+  { label: '≔', title: 'Definition list', run: insertDefinition },
   { sep: true },
   { label: '🔗', title: 'Link (⌘K)', run: insertLink },
   { label: '🖼', title: 'Image', run: insertImage },
@@ -797,8 +943,14 @@ const formatKeymap = [
 // dynamic imports, so a language is fetched the first time a block declares
 // it, and a document with no code blocks pays nothing. See DESIGN-DECISIONS,
 // *Fenced code blocks*, for what that costs the build.
+//
+// `extensions` adds the two constructs the grammar does not know — highlight
+// and definition lists. Superscript, subscript and emoji need nothing here:
+// `markdownLanguage` is lang-markdown's *extended* parser and has carried all
+// three since before this app existed. They were parsing all along, with
+// nothing to style them.
 const markdownSetup = () => [
-  markdown({ base: markdownLanguage, codeLanguages: languages }),
+  markdown({ base: markdownLanguage, codeLanguages: languages, extensions: markdownExtensions }),
   syntaxHighlighting(codeHighlight),
 ]
 

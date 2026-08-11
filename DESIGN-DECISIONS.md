@@ -265,6 +265,100 @@ node with no DOM. Line edits are returned as *prefix* replacements rather than
 whole-line rewrites, because replacing a whole line drags the cursor to one end
 of it.
 
+### The extended constructs: highlight, callouts, definition lists, and three that were already there
+
+Shipped 2026-08-11, right behind the plain-markdown batch: `==highlight==`,
+`x^2^` / `H~2~O`, `:emoji:`, `> [!NOTE]` callouts, and definition lists. Still
+plain text, still round-trips through the `.md` file, still no escape hatch —
+see *Formatting*. What separates these from the previous batch is that the
+grammar did not know four of the six, and a construct the parser does not
+report cannot be decorated at all.
+
+**Only two needed a parser extension.** The other four were cheaper than the
+roadmap assumed, in two different ways:
+
+- **Superscript, subscript and emoji were already parsing.** `markdownLanguage`
+  is lang-markdown's *extended* parser, and it has always been configured with
+  `[GFM, Subscript, Superscript, Emoji, …]`. This app has used it since the
+  editor was written. All three were emitting nodes the whole time and nothing
+  was styling them, so what shipped is CSS, not grammar.
+- **Callouts need no parser at all**, which is the reason the syntax was chosen
+  over inventing one: `> [!NOTE]` is *already a valid blockquote*. It degrades
+  to an ordinary quote in every other markdown tool, and the git export stays
+  readable.
+
+**A callout marker has to be intercepted, not merely styled.** `[!NOTE]` parses
+as an ordinary `Link` — brackets and all — so without a special case the label
+renders as a hyperlink and the brackets get hidden by the generic marker rule.
+The whole node is replaced with the label widget and its children skipped,
+exactly as `Image` does it, because a replace decoration may not contain other
+decorations. Text alone is not enough to identify one: it counts only at the
+very start of the first paragraph of a blockquote, which is where the syntax
+puts it anyway. An unrecognised kind is still treated as a callout and styled
+as a note, so `[!EXAMPLE]` written for another tool does not read as broken.
+
+**Emoji is the one that needs data, not code.** The parser marks `:name:` and
+stops; there is no shortcode table in a browser and `Intl` does not expose CLDR
+annotation names. `emoji.js` is a **curated ~250 entries**, not the full ~1800:
+the whole set would be the largest file in this project for a convenience
+feature. An unknown shortcode is left as literal text, which is the right
+failure — that is exactly what it looks like in the `.md` file read by anything
+else, so the document reads the same everywhere. It is a `Map` rather than an
+object literal because `:constructor:` is a valid spelling and a bare object
+resolves it to a function. One known gap, asserted in the test so it stays a
+known one: the upstream extension's character class is `[a-zA-Z_0-9]`, so
+GitHub's `:+1:` and `:-1:` never reach the table — the `thumbsup` and
+`thumbsdown` aliases are carried for that reason.
+
+**Definition lists are a leaf-block parser**, the same machinery GFM tables
+use and for the same reason: the first line looks exactly like a paragraph, and
+only the *second* line reveals what the block is. So the parser accumulates
+lines and decides in `finish()`, which also makes the terminating blank line
+free. Deliberately strict about what a definition line is — `:` then a space,
+at the start of the line. Pandoc also allows `~`, indented continuations, and a
+blank line between term and definition; each costs a lookahead rule and none is
+what anyone typing a definition list actually writes. The negative cases matter
+more than the positive ones and are tested as such: a wrapped two-line
+paragraph must not become a definition list, and `12:30` on its own line must
+not either.
+
+**Highlight copies Strikethrough's open/close rules** rather than using a
+regex, so `==` behaves like `~~` — behaving *differently* would be the
+surprise. That also means it nests with the rest of the inline grammar, which a
+regex could not: `==**bold** inside==` parses both, and a code span still wins.
+
+`mdext.js` imports `@lezer/markdown` only, no CodeMirror and no DOM, so
+`mdext_test.mjs` parses strings in node and asserts on the tree.
+
+**A trap that cost a debugging round:** `parser.configure()` takes the
+extension, or a nested array of them, *directly*. An object like
+`{extensions: [...]}` is not a `MarkdownConfig`, and is accepted and ignored in
+silence. The first version of the test did exactly that and still passed its
+superscript assertions — because those come from `markdownLanguage` regardless
+— while both new extensions did nothing at all. (`markdown()` from
+lang-markdown *does* take `{extensions}`; the two APIs are one level apart.)
+
+**Found while doing this, and fixed:** `.md-blockquote { padding-left: .6rem }`
+in `app.css` **never worked**. CodeMirror's base theme sets
+`.cm-line { padding: 0 2px 0 6px }`, and its injected styles beat an app rule
+of equal specificity — the same trap the reading preferences hit, already
+recorded above under *Formatting*. Blockquotes have been shipping with their
+text flush against the rule since blockquotes landed; it is subtle enough that
+nobody reported it. Every rule setting padding on a line is now qualified
+`.cm-line.md-…`, which is (0,2,0) against (0,1,0) and wins on specificity
+rather than on load order. There is now a browser assertion on the computed
+padding, so it cannot regress quietly a second time.
+
+Two smaller decisions worth recording:
+
+- **Superscript and subscript are positioned, not `vertical-align`d.** Sub- and
+  superscript via `vertical-align` grow the line box, and CodeMirror caches
+  per-line heights — a construct that silently changes them is a construct that
+  makes it re-measure. `position: relative` with a `top` offset does not.
+- **Highlight pins its text colour.** It is the one place in the editor that
+  does. A highlighter pen is a light ground by definition, so inheriting the
+  dark-mode foreground would put near-white text on yellow.
+
 ### Fenced code blocks: highlighting costs 117 files, not 117 downloads
 
 `@codemirror/language-data` is the one dependency this batch adds — a table

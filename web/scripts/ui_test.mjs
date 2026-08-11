@@ -602,7 +602,7 @@ try {
   // before and H4–H6 are what the menu was added for.
   await step('the heading menu sets a level the old buttons could not', async () => {
     await page.keyboard.type('Deep heading')
-    await page.select('.toolbar select', '4')
+    await page.select('.toolbar select[aria-label="Heading level"]', '4')
     await page.waitForFunction(
       () =>
         document.querySelector('.md-h4') &&
@@ -611,7 +611,7 @@ try {
     )
     // Back to a paragraph: the menu's first real entry has to undo as well as
     // apply, or it is a one-way door.
-    await page.select('.toolbar select', '0')
+    await page.select('.toolbar select[aria-label="Heading level"]', '0')
     await page.waitForFunction(() => !document.querySelector('.md-h4'), { timeout: 3000 })
   })
 
@@ -695,6 +695,102 @@ try {
         )
       },
       { timeout: 10000 },
+    )
+  })
+
+  // The constructs that needed the grammar taught. mdext_test.mjs proves they
+  // parse; these prove the decoration layer reaches them, which is a separate
+  // failure — a node the parser emits and nothing styles looks exactly like a
+  // feature that was never built.
+  await step('a document for the extended constructs', async () => {
+    await clickText(page, 'a', '← documents')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI extensions doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    await page.focus('.cm-content')
+  })
+
+  await step('highlight, superscript and subscript style their text', async () => {
+    await page.keyboard.type('marked')
+    await page.keyboard.down('Shift')
+    for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowLeft')
+    await page.keyboard.up('Shift')
+    await clickText(page, 'button', '🖍')
+    await waitForDoc(page, /==marked==/)
+    await page.keyboard.press('End')
+    await page.keyboard.type(' x^2^ and H~2~O')
+    await page.waitForFunction(
+      () => document.querySelector('.md-highlight') && document.querySelector('.md-sup') && document.querySelector('.md-sub'),
+      { timeout: 3000 },
+    )
+  })
+
+  // The one with a real trap: `:warning:` renders as the character, so the
+  // shortcode is not in innerText at all - and an unknown one must stay
+  // exactly as typed, since that is what every other markdown tool shows.
+  await step('a known emoji shortcode renders, an unknown one is left alone', async () => {
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('status :warning: and :not_a_real_emoji:')
+    await page.waitForFunction(
+      () => document.querySelector('.md-emoji')?.textContent === '⚠️',
+      { timeout: 3000 },
+    )
+    await waitForDoc(page, /:not_a_real_emoji:/)
+  })
+
+  // A callout is a blockquote, which is the whole point of the syntax - so the
+  // assertion is that it is styled as a callout and NOT as a plain quote, and
+  // that the `[!WARNING]` marker became a label rather than a hyperlink.
+  await step('a callout is styled by kind, not as a link', async () => {
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('Do not do this')
+    await page.select('.toolbar select[aria-label="Callout"]', 'warning')
+    // Not asserted on the text: `[!WARNING]` is replaced by its label, so what
+    // innerText holds is "> ⚠️ Warning". See docText.
+    await page.waitForFunction(
+      () => {
+        const label = document.querySelector('.md-callout-label')
+        const box = document.querySelector('.md-callout-warning')
+        return (
+          box &&
+          !box.classList.contains('md-blockquote') &&
+          label &&
+          label.textContent.includes('Warning') &&
+          !box.querySelector('.md-link') &&
+          // The indent is asserted because it did not used to work: an app.css
+          // rule setting padding on a .cm-line loses to CodeMirror's own, and
+          // blockquotes shipped flush against their rule for months.
+          parseFloat(getComputedStyle(box).paddingLeft) > 6
+        )
+      },
+      { timeout: 3000 },
+    )
+  })
+
+  await step('a definition list indents its definitions', async () => {
+    await page.keyboard.down('Meta')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.up('Meta')
+    await clickText(page, 'button', '≔')
+    await waitForDoc(page, /^Term\n/m)
+    // The `: ` is hidden like every other marker, so the indent is what says
+    // which line is the definition. Measured where the TEXT starts, via a
+    // Range: both lines are full-width block elements, so their bounding
+    // rectangles have the same left edge whatever the padding does — the first
+    // version of this compared those and could never have failed.
+    await page.waitForFunction(
+      () => {
+        const textLeft = (el) => {
+          const r = document.createRange()
+          r.selectNodeContents(el)
+          return r.getBoundingClientRect().left
+        }
+        const dt = document.querySelector('.md-dt')
+        const dd = document.querySelector('.md-dd')
+        return dt && dd && textLeft(dd) > textLeft(dt)
+      },
+      { timeout: 3000 },
     )
   })
 } finally {

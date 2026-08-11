@@ -32,7 +32,44 @@ export const MEASURES = [
   { value: 90, label: 'Wide' },
 ]
 
-export const DEFAULTS = { font: 'system', size: 16, lineHeight: 1.6, measure: 75 }
+// `family` overrides `font` when set: a specific family the reader named or
+// picked from the ones installed on their machine. Kept as a separate field so
+// the four built-ins stay ids — relabelling or re-stacking one later then does
+// not orphan everyone's stored preference.
+export const DEFAULTS = { font: 'system', size: 16, lineHeight: 1.6, measure: 75, family: '' }
+
+// A family name is user input that ends up in a CSS declaration, so it is
+// reduced to the characters a font name can actually contain. Not a security
+// boundary — setProperty cannot break out of a declaration, since the CSSOM
+// parses the value rather than splicing it into a stylesheet — but a name with
+// a stray quote or semicolon silently invalidates the whole thing, which is
+// the same class of failure as `Helvetica Neue` unquoted.
+export function familyStack(name) {
+  const clean = String(name).replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 64)
+  if (!clean) return ''
+  // Always quoted, so multi-word names work, and always with a generic
+  // fallback so a family that turns out to be missing still renders.
+  return `"${clean}", system-ui, sans-serif`
+}
+
+// The fonts actually installed, when the browser will say. The Local Font
+// Access API is Chromium-only, needs a secure context, and prompts for
+// permission — so it must be called from a user gesture and must degrade to
+// null rather than throwing. Everywhere else, the reader types a name instead.
+export async function listLocalFonts() {
+  if (typeof window === 'undefined' || typeof window.queryLocalFonts !== 'function') return null
+  try {
+    const fonts = await window.queryLocalFonts()
+    return [...new Set(fonts.map((f) => f.family))].sort((a, b) => a.localeCompare(b))
+  } catch {
+    // Permission refused, or not a secure context. Neither is an error worth
+    // surfacing — the text field still works.
+    return null
+  }
+}
+
+export const localFontsSupported = () =>
+  typeof window !== 'undefined' && typeof window.queryLocalFonts === 'function'
 
 // localStorage throws rather than returning null in some privacy modes, so
 // every access is guarded: a preference failing to save must not take the
@@ -66,8 +103,11 @@ export function save(prefs) {
 }
 
 export function apply(prefs, root = document.documentElement) {
+  // A named family wins over the built-in stacks; an unusable one falls back
+  // rather than leaving the property unset to inherit whatever the page had.
+  const custom = prefs.family ? familyStack(prefs.family) : ''
   const font = FONTS.find((f) => f.id === prefs.font) || FONTS[0]
-  root.style.setProperty('--reading-font', font.stack)
+  root.style.setProperty('--reading-font', custom || font.stack)
   root.style.setProperty('--reading-size', `${prefs.size}px`)
   root.style.setProperty('--reading-line-height', String(prefs.lineHeight))
   root.style.setProperty('--reading-measure', prefs.measure ? `${prefs.measure}ch` : 'none')

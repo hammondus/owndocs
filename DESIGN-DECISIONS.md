@@ -154,6 +154,22 @@ Implementation (`prefs.js`, `ReadingPrefs.svelte`):
 - **CodeMirror re-measures on change.** It caches per-line heights, and size or
   family changes them without it noticing — `view.requestMeasure()` is what the
   panel's `onChanged` is for.
+- **Any installed font, not just the four built-ins.** `queryLocalFonts()`
+  lists what is actually on the machine — but it is Chromium-only, needs a
+  secure context, and prompts for permission, so it is behind a button (a
+  permission prompt needs a user gesture) and degrades to a plain text field
+  everywhere else. The control is one `<input list=…>` with a datalist, which
+  type-aheads through hundreds of families *and* accepts a name typed by hand,
+  so the two paths are one control rather than two.
+- **A named family is stored beside the built-in id, not instead of it.**
+  `family` wins when set; `font` stays an id. Re-stacking or relabelling a
+  built-in later then does not orphan everyone's stored preference.
+- **A family name is user input reaching a CSS declaration**, so it is reduced
+  to the characters a font name can contain, quoted, and given a generic
+  fallback. Not a security boundary — `setProperty` parses the value rather
+  than splicing it into a stylesheet — but one stray character invalidates the
+  whole declaration silently, which is the failure `Helvetica Neue` already
+  caused once.
 - **A multi-word family needs quotes inside the stack.** `Helvetica Neue`
   unquoted invalidates the whole `font-family` declaration, so that option
   silently fell back to the previous font rather than failing visibly.

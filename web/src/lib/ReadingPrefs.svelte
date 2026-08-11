@@ -1,7 +1,10 @@
 <script>
   // The reading-preferences drawer. Everything here is a display choice that
   // belongs to the reader, never to the document — see prefs.js.
-  import { FONTS, SIZES, LINE_HEIGHTS, MEASURES, DEFAULTS, load, save, apply } from '../prefs.js'
+  import {
+    FONTS, SIZES, LINE_HEIGHTS, MEASURES, DEFAULTS,
+    load, save, apply, listLocalFonts, localFontsSupported,
+  } from '../prefs.js'
 
   let { onChanged, onClose } = $props()
 
@@ -20,6 +23,23 @@
   function reset() {
     set({ ...DEFAULTS })
   }
+
+  // The fonts installed on this machine, once the reader asks for them. The
+  // browser prompts for permission, so this must run from a click — hence a
+  // button rather than loading the list when the panel opens.
+  let localFonts = $state([])
+  let localState = $state('') // '' | 'loading' | 'denied' | 'unsupported'
+
+  async function loadLocalFonts() {
+    localState = 'loading'
+    const fonts = await listLocalFonts()
+    if (!fonts) {
+      localState = localFontsSupported() ? 'denied' : 'unsupported'
+      return
+    }
+    localFonts = fonts
+    localState = ''
+  }
 </script>
 
 <div class="panel">
@@ -33,8 +53,16 @@
 
   <div class="row">
     <label for="rp-font">Font</label>
-    <select id="rp-font" value={prefs.font} onchange={(e) => set({ font: e.target.value })}>
+    <select
+      id="rp-font"
+      value={prefs.family ? 'custom' : prefs.font}
+      onchange={(e) =>
+        e.target.value === 'custom'
+          ? set({ family: prefs.family || 'Georgia' })
+          : set({ font: e.target.value, family: '' })}
+    >
       {#each FONTS as f (f.id)}<option value={f.id}>{f.label}</option>{/each}
+      <option value="custom">Choose a font…</option>
     </select>
 
     <label for="rp-size">Size</label>
@@ -52,6 +80,43 @@
       {#each MEASURES as m (m.value)}<option value={m.value}>{m.label}</option>{/each}
     </select>
   </div>
+
+  {#if prefs.family}
+    <div class="row">
+      <label for="rp-family">Family</label>
+      <!-- A datalist rather than a select: it type-aheads through hundreds of
+           families, and still accepts a name typed by hand where the browser
+           will not enumerate them. -->
+      <input
+        id="rp-family"
+        list="rp-local-fonts"
+        value={prefs.family}
+        style="font-family: '{prefs.family}', system-ui"
+        onchange={(e) => set({ family: e.target.value })}
+      />
+      <datalist id="rp-local-fonts">
+        {#each localFonts as f (f)}<option value={f}></option>{/each}
+      </datalist>
+      {#if !localFonts.length}
+        <button onclick={loadLocalFonts} disabled={localState === 'loading'}>
+          {localState === 'loading' ? 'asking…' : 'list my fonts'}
+        </button>
+      {:else}
+        <span class="note">{localFonts.length} installed</span>
+      {/if}
+    </div>
+    {#if localState === 'denied'}
+      <p class="note">
+        Font access was declined. Type a family name instead — it works just as
+        well, you just have to know what it is called.
+      </p>
+    {:else if localState === 'unsupported'}
+      <p class="note">
+        This browser will not list installed fonts (only Chrome and Edge do, on
+        a secure connection). Type a family name instead.
+      </p>
+    {/if}
+  {/if}
 
   <p class="note">
     Code stays monospace whatever you pick here — its alignment carries meaning.

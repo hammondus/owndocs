@@ -442,6 +442,35 @@ try {
     }
   })
 
+  // A named family, which is the path a reader takes after picking one from
+  // their installed fonts. The enumeration itself cannot be driven here — it
+  // prompts for a permission this harness has no way to grant — but everything
+  // downstream of the name can be.
+  await step('a named font family reaches the text', async () => {
+    // Opened only if it is not already: `Aa` toggles, and a previous step
+    // leaves the panel up. Steps share one browser, so a step that assumes a
+    // starting state has to establish it.
+    if (!(await page.$('#rp-font'))) await clickText(page, 'button', 'Aa')
+    await page.waitForSelector('#rp-font', { timeout: 3000 })
+    await page.select('#rp-font', 'custom')
+    await page.waitForSelector('#rp-family', { timeout: 3000 })
+    await page.$eval('#rp-family', (el) => {
+      el.value = 'Courier New'
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await page.waitForFunction(
+      () => /Courier New/.test(getComputedStyle(document.querySelector('.cm-content')).fontFamily),
+      { timeout: 3000 },
+    )
+    // Back to a built-in, and the named family must let go rather than linger.
+    await page.select('#rp-font', 'serif')
+    await page.waitForFunction(
+      () => !/Courier New/.test(getComputedStyle(document.querySelector('.cm-content')).fontFamily),
+      { timeout: 3000 },
+    )
+    await clickText(page, 'button', 'close')
+  })
+
   // Reachable from the document list as well as from inside a document: the
   // preference is global, and a setting on one screen only is a setting nobody
   // finds. This step exists because the first version shipped exactly that.

@@ -1,6 +1,6 @@
 // Reading preferences: pure enough to test without a browser, apart from the
 // two DOM shims below. Run from web/: node scripts/prefs_test.mjs
-import { load, save, apply, DEFAULTS, FONTS } from '../src/prefs.js'
+import { load, save, apply, familyStack, listLocalFonts, DEFAULTS, FONTS } from '../src/prefs.js'
 
 let failures = 0
 const ok = (what) => console.log('ok:', what)
@@ -78,6 +78,45 @@ try {
   apply({ ...DEFAULTS, font: 'comic-sans-9000' }, root)
   eq(propsOf(root)['--reading-font'], FONTS[0].stack, 'an unknown font falls back to the first')
 }
+
+// ---- named families --------------------------------------------------------
+// A family the reader typed or picked from their installed fonts. It ends up
+// in a CSS declaration, where one stray character invalidates the whole thing
+// silently — the same failure `Helvetica Neue` unquoted already caused once.
+
+eq(familyStack('Georgia'), '"Georgia", system-ui, sans-serif', 'a family is quoted and given a fallback')
+eq(familyStack('Iowan Old Style'), '"Iowan Old Style", system-ui, sans-serif', 'multi-word families survive')
+eq(familyStack('  Charter  '), '"Charter", system-ui, sans-serif', 'surrounding space is trimmed')
+eq(familyStack(''), '', 'an empty family yields nothing to apply')
+eq(familyStack('   '), '', 'a whitespace-only family yields nothing')
+eq(familyStack('Noto Sans CJK'), '"Noto Sans CJK", system-ui, sans-serif', 'digits and caps are kept')
+eq(familyStack('Bad"; } body {'), '"Bad  body", system-ui, sans-serif', 'quotes and braces are stripped')
+eq(familyStack('a'.repeat(200)).length < 100, true, 'an absurd name is truncated')
+
+{
+  // A named family beats the built-in stack; clearing it hands control back.
+  const root = fakeRoot()
+  apply({ ...DEFAULTS, font: 'mono', family: 'Georgia' }, root)
+  eq(propsOf(root)['--reading-font'], '"Georgia", system-ui, sans-serif', 'a named family wins over the built-in')
+
+  apply({ ...DEFAULTS, font: 'mono', family: '' }, root)
+  eq(propsOf(root)['--reading-font'], FONTS.find((f) => f.id === 'mono').stack, 'clearing it restores the built-in')
+
+  // A family that sanitises to nothing must not blank the property.
+  apply({ ...DEFAULTS, font: 'serif', family: '!!!' }, root)
+  eq(propsOf(root)['--reading-font'], FONTS.find((f) => f.id === 'serif').stack,
+     'an unusable family falls back rather than unsetting the font')
+}
+
+// Enumeration is Chromium-only, prompts for permission, and needs a secure
+// context. Every one of those is a normal outcome, not an error.
+eq(await listLocalFonts(), null, 'no queryLocalFonts yields null, not a throw')
+globalThis.window = { queryLocalFonts: async () => { throw new Error('denied') } }
+eq(await listLocalFonts(), null, 'a refused permission yields null')
+globalThis.window = {
+  queryLocalFonts: async () => [{ family: 'Zapfino' }, { family: 'Charter' }, { family: 'Charter' }],
+}
+eq(await listLocalFonts(), ['Charter', 'Zapfino'], 'families are de-duplicated and sorted')
 
 if (failures > 0) {
   console.error(`\n${failures} FAILURES`)

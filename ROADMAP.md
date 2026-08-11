@@ -83,33 +83,31 @@ needs a Lezer parser extension before it can be styled at all.
 
 ### Already shipped
 
-Bold, italic, strikethrough, inline code, H1–H3, bullet lists, task lists,
-blockquotes, links, images, tables (rendered as real HTML tables).
+Bold, italic, strikethrough, inline code, H1–H6, bullet lists, numbered lists,
+nested lists, task lists, blockquotes, links, images, tables (rendered as real
+HTML tables, with writable column alignment), fenced code blocks with syntax
+highlighting, horizontal rules, hard line breaks.
 
-### Free — plain markdown, nothing new to invent
-
-- **H4–H6** — parsed and decorated already, just absent from the toolbar
-- **Numbered lists**, and nested lists of both kinds
-- **Fenced code blocks** with a language tag, and syntax highlighting inside
-  them (a `@codemirror/language-data` lookup — one dependency, already in the
-  CodeMirror family)
-- **Horizontal rules**
-- **Hard line breaks** (trailing backslash) as distinct from paragraph breaks
-- **Table column alignment** — left/centre/right, which markdown *does* encode
-  (`:---`, `:---:`, `---:`); the parser already reports it and `table.js`
-  already reads it
+That is the whole of plain markdown as this editor means to support it. What
+is left below needs a Lezer parser extension before it can be decorated at
+all — see *The plain-markdown constructs* in the design doc for where that line
+falls and why.
 
 ### Cheap extensions — still plain text, widely understood
 
-Each needs a small Lezer extension to be decorated, and each stays readable in
-the exported `.md` even where another tool does not render it.
+Each needs a Lezer extension to be decorated, and each stays readable in the
+exported `.md` even where another tool does not render it.
 
-- **Highlight** — `==marked text==`
-- **Superscript / subscript** — `x^2^`, `H~2~O`
+Three of these are cheaper than the rest: `@lezer/markdown` already ships
+`Superscript`, `Subscript` and `Emoji` as parser extensions, so they are a
+line in the `markdown()` config plus a CSS class, not a grammar to write.
+
+- **Superscript / subscript** — `x^2^`, `H~2~O` (extension exists)
+- **Emoji shortcodes** — `:warning:` (extension exists)
+- **Highlight** — `==marked text==`, a delimiter extension of our own
 - **Footnotes** — `[^1]`
 - **Callouts / admonitions** — `> [!NOTE]`, `> [!WARNING]`: Obsidian's syntax,
   and *already valid blockquotes*, so it degrades gracefully everywhere
-- **Emoji shortcodes** — `:warning:`
 - **Definition lists**
 - **Math** — `$…$` / `$$…$$`, needs KaTeX or MathJax, so a real dependency
 - **Mermaid diagrams** in a fenced block — likewise a real dependency

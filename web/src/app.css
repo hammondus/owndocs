@@ -26,6 +26,9 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
 .toolbar button { min-width: 2.2rem; padding: .25rem .4rem; border: 1px solid #8884;
                   border-radius: 4px; background: transparent; cursor: pointer; }
 .toolbar button:hover { background: #8882; }
+.toolbar select { padding: .25rem .3rem; margin: 0; border: 1px solid #8884;
+                  border-radius: 4px; background: transparent; }
+.toolbar .sep { align-self: stretch; width: 1px; background: #8884; margin: .1rem .2rem; }
 /* Chrome only. The reading preferences (font, size, line height, measure) are
    applied by a CodeMirror theme in editor.js — an app rule of this specificity
    loses to CodeMirror's base theme, which is what made the first attempt look
@@ -56,6 +59,35 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
 .md-table-src { font-family: ui-monospace, monospace; font-size: .9em; }
 .md-image { max-width: 100%; max-height: 60vh; border-radius: 4px; vertical-align: bottom; }
 .md-image-broken { color: #c33; font-size: .85em; border: 1px dashed #c336; border-radius: 3px; padding: 0 .3em; }
+/* A horizontal rule, standing in for `---` on its own line. inline-block so
+   the line keeps its height and the cursor can still be placed there. */
+.md-hr { display: inline-block; width: 100%; vertical-align: middle; border-top: 2px solid #8886; }
+/* The `\` of a hard line break. Dim: it is punctuation, not content. */
+.md-break { opacity: .4; font-size: .85em; }
+
+/* Fenced-code syntax colours, referenced by the HighlightStyle in editor.js.
+   They live here, with the rest of the app's colours, rather than inside that
+   file — and as a light/dark pair, because unlike the #8884 alpha tricks used
+   elsewhere a syntax colour is a real hue and cannot serve both grounds. */
+:root {
+  --tok-keyword: #7238b8;
+  --tok-string:  #0a7038;
+  --tok-comment: #6a737d;
+  --tok-number:  #a8500a;
+  --tok-name:    #1058a8;
+  --tok-type:    #a80070;
+  --tok-invalid: #c33;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tok-keyword: #c792ea;
+    --tok-string:  #7ee787;
+    --tok-comment: #8b949e;
+    --tok-number:  #ffab70;
+    --tok-name:    #79c0ff;
+    --tok-type:    #ff7b9c;
+  }
+}
 
 /* remote cursors (y-codemirror.next) */
 .cm-ySelectionCaret { position: relative; border-left: 1px solid; margin-left: -1px; }

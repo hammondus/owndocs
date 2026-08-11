@@ -5,11 +5,23 @@
 import { EditorView, keymap, ViewPlugin, Decoration, WidgetType } from '@codemirror/view'
 import { EditorState, StateField, StateEffect } from '@codemirror/state'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
-import { syntaxTree, ensureSyntaxTree } from '@codemirror/language'
+import { syntaxTree, ensureSyntaxTree, HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { languages } from '@codemirror/language-data'
+import { tags } from '@lezer/highlight'
 import { defaultKeymap } from '@codemirror/commands'
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 import * as Y from 'yjs'
 import { parseTableData } from './table.js'
+import {
+  listMarker,
+  toggleList,
+  indentLines,
+  outdentLines,
+  columnAt,
+  alignAt,
+  nextAlign,
+  setAlign,
+} from './mdtext.js'
 
 // ---- live preview ---------------------------------------------------------
 
@@ -117,6 +129,41 @@ class TableWidget extends WidgetType {
   }
 }
 
+// `---` / `***` drawn as an actual rule. Inline rather than a block widget:
+// the replaced range is the rule's three characters, which live on one line,
+// so the line keeps its height and the cursor can still be placed on it.
+class RuleWidget extends WidgetType {
+  eq() {
+    return true // no state, so one instance is as good as another
+  }
+  toDOM() {
+    const span = document.createElement('span')
+    span.className = 'md-hr'
+    return span
+  }
+  ignoreEvent() {
+    return false
+  }
+}
+
+// The `\` of a hard line break, shown as the return arrow it means. Only the
+// backslash is replaced — a replace decoration spanning the newline would have
+// to be a block decoration, and this is not one.
+class BreakWidget extends WidgetType {
+  eq() {
+    return true
+  }
+  toDOM() {
+    const span = document.createElement('span')
+    span.className = 'md-break'
+    span.textContent = '↵'
+    return span
+  }
+  ignoreEvent() {
+    return false
+  }
+}
+
 // Only render sources that can't execute anything.
 function safeImageURL(url) {
   return /^(https?:|data:image\/)/i.test(url)
@@ -191,8 +238,38 @@ function buildDecorations(view, from, to) {
           decos.push(inlineMarks[name].range(node.from, node.to))
           return
         }
+        if (name === 'HorizontalRule') {
+          // Drawn as a rule unless the cursor is on it, in which case the
+          // `---` shows so it can be edited or deleted.
+          if (selectionTouches(state, node.from, node.to)) {
+            decos.push(mark('md-dim').range(node.from, node.to))
+          } else {
+            decos.push(Decoration.replace({ widget: new RuleWidget() }).range(node.from, node.to))
+          }
+          return false
+        }
+        if (name === 'HardBreak') {
+          // The node spans the backslash *and* the newline. Only a trailing
+          // backslash gets a glyph: the other spelling of a hard break is two
+          // trailing spaces, and there is nothing to show for those.
+          if (
+            state.sliceDoc(node.from, node.from + 1) === '\\' &&
+            !selectionTouches(state, node.from, node.from + 1)
+          ) {
+            decos.push(Decoration.replace({ widget: new BreakWidget() }).range(node.from, node.from + 1))
+          }
+          return false
+        }
         if (markerParents.includes(name)) {
           const parent = node.node.parent
+          // Fence markers are dimmed, never hidden. Hiding them (which the
+          // general rule below would do, since CodeMark is also inline code's
+          // backtick) leaves an empty line above and below the block: the
+          // lines still exist, so the block reads as if it had stray padding.
+          if (name === 'CodeMark' && parent && parent.name === 'FencedCode') {
+            decos.push(mark('md-dim').range(node.from, node.to))
+            return
+          }
           if (parent && !selectionTouches(state, parent.from, parent.to)) {
             let end = node.to
             if (name === 'HeaderMark' && state.sliceDoc(end, end + 1) === ' ') end++
@@ -341,6 +418,26 @@ const livePreview = ViewPlugin.fromClass(
   { decorations: (v) => v.decorations }
 )
 
+// ---- syntax highlighting inside fenced code blocks ------------------------
+
+// Deliberately *only* code tokens. `defaultHighlightStyle` also styles
+// markdown's own tags — heading, strong, emphasis, link — which the live
+// preview decorations above already own, and two rules fighting over the same
+// span is how a heading ends up a colour nobody chose.
+//
+// The colours are custom properties so the light/dark pair sits in app.css
+// with the rest of the app's colours, rather than being compiled into an
+// injected stylesheet where no one would look for them.
+const codeHighlight = HighlightStyle.define([
+  { tag: [tags.keyword, tags.controlKeyword, tags.moduleKeyword, tags.definitionKeyword, tags.operatorKeyword, tags.modifier], color: 'var(--tok-keyword)' },
+  { tag: [tags.string, tags.special(tags.string), tags.regexp, tags.character], color: 'var(--tok-string)' },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: 'var(--tok-comment)', fontStyle: 'italic' },
+  { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom, tags.constant(tags.variableName)], color: 'var(--tok-number)' },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.definition(tags.variableName), tags.macroName], color: 'var(--tok-name)' },
+  { tag: [tags.typeName, tags.className, tags.tagName, tags.namespace, tags.attributeName], color: 'var(--tok-type)' },
+  { tag: tags.invalid, color: 'var(--tok-invalid)' },
+])
+
 // ---- toolbar commands: canned markdown text edits -------------------------
 
 // Toggle-wrap the main selection in an inline marker pair (**, *, `, ~~).
@@ -396,37 +493,91 @@ function dispatchKeepingCursor(view, changes) {
   view.focus()
 }
 
-// Set (or toggle off) an ATX heading level on every selected line.
+// The lines the selection touches, whole. Every block-level command works on
+// these rather than on the selection's exact offsets.
+function selectedLines(state) {
+  const sel = state.selection.main
+  const lines = []
+  for (let pos = sel.from; pos <= sel.to; ) {
+    const ln = state.doc.lineAt(pos)
+    lines.push(ln)
+    pos = ln.to + 1
+  }
+  return lines
+}
+
+// Set an ATX heading level on every selected line. Level 0 means "no heading";
+// re-applying the level a line already has also clears it, so the toolbar's H2
+// is a toggle and its Paragraph entry is unconditional.
 function setHeading(level) {
   return (view) => {
     const { state } = view
-    const sel = state.selection.main
+    const target = level ? '#'.repeat(level) + ' ' : ''
     const changes = []
-    const target = '#'.repeat(level) + ' '
-    for (let pos = sel.from; pos <= sel.to; ) {
-      const ln = state.doc.lineAt(pos)
+    for (const ln of selectedLines(state)) {
       const m = ln.text.match(/^#{1,6} /)
       const cur = m ? m[0] : ''
       const insert = cur === target ? '' : target
-      changes.push({ from: ln.from, to: ln.from + cur.length, insert })
-      pos = ln.to + 1
+      if (cur !== insert) changes.push({ from: ln.from, to: ln.from + cur.length, insert })
     }
     dispatchKeepingCursor(view, changes)
     return true
   }
 }
 
-// Toggle a per-line prefix ('- ' bullets, '> ' quotes) across the selection.
+// Turn the selected lines into a bullet, numbered or task list — or out of
+// one. The decision of what each line becomes is mdtext.js's; this only turns
+// its prefix edits into document offsets.
+function toggleListCmd(kind) {
+  return (view) => {
+    const { state } = view
+    const lines = selectedLines(state)
+    const edits = toggleList(lines.map((ln) => ln.text), kind)
+    const changes = []
+    edits.forEach((e, i) => {
+      if (e) changes.push({ from: lines[i].from, to: lines[i].from + e.to, insert: e.insert })
+    })
+    dispatchKeepingCursor(view, changes)
+    return true
+  }
+}
+
+// How far back mdtext.js is allowed to look for the item a Tab would nest
+// under. A list longer than this in one unbroken run is not a document anyone
+// is editing; the cap keeps a keystroke from walking a huge doc.
+const LIST_CONTEXT_LINES = 500
+
+// Tab / Shift-Tab, but only inside a list. Returning false anywhere else is
+// deliberate: an editor that swallows Tab everywhere is one a keyboard user
+// cannot escape.
+function indentListCmd(outdent) {
+  return (view) => {
+    const { state } = view
+    const lines = selectedLines(state)
+    if (!lines.some((ln) => listMarker(ln.text))) return false
+    const before = []
+    for (let n = Math.max(1, lines[0].number - LIST_CONTEXT_LINES); n < lines[0].number; n++) {
+      before.push(state.doc.line(n).text)
+    }
+    const shift = outdent ? outdentLines : indentLines
+    const edits = shift(lines.map((ln) => ln.text), before)
+    const changes = []
+    edits.forEach((e, i) => {
+      if (e) changes.push({ from: lines[i].from, to: lines[i].from + e.to, insert: e.insert })
+    })
+    // Still true when there is nothing to do: the cursor is in a list, so Tab
+    // means "nest", not "leave the editor".
+    if (changes.length) dispatchKeepingCursor(view, changes)
+    else view.focus()
+    return true
+  }
+}
+
+// Toggle a per-line prefix ('> ' quotes) across the selection.
 function toggleLinePrefix(prefix) {
   return (view) => {
     const { state } = view
-    const sel = state.selection.main
-    const lines = []
-    for (let pos = sel.from; pos <= sel.to; ) {
-      const ln = state.doc.lineAt(pos)
-      lines.push(ln)
-      pos = ln.to + 1
-    }
+    const lines = selectedLines(state)
     const allPrefixed = lines.every((ln) => ln.text.startsWith(prefix))
     const changes = lines.map((ln) =>
       allPrefixed
@@ -478,6 +629,86 @@ function insertImage(view) {
   return true
 }
 
+// Wrap the selection in a fence, cursor parked on the info string so the next
+// thing typed is the language. An empty selection gives an empty block.
+function insertCodeBlock(view) {
+  const { state } = view
+  const { from, to } = state.selection.main
+  const text = state.sliceDoc(from, to)
+  // A fence has to start a line.
+  const lead = from === state.doc.lineAt(from).from ? '' : '\n'
+  const insert = lead + '```\n' + text + '\n```\n'
+  view.dispatch({
+    changes: { from, to, insert },
+    selection: { anchor: from + lead.length + 3 },
+  })
+  view.focus()
+  return true
+}
+
+// A rule goes on its own line, after a blank one. `---` directly under a
+// paragraph is a setext heading — it would underline the text above instead.
+function insertRule(view) {
+  const { state } = view
+  const line = state.doc.lineAt(state.selection.main.head)
+  const insert = (line.text.trim() ? '\n' : '') + '\n---\n'
+  view.dispatch({
+    changes: { from: line.to, insert },
+    selection: { anchor: line.to + insert.length },
+  })
+  view.focus()
+  return true
+}
+
+// A hard line break: a trailing backslash, then the newline. Distinct from
+// pressing Enter, which starts a new paragraph.
+function insertHardBreak(view) {
+  const { from, to } = view.state.selection.main
+  view.dispatch({
+    changes: { from, to, insert: '\\\n' },
+    selection: { anchor: from + 2 },
+  })
+  view.focus()
+  return true
+}
+
+// Cycle the alignment of the table column the cursor is in, by rewriting that
+// cell of the delimiter row. Alignment is the one piece of *appearance* plain
+// markdown does encode, and the renderer has read it since tables shipped —
+// this is the missing half, a way to write it.
+function cycleColumnAlign(view) {
+  const { state } = view
+  const pos = state.selection.main.head
+  // ensureSyntaxTree, not syntaxTree, for the reason buildTableDecorations
+  // gives: the parser works to a time budget and syntaxTree returns whatever
+  // it has, which in a long document need not yet include the table the
+  // cursor is sitting in.
+  const tree = ensureSyntaxTree(state, pos, 50) || syntaxTree(state)
+  let node = tree.resolveInner(pos, -1)
+  while (node && node.name !== 'Table') node = node.parent
+  if (!node) return false
+  // Table's own TableDelimiter child is the `| --- | --- |` row; the ones
+  // nested inside TableHeader and TableRow are the pipes between cells.
+  let delim = null
+  for (let c = node.firstChild; c; c = c.nextSibling) {
+    if (c.name === 'TableDelimiter') {
+      delim = c
+      break
+    }
+  }
+  if (!delim) return false
+  const row = state.doc.lineAt(pos)
+  const col = columnAt(row.text, pos - row.from)
+  const drow = state.doc.lineAt(delim.from)
+  const edit = setAlign(drow.text, col, nextAlign(alignAt(drow.text, col)))
+  if (!edit) return false
+  view.dispatch({
+    changes: { from: drow.from + edit.from, to: drow.from + edit.to, insert: edit.insert },
+  })
+  view.focus()
+  return true
+}
+
 // Clicking a rendered checkbox flips the character in the source — an
 // ordinary edit, so it syncs to collaborators and undoes like typing.
 // posAtDOM gives the widget's position, where the doc text is `[ ]`/`[x]`.
@@ -498,30 +729,78 @@ function handleCheckboxClick(event, view) {
   return true
 }
 
+// The toolbar, as data. `sep` is a visual divider; `options` makes an entry a
+// menu rather than a button, and its `run` takes the chosen value.
+//
+// All six heading levels are in a menu rather than six buttons. The menu is
+// stateless — it does not show the current line's level — because everything
+// else on this toolbar is a canned edit rather than a mode, and a control that
+// looked like state but only sometimes was would be worse than one that never
+// claims to be.
 export const toolbarCommands = [
   { label: 'B', title: 'Bold (⌘B)', run: toggleInline('**') },
   { label: 'I', title: 'Italic (⌘I)', run: toggleInline('*') },
   { label: 'S̶', title: 'Strikethrough', run: toggleInline('~~') },
   { label: '<>', title: 'Inline code (⌘E)', run: toggleInline('`') },
-  { label: 'H1', title: 'Heading 1', run: setHeading(1) },
-  { label: 'H2', title: 'Heading 2', run: setHeading(2) },
-  { label: 'H3', title: 'Heading 3', run: setHeading(3) },
-  { label: '•', title: 'Bullet list', run: toggleLinePrefix('- ') },
-  { label: '☑', title: 'Task list', run: toggleLinePrefix('- [ ] ') },
+  { sep: true },
+  {
+    label: 'Heading',
+    title: 'Heading level',
+    options: [
+      { label: 'Paragraph', value: 0 },
+      { label: 'Heading 1', value: 1 },
+      { label: 'Heading 2', value: 2 },
+      { label: 'Heading 3', value: 3 },
+      { label: 'Heading 4', value: 4 },
+      { label: 'Heading 5', value: 5 },
+      { label: 'Heading 6', value: 6 },
+    ],
+    run: (view, value) => setHeading(Number(value))(view),
+  },
+  { sep: true },
+  { label: '•', title: 'Bullet list', run: toggleListCmd('bullet') },
+  { label: '1.', title: 'Numbered list', run: toggleListCmd('ordered') },
+  { label: '☑', title: 'Task list', run: toggleListCmd('task') },
   { label: '❝', title: 'Quote', run: toggleLinePrefix('> ') },
+  { sep: true },
   { label: '🔗', title: 'Link (⌘K)', run: insertLink },
   { label: '🖼', title: 'Image', run: insertImage },
+  { sep: true },
   { label: '⊞', title: 'Table', run: insertTable },
+  { label: '≡', title: 'Table column alignment (cycles left / centre / right)', run: cycleColumnAlign },
+  { label: '</>', title: 'Code block', run: insertCodeBlock },
+  { label: '―', title: 'Horizontal rule', run: insertRule },
+  { label: '↵', title: 'Line break (⇧⏎)', run: insertHardBreak },
 ]
 
+// Nesting is Tab, list continuation is Enter — and Enter is already bound, at
+// Prec.high, by markdown()'s own keymap. Tab is bound here rather than there
+// because indentListCmd declines outside a list, which lets Tab keep moving
+// focus everywhere else.
 const formatKeymap = [
   { key: 'Mod-b', run: toggleInline('**') },
   { key: 'Mod-i', run: toggleInline('*') },
   { key: 'Mod-e', run: toggleInline('`') },
   { key: 'Mod-k', run: insertLink },
+  { key: 'Shift-Enter', run: insertHardBreak },
+  { key: 'Tab', run: indentListCmd(false) },
+  { key: 'Shift-Tab', run: indentListCmd(true) },
 ]
 
 // ---- editor construction --------------------------------------------------
+
+// One markdown configuration for both the live editor and the history
+// preview, so a document never renders two different ways.
+//
+// `codeLanguages` is what makes a ```go block actually parse as Go. The
+// grammars are *not* in the bundle: @codemirror/language-data is a table of
+// dynamic imports, so a language is fetched the first time a block declares
+// it, and a document with no code blocks pays nothing. See DESIGN-DECISIONS,
+// *Fenced code blocks*, for what that costs the build.
+const markdownSetup = () => [
+  markdown({ base: markdownLanguage, codeLanguages: languages }),
+  syntaxHighlighting(codeHighlight),
+]
 
 // Read-only standalone editor for previewing a historical state: same
 // markdown rendering (live preview, widgets, tables), no collaboration.
@@ -530,7 +809,7 @@ export function mountPreview({ parent, content }) {
     state: EditorState.create({
       doc: content,
       extensions: [
-        markdown({ base: markdownLanguage }),
+        markdownSetup(),
         livePreview,
         tableDecorations,
         EditorView.lineWrapping,
@@ -574,7 +853,7 @@ export function mountEditor({ parent, ytext, awareness, readOnly, onSelectionCha
   const undoManager = new Y.UndoManager(ytext)
   const extensions = [
     keymap.of([...yUndoManagerKeymap, ...formatKeymap, ...defaultKeymap]),
-    markdown({ base: markdownLanguage }),
+    markdownSetup(),
     readingTheme,
     livePreview,
     tableDecorations,

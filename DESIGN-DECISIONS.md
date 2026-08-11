@@ -186,6 +186,122 @@ Implementation (`prefs.js`, `ReadingPrefs.svelte`):
   finds. Deliberately *not* in the sheet view: nothing there would change,
   and a control that does nothing is worse than an absent one.
 
+### The plain-markdown constructs, and the five traps in shipping them
+
+Shipped 2026-08-11: H4–H6, numbered and nested lists, fenced code blocks with
+syntax highlighting, horizontal rules, hard line breaks, and a way to *write*
+table column alignment. These were the roadmap's "free" list — free because
+`lezer-markdown` already emits a node for every one of them, and the live
+preview is a decoration layer over that tree. A construct the parser does not
+report cannot be styled at all, which is the line between this batch and the
+next one (highlight, footnotes, callouts), where each item needs a parser
+extension before any of it is possible.
+
+Nothing here changes the document model. Every one is text a `.md` file
+already holds, so the git exporter needed no change and neither did the CRDT.
+
+**Enter was already right; Tab was the missing half.** `markdown()` installs
+its own keymap at `Prec.high`, binding Enter to `insertNewlineContinueMarkup`
+— so continuing a list and incrementing its number worked before any of this.
+What nothing bound was nesting. Tab is bound here rather than left to the
+language package because the command *declines* outside a list: an editor that
+swallows Tab everywhere is one a keyboard user cannot escape, so
+`indentListCmd` returns false unless the selection actually touches a list
+item, and Tab keeps moving focus everywhere else.
+
+**A nesting step is not two spaces.** It is the parent item's content column:
+2 under `- a`, but 3 under `1. a`, and 4 under `10. a`. Two spaces under a
+numbered item is not a nested list at all — CommonMark reads it as a lazy
+continuation of the same paragraph. Indent is therefore derived from the
+nearest preceding item the line could become a child of, which also caps it at
+one level: you cannot Tab past a level that does not exist yet.
+
+**Indenting does not renumber**, deliberately. A nested item keeps the number
+it had, so `2. two` indented becomes a nested list starting at 2. That is legal
+markdown and renders as written. The alternative was rejected on the multi-line
+case: renumbering the first line of a selection and not the rest is worse than
+renumbering none, and renumbering all of them destroys the relative numbering
+the selection came in with.
+
+**A rule needs a blank line above it.** `---` directly under a paragraph is a
+setext heading — it underlines the text above rather than drawing a rule. So
+`insertRule` emits the blank line itself when the current line has text.
+
+**Fence markers are dimmed, not hidden.** Every other marker in this editor is
+hidden unless the selection touches its construct, and applying that rule to
+` ``` ` is worse: the fence lines still exist, so the block renders with an
+empty line above and below it that reads as stray padding. They stay visible
+at low contrast, which also keeps the language tag readable.
+
+**Alignment was half-built already.** `table.js` has parsed `:---`/`:---:`/
+`---:` since tables shipped, and the widget has honoured it. What was missing
+was any way to *write* it, so this adds a command that cycles the column the
+cursor is in by rewriting one cell of the delimiter row — keeping the cell's
+width, so the pipes in the source stay lined up. Left is written as plain
+`---` rather than `:---`: markdown renders the two identically, so three
+states is the entire vocabulary. The command resolves the table through
+`ensureSyntaxTree`, not `syntaxTree`, for the reason `buildTableDecorations`
+already records — the parser works to a budget and the table under the cursor
+need not be in the tree yet.
+
+**Six heading levels are a menu, not six buttons.** The menu is stateless: it
+does not report the current line's level. Everything else on this toolbar is a
+canned text edit rather than a mode, and a control that looked like state but
+only sometimes was would be worse than one that never claims to be.
+
+**Found while doing this, and fixed:** the toolbar was gated on
+`role !== 'viewer'`, so a **commenter** saw it. A commenter's editor is mounted
+read-only for the reason `roles.js` states — the provider would send a doc
+update and the server would close the socket — but `EditorState.readOnly` only
+stops *user input*. A toolbar button is a programmatic `view.dispatch` and goes
+straight through it. Clicking Bold as a commenter edited the document and lost
+the connection. The gate is now `canEdit`. Same class of bug as the one
+`handleCheckboxClick` already guards against by hand.
+
+Pure logic lives in `mdtext.js` — list toggling, indentation, delimiter-row
+rewriting — with no CodeMirror import, by the rule `table.js` set: it takes
+strings and returns edits as plain offsets, so `mdtext_test.mjs` runs it in
+node with no DOM. Line edits are returned as *prefix* replacements rather than
+whole-line rewrites, because replacing a whole line drags the cursor to one end
+of it.
+
+### Fenced code blocks: highlighting costs 117 files, not 117 downloads
+
+`@codemirror/language-data` is the one dependency this batch adds — a table
+mapping a fence's language tag to a dynamic `import()` of its grammar. 29
+packages, 6 MB of `node_modules`.
+
+What it costs the *client* is small, and was measured rather than assumed: the
+eagerly-loaded bundle goes from 735 kB to 777 kB (+42 kB raw, ~13 kB gzipped),
+which is language-data's own lookup table. The 117 grammars are separate
+chunks, fetched the first time a block declares that language; a document with
+no code blocks pays nothing.
+
+That only holds because of a change to `manualChunks` in `vite.config.js`, and
+this is the trap: **naming a chunk overrides Rollup's dynamic-import
+splitting**. The existing rule sweeps anything matching `codemirror` or `lezer`
+into `vendor-editor`, which would have pulled all 117 grammars into the
+eagerly-loaded chunk and turned a 42 kB cost into roughly a megabyte. The
+config now returns undefined for `@codemirror/lang-*`, `@codemirror/legacy-modes`
+and the `@lezer/*` grammars, leaving the lazy boundary intact.
+
+What it does cost is the artifact: `web/static` goes from 4 JS files to 121,
+all of them embedded in the Go binary. If that is ever unwanted, the way out is
+not to filter `languages` at runtime — the `import()` calls are still in the
+source, so Rollup still emits every chunk — but to replace the table with a
+hand-written list of `LanguageDescription.of({...})` for the languages actually
+wanted, which drops the dependency entirely at the cost of an unknown tag
+falling back to plain text.
+
+The highlight style is ours and covers **only code tokens** — keyword, string,
+comment, number, name, type. `defaultHighlightStyle` also styles markdown's own
+tags (heading, strong, emphasis, link), which the live-preview decorations
+already own, and two rules fighting over the same span is how a heading ends up
+a colour nobody chose. The colours are CSS custom properties defined in
+`app.css` so the light/dark pair sits with the rest of the app's colours;
+unlike the `#8884` alpha trick used elsewhere, a syntax colour is a real hue and
+cannot serve both grounds.
+
 ### Threat model: trusted users, untrusted network
 
 The audience is **staff inside one company**, all authenticated, all known to
@@ -520,6 +636,12 @@ Real byte savings would need route-level lazy loading, so that opening a
 sheet never fetches the markdown editor at all. Deferred: it costs a
 loading state in the router, and on a self-hosted LAN app the first-visit
 cost is a fraction of a second, once.
+
+One exception exists and is load-bearing: the code-block grammars are lazy,
+and `manualChunks` has to *decline* to name them or they stop being. See
+*Fenced code blocks* — naming a chunk overrides Rollup's dynamic-import
+splitting, so the rule above would otherwise have dragged all 117 of them
+into `vendor-editor`.
 
 
 ~~Interim policy: everything no-cache, because the esbuild bundle was

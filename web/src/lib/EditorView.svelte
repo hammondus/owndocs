@@ -183,16 +183,43 @@
   {/if}
 </p>
 
-{#if doc.role !== 'viewer'}
+<!-- canEdit, not `role !== 'viewer'`. A commenter is mounted read-only for the
+     reason roles.js states — the provider would send a doc update and the
+     server would close the socket — but EditorState.readOnly only stops *user
+     input*. A toolbar button is a programmatic dispatch and goes straight
+     through it, so a commenter clicking Bold used to edit the document and
+     lose the connection. -->
+{#if canEdit(doc.role)}
   <div class="toolbar">
-    {#each toolbarCommands as cmd (cmd.title)}
-      <!-- onmousedown preventDefault keeps focus (and the text selection)
-           inside the editor while the button is clicked -->
-      <button
-        title={cmd.title}
-        onmousedown={(e) => e.preventDefault()}
-        onclick={() => cmd.run(view)}
-      >{cmd.label}</button>
+    {#each toolbarCommands as cmd, i (i)}
+      {#if cmd.sep}
+        <span class="sep" aria-hidden="true"></span>
+      {:else if cmd.options}
+        <!-- A menu, not a mode: it never reports the current heading level, so
+             it resets to its own label after every choice. Unlike the buttons
+             this one cannot preventDefault on mousedown — that would stop it
+             opening — so it takes focus away from the editor. Harmless: the
+             selection lives in CodeMirror's state, not in the DOM, and the
+             command puts focus back when it is done. -->
+        <select
+          title={cmd.title}
+          aria-label={cmd.title}
+          onchange={(e) => { cmd.run(view, e.currentTarget.value); e.currentTarget.value = '' }}
+        >
+          <option value="" disabled selected>{cmd.label}</option>
+          {#each cmd.options as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      {:else}
+        <!-- onmousedown preventDefault keeps focus (and the text selection)
+             inside the editor while the button is clicked -->
+        <button
+          title={cmd.title}
+          onmousedown={(e) => e.preventDefault()}
+          onclick={() => cmd.run(view)}
+        >{cmd.label}</button>
+      {/if}
     {/each}
   </div>
 {/if}

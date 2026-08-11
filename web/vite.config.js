@@ -20,6 +20,13 @@ export default defineConfig({
         // code-only deploy leaves the vendor chunks cached.
         manualChunks(id) {
           if (!id.includes('node_modules')) return
+          // Code-block grammars must NOT be named here. @codemirror/language-data
+          // reaches them through dynamic import(), so Rollup would otherwise
+          // split them out and load one only when a fenced block asks for it —
+          // but naming a chunk overrides that, and all ~130 of them would land
+          // in the eagerly-loaded editor chunk. Returning undefined leaves the
+          // lazy boundary intact.
+          if (/@codemirror\/(lang-|legacy-modes)|@lezer\/(?!common|highlight|markdown)/.test(id)) return
           if (id.includes('codemirror') || id.includes('lezer')) return 'vendor-editor'
           if (/yjs|y-protocols|y-codemirror|lib0/.test(id)) return 'vendor-sync'
           return 'vendor'

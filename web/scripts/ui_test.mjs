@@ -140,6 +140,35 @@ const loggedRows = (page) =>
 const textOf = (page, sel) =>
   page.evaluate((s) => document.querySelector(s)?.textContent?.trim() ?? null, sel)
 
+// What the editor is *showing*. innerText rather than textContent, because it
+// keeps the line breaks.
+//
+// This is not the document. Live preview replaces source with widgets, so a
+// horizontal rule reads as nothing, a hard break's backslash reads as "↵", and
+// a table outside the cursor reads as its rendered cells. Anything replaced by
+// a widget has to be asserted on the DOM that widget drew — which is a
+// stronger assertion anyway: the widget cannot render unless the parser found
+// the construct, and it cannot find it unless the source is right.
+const docText = (page) =>
+  page.evaluate(() => document.querySelector('.cm-content').innerText)
+
+// Assert on the document text, and on failure say what is actually in it.
+// "Waiting failed: 3000ms exceeded" for a markdown edit sends you back to the
+// browser by hand; whitespace is the whole point of half these assertions and
+// the step reporter collapses it.
+async function waitForDoc(page, re) {
+  try {
+    await page.waitForFunction(
+      (src, flags) => new RegExp(src, flags).test(document.querySelector('.cm-content').innerText),
+      { timeout: 3000 },
+      re.source,
+      re.flags,
+    )
+  } catch {
+    throw new Error(`expected ${re} in the document, which holds:\n  ${JSON.stringify(await docText(page))}`)
+  }
+}
+
 // ---- the run ---------------------------------------------------------------
 
 // A watchdog, because a hung UI test is worse than a failing one: it stalls
@@ -548,6 +577,124 @@ try {
         return t.includes('second line') && !t.includes('A THIRD LINE')
       },
       { timeout: 8000 },
+    )
+  })
+
+  // The markdown toolbar. Run last and in a document of its own, so the text
+  // it leaves behind is nobody else's problem — and started from an empty
+  // document, so no step here has to guess where the cursor is.
+  //
+  // Most of these are canned text edits, and the assertion is the markdown
+  // they produced. The exceptions are the ones that *render*: a rule and a
+  // hard break are widgets, and the only proof they work is the DOM they draw.
+  await step('open a document for the toolbar', async () => {
+    await clickText(page, 'a', '← documents')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI toolbar doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    await page.focus('.cm-content')
+  })
+
+  // The heading menu is the control most at risk of the dead-control failure:
+  // it is the first thing on this toolbar that is not a <button>, and it lives
+  // inside the same {#each}. H4 specifically, because H1–H3 were reachable
+  // before and H4–H6 are what the menu was added for.
+  await step('the heading menu sets a level the old buttons could not', async () => {
+    await page.keyboard.type('Deep heading')
+    await page.select('.toolbar select', '4')
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.md-h4') &&
+        document.querySelector('.cm-content').innerText.includes('#### Deep heading'),
+      { timeout: 3000 },
+    )
+    // Back to a paragraph: the menu's first real entry has to undo as well as
+    // apply, or it is a one-way door.
+    await page.select('.toolbar select', '0')
+    await page.waitForFunction(() => !document.querySelector('.md-h4'), { timeout: 3000 })
+  })
+
+  await step('a numbered list nests with Tab', async () => {
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('one')
+    await clickText(page, 'button', '1.')
+    await waitForDoc(page, /^1\. one$/m)
+    // Enter continues the list — markdown()'s own keymap, not ours — and Tab
+    // nests. Three spaces, not two: a numbered marker puts its children at
+    // column 3, and two would leave this a lazy continuation of "one".
+    //
+    // The nested item stays "2.", it does not become "1.". Indenting does not
+    // renumber, deliberately: renumbering one line of a multi-line selection
+    // is worse than renumbering none, and a list starting at 2 is legal
+    // markdown. See DESIGN-DECISIONS, *Lists*.
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('two')
+    await page.keyboard.press('Tab')
+    await waitForDoc(page, /^1\. one\n {3}2\. two$/m)
+    await page.keyboard.down('Shift')
+    await page.keyboard.press('Tab')
+    await page.keyboard.up('Shift')
+    await waitForDoc(page, /^1\. one\n2\. two$/m)
+  })
+
+  // Alignment is the one piece of appearance markdown encodes, and the widget
+  // has honoured it since tables shipped. This covers the half that was
+  // missing: writing it. Before the code block, because a table inserted while
+  // the cursor is inside a fence is not a table.
+  await step('table column alignment cycles through the delimiter row', async () => {
+    await clickText(page, 'button', '⊞')
+    await waitForDoc(page, /\| ------ \| ------ \|/)
+    await clickText(page, 'button', '≡')
+    await waitForDoc(page, /\| :----: \| ------ \|/)
+    await clickText(page, 'button', '≡')
+    await waitForDoc(page, /\| -----: \| ------ \|/)
+  })
+
+  await step('a rule and a hard break render as themselves', async () => {
+    // Out of the table first: everything below appends after the cursor's
+    // line, and inside a table that would be a table row.
+    await page.keyboard.down('Meta')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.up('Meta')
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('before')
+    await clickText(page, 'button', '―')
+    await page.keyboard.type('split')
+    await page.keyboard.down('Shift')
+    await page.keyboard.press('Enter')
+    await page.keyboard.up('Shift')
+    await page.keyboard.type('after')
+    // Asserted on the widgets, not on the text: both constructs are replaced
+    // in the rendered DOM, so `---` and the trailing `\` are not in innerText
+    // at all. See docText.
+    await page.waitForFunction(
+      () => document.querySelector('.md-hr') && document.querySelector('.md-break'),
+      { timeout: 3000 },
+    )
+    // The break has to be *between* the two halves, not merely present.
+    await waitForDoc(page, /^split↵\nafter$/m)
+  })
+
+  // The one step that proves the language table is wired up end to end: the
+  // grammar is not in the bundle, so this only passes if the dynamic import
+  // fired, resolved, and re-parsed the block. Asserted as "some token is not
+  // the colour of ordinary text", which does not care which hue it landed on.
+  await step('a fenced code block loads its language and colours it', async () => {
+    await page.keyboard.press('Enter')
+    await clickText(page, 'button', '</>')
+    await page.keyboard.type('js')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.type('const answer = 42')
+    await waitForDoc(page, /^```js$/m)
+    await page.waitForFunction(
+      () => {
+        const base = getComputedStyle(document.querySelector('.cm-content')).color
+        return [...document.querySelectorAll('.md-codeblock span')].some(
+          (s) => s.textContent.trim() && getComputedStyle(s).color !== base,
+        )
+      },
+      { timeout: 10000 },
     )
   })
 } finally {

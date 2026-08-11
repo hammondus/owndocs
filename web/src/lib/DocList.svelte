@@ -6,7 +6,7 @@
   import { canEdit } from '../roles.js'
   import ReadingPrefs from './ReadingPrefs.svelte'
 
-  let { me, onOpen, onShare, onSignOut } = $props()
+  let { me, onOpen, onShare } = $props()
 
   let docs = $state([])
   let newTitle = $state('')
@@ -94,19 +94,27 @@
   }
 </script>
 
-<p>
-  Signed in as {me.name} &lt;{me.email}&gt; —
-  <a href="#signout" onclick={(e) => { e.preventDefault(); onSignOut() }}>sign out</a>
-</p>
-
-<p>
-  <button onclick={() => { showInvites = !showInvites; if (showInvites) loadInvites() }}>
+<!-- The create field is the first thing on the screen because it is the reason
+     anyone comes here with nothing open. Secondary actions sit to its right,
+     quiet, in the same row. -->
+<form class="create" onsubmit={createDoc}>
+  <!-- bind:value keeps the input and the newTitle variable in sync both ways -->
+  <input placeholder="new document title" bind:value={newTitle} />
+  <select bind:value={newKind}>
+    <option value="doc">doc</option>
+    <option value="sheet">sheet</option>
+  </select>
+  <button class="primary">Create</button>
+  <span class="spacer"></span>
+  <button onclick={(e) => { e.preventDefault(); showInvites = !showInvites; if (showInvites) loadInvites() }}>
     {showInvites ? 'hide' : 'invite someone'}
   </button>
-  <button onclick={() => (showReading = !showReading)} title="How documents render for you">
-    Aa reading
-  </button>
-</p>
+  <button
+    onclick={(e) => { e.preventDefault(); showReading = !showReading }}
+    class:pressed={showReading}
+    title="How documents render for you"
+  >Aa reading</button>
+</form>
 
 {#if showReading}
   <!-- No editor to re-measure from here, so onChanged has nothing to do: the
@@ -149,15 +157,10 @@
   </fieldset>
 {/if}
 
-<form onsubmit={createDoc}>
-  <!-- bind:value keeps the input and the newTitle variable in sync both ways -->
-  <input placeholder="new document title" bind:value={newTitle} />
-  <select bind:value={newKind}>
-    <option value="doc">doc</option>
-    <option value="sheet">sheet</option>
-  </select>
-  <button>Create</button>
-</form>
+<div class="section">
+  <span class="label">Documents</span>
+  <span class="readout">{docs.length}</span>
+</div>
 
 <ul>
   <!-- The (doc.id) key tells Svelte which <li> belongs to which doc when
@@ -167,6 +170,7 @@
       {#if renamingId === doc.id}
         <!-- svelte-ignore a11y_autofocus -->
         <input
+          class="rename"
           autofocus
           value={doc.title}
           onblur={(e) => commitRename(e, doc)}
@@ -176,44 +180,91 @@
           }}
         />
       {:else}
-        <a
-          href={'#doc=' + doc.id}
-          title="Double-click to rename"
-          onclick={(e) => { e.preventDefault(); onOpen(doc) }}
-          ondblclick={(e) => { e.preventDefault(); if (canEdit(doc.role)) renamingId = doc.id }}
-        >{doc.title}</a>
+        <div class="name">
+          <a
+            href={'#doc=' + doc.id}
+            title="Double-click to rename"
+            onclick={(e) => { e.preventDefault(); onOpen(doc) }}
+            ondblclick={(e) => { e.preventDefault(); if (canEdit(doc.role)) renamingId = doc.id }}
+          >{doc.title}</a>
+          <!-- Kind and role are what the machine knows about this row, so they
+               are a readout, under the name rather than beside it. -->
+          <span class="meta label">{doc.kind} · {doc.role}</span>
+        </div>
       {/if}
-      <span class="kind">{doc.kind}</span>
-      {doc.role}
       {#if doc.role === 'owner'}
-        <button onclick={() => onShare(doc)}>share</button>
-        <button onclick={() => deleteDoc(doc)}>delete</button>
+        <!-- Quiet until the row is under the pointer or holds focus. They are
+             still in the tab order and still announced; what changes is how
+             loudly a list of twenty rows shouts at you. -->
+        <span class="actions">
+          <button onclick={() => onShare(doc)}>share</button>
+          <button class="danger" onclick={() => deleteDoc(doc)}>delete</button>
+        </span>
       {/if}
     </li>
   {/each}
+  {#if !docs.length}
+    <li class="empty">Nothing here yet. Name one above and it opens straight away.</li>
+  {/if}
 </ul>
 
 <style>
   /* Component-scoped: these rules only apply to elements in THIS file.
      Svelte adds a hash class to both the elements and the selectors. */
+  .create {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .create input { flex: 0 1 22rem; }
+  .create .spacer { flex: 1; }
+
   ul {
     list-style: none;
+    margin: 0;
     padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    background: var(--surface);
+    overflow: hidden;
   }
   li {
     display: flex;
-    gap: 0.5rem;
-    align-items: baseline;
-    padding: 0.25rem 0;
+    gap: 8px;
+    align-items: center;
+    padding: 9px 12px;
+    /* The caret rule: transparent until the row is live, so a hover does not
+       shift anything sideways. */
+    border-left: 2px solid transparent;
   }
-  li a {
-    flex: 1;
+  li + li { border-top: 1px solid var(--line); }
+  li:hover { background: var(--surface-2); border-left-color: var(--signal); }
+  li:focus-within { border-left-color: var(--signal); }
+
+  .name { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+  .name a {
+    color: var(--ink);
+    font-size: var(--t-title);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .kind {
-    font-size: 0.75rem;
-    opacity: 0.6;
-    border: 1px solid currentColor;
-    border-radius: 3px;
-    padding: 0 4px;
+  li:hover .name a { color: var(--signal); }
+  .meta { text-transform: uppercase; }
+  .rename { flex: 1; font-size: var(--t-title); }
+
+  .actions { display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+  li:hover .actions, li:focus-within .actions { opacity: 1; }
+  /* Never hidden from the keyboard: a focused control inside a "hidden" group
+     brings the whole group back. */
+  @media (hover: none) {
+    .actions { opacity: 1; }
+  }
+
+  .empty {
+    color: var(--ink-3);
+    font-size: var(--t-base);
+    padding: 18px 12px;
   }
 </style>

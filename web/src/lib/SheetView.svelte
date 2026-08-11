@@ -1159,23 +1159,28 @@
 
 <svelte:window onmousemove={onMouseMove} onmouseup={onMouseUp} />
 
-<p>
-  <a href="#list" onclick={(e) => { e.preventDefault(); onBack() }}>← documents</a>
+<div class="viewbar">
+  <a class="back" href="#list" title="Back to documents" aria-label="Back to documents"
+     onclick={(e) => { e.preventDefault(); onBack() }}>←</a>
   <DocTitle {doc} canRename={canEdit(doc.role)} {onRenamed} />
+  <span class="label kind">{doc.role}</span>
+
+  <span class="spacer"></span>
+
+  <!-- Outside the editing toolbar on purpose: viewers read comments and
+       commenters write them, and neither sees that toolbar. -->
+  <button class="linkish" onclick={() => (showComments = !showComments)}>
+    comments{openComments ? ` (${openComments})` : ''}
+  </button>
   {#if doc.role === 'owner'}
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}
   <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
-  <!-- Outside the editing toolbar on purpose: viewers read comments and
-       commenters write them, and neither sees that toolbar. -->
-  <button class="linkish" onclick={() => (showComments = !showComments)}>
-    💬 comments{openComments ? ` (${openComments})` : ''}
-  </button>
-  <span class="status">{status}</span>
-  {#if peerCount > 1}
-    <span class="status">{peerCount} online</span>
-  {/if}
-</p>
+
+  <span class="status readout" class:live={status === 'synced'}>
+    <span class="dot"></span>{status}{peerCount > 1 ? ` · ${peerCount} online` : ''}
+  </span>
+</div>
 
 {#if !readOnly}
   <div class="toolbar">

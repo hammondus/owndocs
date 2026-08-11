@@ -1,14 +1,135 @@
-/* Global styles. Shell layout lives here plus everything CodeMirror-related:
-   CM renders its own DOM outside Svelte components, so its classes (cm-*,
-   md-*) can't use Svelte's scoped styles and must be global. */
+/* Global styles: the token system, the shell, control styling, and everything
+   CodeMirror-related — CM renders its own DOM outside Svelte components, so its
+   classes (cm-*, md-*) can't use Svelte's scoped styles and must be global.
 
-:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-body { margin: 0; padding: 1rem; }
+   ── The idea ──────────────────────────────────────────────────────────────
+   This interface is instrumentation around a plain text file. The document is
+   the subject; everything else is a readout. So the chrome is deliberately
+   *smaller and quieter* than the text it surrounds, and is typeset in the same
+   visual language markdown's own markers use here — monospace, low contrast,
+   uppercase micro-labels. The one place with air is the document.
 
-/* The reading-width limit belongs to prose, not to the window: a markdown
+   The signature is the caret rule: a 2px vertical bar in the signal colour
+   meaning "this is the live one". It marks the wordmark, a focused field, the
+   contents entry you are inside, and the row under the pointer. One device,
+   one meaning, used everywhere.
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  color-scheme: light dark;
+
+  /* Ink ramp, cool rather than warm: instrument casing, not paper. */
+  --ground: #f4f6f8;
+  --surface: #ffffff;
+  --surface-2: #eef1f4;
+  --line: #dde2e8;
+  --line-strong: #c2cad4;
+  --ink: #14171c;
+  --ink-2: #545c68;
+  --ink-3: #858f9c;
+
+  /* One accent. It means "live", "yours", or "here" — never decoration. */
+  --signal: #2f5fe0;
+  --signal-soft: #e9eefc;
+  /* What goes ON the signal colour. Dark mode lightens the signal so it reads
+     against a dark ground, and white text on it drops below any usable
+     contrast — so the pair moves together. */
+  --on-signal: #ffffff;
+  --danger: #c0392b;
+
+  /* System stacks only. No font files to ship, so no assets, no licensing and
+     nothing to load before text can paint — the same rule the reading
+     preferences follow, and for the same reason. Personality comes from size,
+     weight and tracking instead of from a face nobody else has. */
+  --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Chrome type sits *below* the document's 16px on purpose. The size
+     difference is what makes the document read as the subject. */
+  --t-micro: 10.5px;
+  --t-small: 11.5px;
+  --t-base: 13px;
+  --t-title: 15px;
+  --track: 0.085em; /* micro-labels only; tracking is what makes them legible */
+
+  --r: 3px;
+  --bar: 44px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #0e1014;
+    --surface: #16191e;
+    --surface-2: #1e222a;
+    --line: #262b33;
+    --line-strong: #39414d;
+    --ink: #e7eaef;
+    --ink-2: #a4adba;
+    --ink-3: #717b8a;
+    --signal: #7f9cff;
+    --signal-soft: #1b2440;
+    --on-signal: #0e1014;
+    --danger: #e06c5c;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: var(--t-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- the app bar ---------------------------------------------------------
+   Full bleed and fixed height, so every screen starts at the same line. */
+
+.appbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--bar);
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+/* The caret rule, first appearance. `docs` set as a micro-label makes the
+   product name a readout rather than a logo, which is the whole conceit. */
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  font-weight: 600;
+  letter-spacing: var(--track);
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.wordmark::before {
+  content: "";
+  width: 2px;
+  height: 14px;
+  background: var(--signal);
+  border-radius: 1px;
+}
+.appbar .spacer { flex: 1; }
+/* Navigation is not an accent. The signal colour means "live / yours / here",
+   and spending it on every link in a bar leaves nothing for it to say. Bar
+   actions are ink until you point at them. */
+.appbar a, .appbar button.linkish { color: var(--ink-3); }
+.appbar a:hover, .appbar button.linkish:hover { color: var(--ink); }
+
+/* ---- page ---------------------------------------------------------------
+   The reading-width limit belongs to prose, not to the window: a markdown
    document wants a comfortable line length, a spreadsheet wants the whole
    screen. So it lives on the page wrapper, and the sheet view opts out. */
-.page { max-width: 52rem; margin: 0 auto; }
+.page { max-width: 52rem; margin: 0 auto; padding: 20px 16px 64px; }
 .page.wide { max-width: none; }
 /* A contents column needs room that is not taken from the prose. `:has()` so
    the width follows the editor's own markup: the page wrapper lives in
@@ -16,56 +137,297 @@ body { margin: 0; padding: 1rem; }
    learn about the other to get this right. */
 .page:has(.doc-layout.with-toc) { max-width: 66rem; }
 
-/* The sheet editor fills the window instead of guessing at a height. The
-   grid is the flex child that absorbs whatever is left, so opening the
-   scripts panel shrinks the grid rather than making the whole page taller
-   than the viewport — which is what used to let a click scroll the page. */
-.page.fill { display: flex; flex-direction: column; height: calc(100vh - 2rem); }
-h1 { font-size: 1.2rem; }
-fieldset { border: 1px solid #8884; border-radius: 6px; margin-bottom: 1rem; }
-input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; }
-.err { color: #c33; }
+/* The sheet editor fills the window instead of guessing at a height. The grid
+   is the flex child that absorbs whatever is left, so opening the scripts
+   panel shrinks the grid rather than making the whole page taller than the
+   viewport — which is what used to let a click scroll the page. */
+.page.fill {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--bar));
+  padding-bottom: 12px;
+}
 
-/* editor chrome */
-.toolbar { display: flex; gap: .25rem; margin: .5rem 0; flex-wrap: wrap; }
-.toolbar button { min-width: 2.2rem; padding: .25rem .4rem; border: 1px solid #8884;
-                  border-radius: 4px; background: transparent; cursor: pointer; }
-.toolbar button:hover { background: #8882; }
+/* ---- shared chrome vocabulary -------------------------------------------- */
+
+/* A micro-label: the chrome's smallest unit of meaning. Typeset exactly like a
+   dimmed markdown marker, because that is what it is — a mark that tells you
+   what a thing is without competing with the thing. */
+.label {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: var(--track);
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* A readout: mono, for anything the machine is telling you — a status, a
+   count, a role, a timestamp. Distinct from a label, which names a thing. */
+.readout {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+/* A section rule with its label sitting on it. The rule carries the label
+   rather than the label floating above a box, so a section costs one line. */
+.section {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 24px 0 6px;
+}
+.section::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+h1, h2, h3, h4 { margin: 0 0 8px; font-weight: 600; line-height: 1.25; }
+h1 { font-size: var(--t-title); margin: 0; }
+h2 { font-size: 14px; }
+/* An h3 in this app is always a section heading inside a panel, so it is set
+   as a micro-label rather than as prose. */
+h3, h4 {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: var(--track);
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 600;
+  margin: 16px 0 6px;
+}
+p { margin: 0 0 10px; }
+
+/* A view's own bar, under the app bar: where you are, what you can do to it,
+   and what the connection is doing. Global rather than per-component because
+   four views want the identical object, and four copies of it is how they
+   drift apart — which is exactly what had happened to the four back links. */
+.viewbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  min-height: 26px;
+}
+.viewbar .spacer { flex: 1; }
+/* Navigation is not the accent. The signal colour means "live / yours / here",
+   and spending it on every link in a bar leaves nothing for it to say. */
+.viewbar a, .viewbar button.linkish { color: var(--ink-2); }
+.viewbar a:hover, .viewbar button.linkish:hover { color: var(--signal); }
+/* An arrow alone. The destination is one click away and always the same place,
+   so the word was costing a third of the bar to say "documents". It carries an
+   aria-label, since an arrow is not a name. */
+.viewbar .back {
+  color: var(--ink-3);
+  font-size: var(--t-title);
+  line-height: 1;
+  padding: 2px 4px;
+}
+.viewbar .back:hover { color: var(--ink); text-decoration: none; }
+.viewbar .kind { text-transform: uppercase; }
+
+/* A status light: the dot carries the state, the words explain it. Green only
+   when the document is actually reconciled with the server. */
+.viewbar .status { display: flex; align-items: center; gap: 6px; color: var(--ink-3); }
+.viewbar .status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); }
+.viewbar .status.live .dot { background: #2e9e5b; }
+
+a { color: var(--signal); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---- controls ------------------------------------------------------------
+   A standalone button looks like a button. The first pass made every button
+   borderless, which reads well in a dense toolbar — grouping and hover carry
+   it there — and badly everywhere else: "Add", "Pin" and "New viewer link"
+   became indistinguishable from static text. So the border is the default and
+   the toolbar is what opts out of it. */
+
+button, input, select, textarea {
+  font: inherit;
+  font-size: var(--t-base);
+  color: inherit;
+}
+
+button {
+  padding: 5px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+  cursor: pointer;
+  line-height: 1.2;
+}
+button:hover { background: var(--surface-2); }
+button:active { background: var(--line); }
+
+/* The one button per screen that does the thing you came for. */
+button.primary {
+  background: var(--signal);
+  border-color: var(--signal);
+  color: var(--on-signal);
+  font-weight: 500;
+}
+button.primary:hover { filter: brightness(1.08); }
+button.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+/* Sits with links rather than with buttons: it toggles a panel instead of
+   navigating, but reads as part of the same row. */
+button.linkish {
+  padding: 0;
+  border-color: transparent;
+  color: var(--signal);
+  background: none;
+}
+button.linkish:hover { background: none; text-decoration: underline; }
+
+input, select, textarea {
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--ink);
+}
+input::placeholder, textarea::placeholder { color: var(--ink-3); }
+
+/* The caret rule again: focus grows a signal-coloured left edge rather than a
+   ring, so "where am I" is the same mark everywhere in the app. */
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: inset 2px 0 0 var(--signal);
+}
+button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
+}
+
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  padding: 12px 14px;
+  margin: 0 0 16px;
+}
+legend { font-family: var(--mono); font-size: var(--t-micro);
+         letter-spacing: var(--track); text-transform: uppercase; color: var(--ink-3); }
+
+.err { color: var(--danger); }
+
+/* A panel that opens under the toolbar — reading preferences, emoji, comments.
+   Deliberately the same object each time, so a drawer is recognisable. */
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.panel .head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.panel .head strong {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: var(--track);
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+.panel .spacer { flex: 1; }
+.panel .note { font-size: var(--t-small); color: var(--ink-3); margin: 6px 0 0; }
+
+/* ---- editor chrome ------------------------------------------------------- */
+
+.toolbar {
+  display: flex;
+  gap: 1px;
+  align-items: stretch;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.toolbar button {
+  min-width: 24px;
+  padding: 3px 5px;
+  border-color: transparent;
+  background: transparent;
+  font-size: var(--t-base);
+  color: var(--ink-2);
+}
+.toolbar button:hover { background: var(--surface-2); color: var(--ink); }
 /* A toolbar button that opens a drawer stays lit while it is open, so it reads
    as a toggle rather than as a command that did nothing. */
-.toolbar button.pressed { background: #8883; border-color: #888a; }
-.toolbar select { padding: .25rem .3rem; margin: 0; border: 1px solid #8884;
-                  border-radius: 4px; background: transparent; }
-.toolbar .sep { align-self: stretch; width: 1px; background: #8884; margin: .1rem .2rem; }
-/* Chrome only. The reading preferences (font, size, line height, measure) are
-   applied by a CodeMirror theme in editor.js — an app rule of this specificity
-   loses to CodeMirror's base theme, which is what made the first attempt look
-   like it worked for size and nothing else. */
-.cm-editor { border: 1px solid #8884; border-radius: 6px; height: 72vh; }
-.cm-editor.cm-focused { outline: none; border-color: #888a; }
-.cm-content { padding: 1rem; }
+.toolbar button.pressed { background: var(--signal-soft); color: var(--signal); }
+/* Fixed width, or the select sizes itself to its widest option — "📣 Important"
+   — and two menus alone push a 24-control toolbar onto a second line. The
+   options are still full width when the menu is open, which is the only time
+   their length matters. */
+.toolbar select {
+  width: 5rem;
+  padding: 3px 4px;
+  border-color: transparent;
+  background: transparent;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+.toolbar select:hover { background: var(--surface-2); }
+.toolbar .sep { align-self: stretch; width: 1px; background: var(--line); margin: 2px 3px; }
 
-/* live preview styling — classes attached by editor.js decorations */
+.cm-editor {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  height: 72vh;
+}
+.cm-editor.cm-focused { outline: none; border-color: var(--line-strong); }
+.cm-content { padding: 20px 16px; }
+/* CodeMirror paints its own gutterless background; the document is the one
+   surface in the app that gets to be plain paper. */
+.cm-scroller { background: var(--surface); border-radius: var(--r); }
+
+/* ---- live preview: classes attached by editor.js decorations -------------- */
+
 .md-strong { font-weight: 700; }
 .md-em { font-style: italic; }
 .md-strike { text-decoration: line-through; }
-.md-code { font-family: ui-monospace, monospace; font-size: .9em;
-           background: #8882; border-radius: 3px; padding: 0 .2em; }
-.md-link { color: #4a8fdd; text-decoration: underline; }
-.md-dim { opacity: .45; }
-.md-heading { font-weight: 700; }
-.md-h1 { font-size: 1.7em; }
-.md-h2 { font-size: 1.4em; }
-.md-h3 { font-size: 1.2em; }
-.md-h4, .md-h5, .md-h6 { font-size: 1.05em; }
+.md-code { font-family: var(--mono); font-size: .9em;
+           background: var(--surface-2); border-radius: var(--r); padding: 0 .25em; }
+.md-link { color: var(--signal); text-decoration: underline; }
+.md-dim { opacity: .4; }
+.md-heading { font-weight: 700; letter-spacing: -0.01em; }
+.md-h1 { font-size: 1.6em; }
+.md-h2 { font-size: 1.35em; }
+.md-h3 { font-size: 1.15em; }
+.md-h4, .md-h5, .md-h6 { font-size: 1.02em; }
 /* `.cm-line` qualified, on every rule that sets padding. CodeMirror's base
    theme sets `.cm-line { padding: 0 2px 0 6px }`, and its injected styles beat
    an app rule of EQUAL specificity — the same trap the reading preferences hit,
    recorded in DESIGN-DECISIONS. A bare `.md-blockquote { padding-left }` lost
-   silently, so quotes have been shipping with their text flush against the
-   rule since blockquotes landed. Two classes is (0,2,0) against (0,1,0), which
-   wins on specificity rather than on load order. */
-.cm-line.md-blockquote { border-left: 3px solid #8886; padding-left: .6rem; opacity: .85; }
+   silently, so quotes shipped with their text flush against the rule. Two
+   classes is (0,2,0) against (0,1,0), which wins on specificity rather than on
+   load order. */
+.cm-line.md-blockquote { border-left: 2px solid var(--line-strong); padding-left: .7rem; color: var(--ink-2); }
+.md-codeblock { font-family: var(--mono); font-size: .9em; background: var(--surface-2); }
+.md-task-checkbox { margin: 0 .35em 0 0; vertical-align: middle; cursor: pointer; accent-color: var(--signal); }
+.md-table { border-collapse: collapse; margin: .4em 0; cursor: default; font-size: .95em; }
+.md-table th, .md-table td { border: 1px solid var(--line); padding: .3em .7em; }
+.md-table th { background: var(--surface-2); font-weight: 600; }
+.md-table-src { font-family: var(--mono); font-size: .9em; }
+.md-image { max-width: 100%; max-height: 60vh; border-radius: var(--r); vertical-align: bottom; }
+.md-image-broken { color: var(--danger); font-size: .85em; border: 1px dashed var(--danger);
+                   border-radius: var(--r); padding: 0 .3em; }
+/* A horizontal rule, standing in for `---` on its own line. inline-block so
+   the line keeps its height and the cursor can still be placed there. */
+.md-hr { display: inline-block; width: 100%; vertical-align: middle; border-top: 1px solid var(--line-strong); }
+/* The `\` of a hard line break. Dim: it is punctuation, not content. */
+.md-break { opacity: .4; font-size: .85em; }
 
 /* Highlight keeps its own text colour. A highlighter pen is a light ground by
    definition, so inheriting the dark-mode foreground would make it unreadable
@@ -85,9 +447,9 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
 /* Callouts: a blockquote whose first line names a kind. The colour is set per
    kind on the line, and the label reads it back, so there is one source for
    both the rule and the heading. */
-.cm-line.md-callout { border-left: 3px solid var(--callout); padding-left: .6rem; background: #8881; }
+.cm-line.md-callout { border-left: 2px solid var(--callout); padding-left: .7rem; background: var(--surface-2); }
 .md-callout-label { font-weight: 700; color: var(--callout); }
-.md-callout-note      { --callout: #4a8fdd; }
+.md-callout-note      { --callout: #3b7fd4; }
 .md-callout-tip       { --callout: #2e9e5b; }
 .md-callout-important { --callout: #8b5cf6; }
 .md-callout-warning   { --callout: #d99000; }
@@ -102,32 +464,19 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
    are a pair — and both are clickable, so the number is styled like the link
    it behaves as. Raised the same way superscript is, and for the same reason:
    vertical-align would grow the line box CodeMirror has already measured. */
-.md-fn-num { color: #4a8fdd; cursor: pointer; }
+.md-fn-num { color: var(--signal); cursor: pointer; }
 .md-fn-ref { font-size: .78em; position: relative; top: -.4em; }
 /* The definition's number sits on the baseline — it is a list marker there,
    not a citation. */
 .md-fn-def { font-size: .85em; font-weight: 600; margin-right: .4em; }
 /* A reference citing nothing. It keeps its number, since dropping it would
    renumber every note after it, but says that the other half is missing. */
-.md-fn-missing { color: #c33; text-decoration: underline dotted; }
-.cm-line.md-footnote { font-size: .92em; padding-left: 1.2rem; opacity: .9; }
-.md-codeblock { font-family: ui-monospace, monospace; font-size: .9em; background: #8881; }
-.md-task-checkbox { margin: 0 .35em 0 0; vertical-align: middle; cursor: pointer; }
-.md-table { border-collapse: collapse; margin: .3em 0; cursor: default; }
-.md-table th, .md-table td { border: 1px solid #8885; padding: .25em .6em; }
-.md-table th { background: #8881; }
-.md-table-src { font-family: ui-monospace, monospace; font-size: .9em; }
-.md-image { max-width: 100%; max-height: 60vh; border-radius: 4px; vertical-align: bottom; }
-.md-image-broken { color: #c33; font-size: .85em; border: 1px dashed #c336; border-radius: 3px; padding: 0 .3em; }
-/* A horizontal rule, standing in for `---` on its own line. inline-block so
-   the line keeps its height and the cursor can still be placed there. */
-.md-hr { display: inline-block; width: 100%; vertical-align: middle; border-top: 2px solid #8886; }
-/* The `\` of a hard line break. Dim: it is punctuation, not content. */
-.md-break { opacity: .4; font-size: .85em; }
+.md-fn-missing { color: var(--danger); text-decoration: underline dotted; }
+.cm-line.md-footnote { font-size: .92em; padding-left: 1.2rem; color: var(--ink-2); }
 
 /* Fenced-code syntax colours, referenced by the HighlightStyle in editor.js.
    They live here, with the rest of the app's colours, rather than inside that
-   file — and as a light/dark pair, because unlike the #8884 alpha tricks used
+   file — and as a light/dark pair, because unlike the alpha trick used
    elsewhere a syntax colour is a real hue and cannot serve both grounds. */
 :root {
   --tok-keyword: #7238b8;
@@ -154,15 +503,15 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
 .cm-ySelectionCaretDot { border-radius: 50%; position: absolute; width: .4em; height: .4em;
                          top: -.2em; left: -.2em; background: inherit; }
 .cm-ySelectionInfo { position: absolute; top: -1.4em; left: -1px; font-size: .7em;
-                     font-family: system-ui, sans-serif; font-style: normal; font-weight: normal;
+                     font-family: var(--ui); font-style: normal; font-weight: 500;
                      line-height: normal; user-select: none; color: #000; padding: 0 .3em;
-                     border-radius: 3px; white-space: nowrap; opacity: 0; transition: opacity .3s; }
+                     border-radius: 2px; white-space: nowrap; opacity: 0; transition: opacity .3s; }
 .cm-ySelectionCaret:hover > .cm-ySelectionInfo { opacity: 1; }
 
 /* Commented ranges in the markdown editor. Underline rather than a heavy
    background: the text stays readable, and several overlapping comments do
    not compound into an unreadable block. */
 .cm-comment-range {
-  background: #fff8e1;
+  background: color-mix(in srgb, #f9a825 14%, transparent);
   border-bottom: 2px solid #f9a825;
 }

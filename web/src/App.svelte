@@ -103,17 +103,28 @@
   }
 </script>
 
+<!-- The app bar is full bleed and a fixed height, so every screen starts on the
+     same line. It carries only what is true everywhere: what this is, and who
+     you are. Anything about the *current* document belongs to the view that
+     owns it, in its own bar below. -->
+<header class="appbar">
+  <span class="wordmark">docs</span>
+  <span class="spacer"></span>
+  {#if me}
+    <span class="who readout">{me.name}</span>
+    <button class="linkish" onclick={signOut}>sign out</button>
+  {/if}
+</header>
+
 <!-- Prose views keep a comfortable reading width; a grid gets the whole
      window, since a spreadsheet's usefulness is columns you can see. -->
 <div class="page" class:wide={wideView} class:fill={fillView}>
-  <h1>docs</h1>
-
   {#if route.view === 'auth'}
     <!-- An #invite=<token> link lands here signed out; the token is handed to
          the sign-up form, which is the only thing that can spend it. -->
     <AuthView onSignedIn={signedIn} invite={inviteToken} />
   {:else if route.view === 'list'}
-    <DocList {me} onOpen={openDoc} onShare={openShare} onSignOut={signOut} />
+    <DocList {me} onOpen={openDoc} onShare={openShare} />
   {:else if route.view === 'editor'}
     <!-- #key destroys and recreates the editor when the doc changes, so a
          stale CodeMirror/provider from the previous doc can never leak. -->
@@ -130,3 +141,14 @@
     <HistoryView doc={route.doc} onBack={() => openDoc(route.doc)} />
   {/if}
 </div>
+
+<style>
+  /* Truncated rather than wrapped: the bar is a fixed height, and a long name
+     must not be what decides it. */
+  .who {
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>

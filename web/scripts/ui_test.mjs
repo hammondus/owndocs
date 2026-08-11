@@ -126,6 +126,19 @@ async function clickText(page, tag, text) {
   if (!clicked) throw new Error(`no <${tag}> containing ${JSON.stringify(text)}`)
 }
 
+// Same dispatched click, addressed by selector rather than by visible text.
+// For controls whose label is a glyph: an arrow is not a word, so clickText has
+// nothing to match on and the accessible name is the honest handle.
+async function clickSel(page, selector) {
+  const clicked = await page.evaluate((s) => {
+    const el = document.querySelector(s)
+    if (!el) return false
+    el.click()
+    return true
+  }, selector)
+  if (!clicked) throw new Error(`no element matching ${JSON.stringify(selector)}`)
+}
+
 const docIdFromHash = (url) => new URL(url).hash.replace(/^#doc=/, '')
 
 // How many update rows the server has stored for the open document. Used to
@@ -273,7 +286,7 @@ try {
 
   await step('write a comment on the selected cell', async () => {
     await page.type('textarea', 'does this number look right?')
-    await clickText(page, 'button', 'comment on A1')
+    await clickText(page, 'button', 'Comment on A1')
     await page.waitForFunction(
       () => document.body.textContent.includes('does this number look right?'),
       { timeout: 3000 },
@@ -314,7 +327,7 @@ try {
       timeout: 3000,
     })
     await page.type('textarea', 'comment over on sheet 2')
-    await clickText(page, 'button', 'comment on A1')
+    await clickText(page, 'button', 'Comment on A1')
     await page.waitForFunction(() => document.body.textContent.includes('comment over on sheet 2'), {
       timeout: 3000,
     })
@@ -327,7 +340,7 @@ try {
   })
 
   await step('open a markdown document', async () => {
-    await clickText(page, 'a', '← documents')
+    await clickSel(page, '[aria-label="Back to documents"]')
     await page.waitForSelector('input[placeholder="new document title"]')
     await page.type('input[placeholder="new document title"]', 'UI test doc')
     await clickText(page, 'button', 'Create')
@@ -350,13 +363,16 @@ try {
     await page.waitForSelector('input[placeholder="name current version"]', { timeout: 5000 })
     await page.type('input[placeholder="name current version"]', 'before the change')
     await clickText(page, 'button', 'Pin')
-    await page.waitForFunction(() => document.body.innerText.includes('Named versions'), {
+    // Case-insensitive, and it has to be: innerText reflects `text-transform`,
+    // unlike textContent, so the section labels reading as uppercase is a
+    // styling choice this assertion must not depend on.
+    await page.waitForFunction(() => /named versions/i.test(document.body.innerText), {
       timeout: 5000,
     })
   })
 
   await step('edit the document again, and wait for it to reach the server', async () => {
-    await clickText(page, 'a', '← back to document')
+    await clickSel(page, '[aria-label="Back to the document"]')
     await page.waitForSelector('.cm-content', { timeout: 5000 })
     const before = await loggedRows(page)
     await page.focus('.cm-content')
@@ -507,7 +523,7 @@ try {
   // preference is global, and a setting on one screen only is a setting nobody
   // finds. This step exists because the first version shipped exactly that.
   await step('reading preferences are reachable from the document list', async () => {
-    await clickText(page, 'a', '← documents')
+    await clickSel(page, '[aria-label="Back to documents"]')
     await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
     await clickText(page, 'button', 'Aa reading')
     await page.waitForSelector('#rp-font', { timeout: 3000 })
@@ -588,7 +604,7 @@ try {
   // they produced. The exceptions are the ones that *render*: a rule and a
   // hard break are widgets, and the only proof they work is the DOM they draw.
   await step('open a document for the toolbar', async () => {
-    await clickText(page, 'a', '← documents')
+    await clickSel(page, '[aria-label="Back to documents"]')
     await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
     await page.type('input[placeholder="new document title"]', 'UI toolbar doc')
     await clickText(page, 'button', 'Create')
@@ -659,7 +675,7 @@ try {
     await page.keyboard.up('Meta')
     await page.keyboard.press('Enter')
     await page.keyboard.type('before')
-    await clickText(page, 'button', '―')
+    await page.select('.toolbar select[aria-label="Insert"]', 'rule')
     await page.keyboard.type('split')
     await page.keyboard.down('Shift')
     await page.keyboard.press('Enter')
@@ -703,7 +719,7 @@ try {
   // failure — a node the parser emits and nothing styles looks exactly like a
   // feature that was never built.
   await step('a document for the extended constructs', async () => {
-    await clickText(page, 'a', '← documents')
+    await clickSel(page, '[aria-label="Back to documents"]')
     await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
     await page.type('input[placeholder="new document title"]', 'UI extensions doc')
     await clickText(page, 'button', 'Create')
@@ -814,7 +830,7 @@ try {
     await page.keyboard.down('Meta')
     await page.keyboard.press('ArrowDown')
     await page.keyboard.up('Meta')
-    await clickText(page, 'button', '≔')
+    await page.select('.toolbar select[aria-label="Insert"]', 'definition')
     await waitForDoc(page, /^Term\n/m)
     // The `: ` is hidden like every other marker, so the indent is what says
     // which line is the definition. Measured where the TEXT starts, via a
@@ -842,7 +858,7 @@ try {
   // browser shows: that the button writes both halves at once, and that a
   // number renders where the source says `[^1]`.
   await step('the footnote button writes both halves and numbers them', async () => {
-    await clickText(page, 'a', '← documents')
+    await clickSel(page, '[aria-label="Back to documents"]')
     await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
     await page.type('input[placeholder="new document title"]', 'UI footnote doc')
     await clickText(page, 'button', 'Create')
@@ -850,7 +866,7 @@ try {
     await page.focus('.cm-content')
 
     await page.keyboard.type('A claim worth citing.')
-    await clickText(page, 'button', '†')
+    await page.select('.toolbar select[aria-label="Insert"]', 'footnote')
     // The cursor lands in the note, at the foot of the document.
     await page.keyboard.type('Where it came from.')
     await waitForDoc(page, /^\[\^1\]: Where it came from\.$/m)
@@ -880,7 +896,7 @@ try {
     // document, which is the only part of this that needed a design, so the
     // assertion is on both numbers together rather than on either alone.
     await page.keyboard.press('End')
-    await clickText(page, 'button', '†')
+    await page.select('.toolbar select[aria-label="Insert"]', 'footnote')
     await page.keyboard.type('The second one.')
     await page.waitForFunction(
       () => [...document.querySelectorAll('.md-fn-ref')].map((e) => e.textContent).join() === '1,2',
@@ -910,7 +926,7 @@ try {
   })
 
   await step('a document for the contents', async () => {
-    await clickText(page, 'a', '← documents')
+    await clickSel(page, '[aria-label="Back to documents"]')
     await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
     await page.type('input[placeholder="new document title"]', 'UI contents doc')
     await clickText(page, 'button', 'Create')

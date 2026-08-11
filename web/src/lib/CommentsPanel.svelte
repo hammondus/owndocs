@@ -126,13 +126,13 @@
         placeholder={canAnchor ? `Comment on ${newLabel}…` : anchorNote}
         disabled={!canAnchor}
       ></textarea>
+      <!-- Names what will happen, and never says "comment on nothing": with no
+           selection there is nothing to name, so the button just says what it
+           is. The placeholder in the disabled box already explains why. -->
       <button onclick={compose} disabled={!canAnchor || !draft.trim() || busy}>
-        comment on {newLabel || '—'}
+        {canAnchor ? `Comment on ${newLabel}` : 'Comment'}
       </button>
     </div>
-    {#if anchorNote}
-      <p class="hint">{anchorNote}</p>
-    {/if}
   {/if}
 
   {#each [...open, ...(showResolved ? closed : [])] as t (t.id)}
@@ -199,10 +199,12 @@
   {/each}
 
   {#if !open.length && !(showResolved && closed.length)}
+    <!-- An empty screen is an invitation to act, not a place to repeat the
+         composer's own instructions — which is what it did: "Select some text
+         to comment on it." rendered here, in the placeholder, AND under the
+         box, three times on one panel. -->
     <p class="hint">
-      {!canComment
-        ? 'No open comments. Your access is read-only.'
-        : anchorNote || `No open comments. Write one on ${newLabel} above.`}
+      {!canComment ? 'No comments. Your access is read-only.' : 'No comments yet.'}
     </p>
   {/if}
 </div>

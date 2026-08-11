@@ -71,10 +71,12 @@
   }
 </script>
 
-<p>
-  <a href="#back" onclick={(e) => { e.preventDefault(); onBack() }}>← back</a>
-  Sharing <strong>{doc.title}</strong>
-</p>
+<div class="viewbar">
+  <a class="back" href="#back" title="Back to documents" aria-label="Back to documents"
+     onclick={(e) => { e.preventDefault(); onBack() }}>←</a>
+  <strong>{doc.title}</strong>
+  <span class="label kind">sharing</span>
+</div>
 
 <fieldset>
   <legend>People</legend>

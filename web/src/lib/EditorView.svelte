@@ -203,26 +203,41 @@
   })
 </script>
 
-<p>
-  <a href="#list" onclick={(e) => { e.preventDefault(); onBack() }}>← documents</a>
+<!-- The view's own bar, below the app bar: what document this is, what you can
+     do to it, and what the connection is doing. Three groups, left to right,
+     and the status readout on the far right where a status light belongs. -->
+<div class="viewbar">
+  <!-- An arrow with no words needs a name: `title` is a tooltip, `aria-label`
+       is what a screen reader and a test both read. -->
+  <a
+    class="back"
+    href="#list"
+    title="Back to documents"
+    aria-label="Back to documents"
+    onclick={(e) => { e.preventDefault(); onBack() }}
+  >←</a>
   <DocTitle {doc} canRename={canEdit(doc.role)} {onRenamed} />
+  <span class="label kind">{doc.role}</span>
+
+  <span class="spacer"></span>
+
+  <button class="linkish" onclick={() => (showComments = !showComments)}>
+    comments{openComments ? ` (${openComments})` : ''}
+  </button>
   {#if doc.role === 'owner'}
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}
   <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
-  <!-- Outside the editing toolbar: viewers read comments and commenters write
-       them, and neither sees that toolbar. -->
-  <button class="linkish" onclick={() => (showComments = !showComments)}>
-    💬 comments{openComments ? ` (${openComments})` : ''}
-  </button>
   <button class="linkish" onclick={() => (showReading = !showReading)} title="How this renders for you">
     Aa
   </button>
-  <span class="status">{status}</span>
-  {#if peerCount > 1}
-    <span class="status">{peerCount} online</span>
-  {/if}
-</p>
+
+  <!-- A status light: the dot carries the state, the words explain it. Green
+       only when the document is actually reconciled with the server. -->
+  <span class="status readout" class:live={status === 'synced'}>
+    <span class="dot"></span>{status}{peerCount > 1 ? ` · ${peerCount} online` : ''}
+  </span>
+</div>
 
 <!-- canEdit, not `role !== 'viewer'`. A commenter is mounted read-only for the
      reason roles.js states — the provider would send a doc update and the
@@ -321,24 +336,6 @@
 
 
 <style>
-  /* A button, because it toggles a panel rather than navigating — styled to
-     sit with the links beside it. */
-  .linkish {
-    border: 0;
-    background: none;
-    padding: 0;
-    margin-left: 0.5rem;
-    font: inherit;
-    font-size: 0.9rem;
-    color: #1565c0;
-    cursor: pointer;
-  }
-  .status {
-    font-size: 0.85rem;
-    opacity: 0.7;
-    margin-left: 0.5rem;
-  }
-
   .doc-layout {
     display: flex;
     gap: 1rem;

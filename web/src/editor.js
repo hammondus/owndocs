@@ -1076,6 +1076,17 @@ function handleCheckboxClick(event, view) {
   return true
 }
 
+// The Insert menu's contents, keyed by the value the <option> carries. Kept as
+// data so the menu and its dispatch cannot drift apart — adding an entry here
+// puts it in both.
+const INSERTS = {
+  image: { label: 'Image', run: insertImage },
+  footnote: { label: 'Footnote', run: insertFootnote },
+  definition: { label: 'Definition list', run: insertDefinition },
+  rule: { label: 'Horizontal rule', run: insertRule },
+  break: { label: 'Line break  ⇧⏎', run: insertHardBreak },
+}
+
 // The toolbar, as data. `sep` is a visual divider; `options` makes an entry a
 // menu rather than a button, and its `run` takes the chosen value.
 //
@@ -1122,17 +1133,22 @@ export const toolbarCommands = [
     options: Object.entries(CALLOUTS).map(([value, label]) => ({ label, value })),
     run: (view, value) => insertCallout(value)(view),
   },
-  { label: '≔', title: 'Definition list', run: insertDefinition },
   { sep: true },
   { label: '🔗', title: 'Link (⌘K)', run: insertLink },
-  { label: '🖼', title: 'Image', run: insertImage },
-  { label: '†', title: 'Footnote', run: insertFootnote },
-  { sep: true },
   { label: '⊞', title: 'Table', run: insertTable },
   { label: '≡', title: 'Table column alignment (cycles left / centre / right)', run: cycleColumnAlign },
   { label: '</>', title: 'Code block', run: insertCodeBlock },
-  { label: '―', title: 'Horizontal rule', run: insertRule },
-  { label: '↵', title: 'Line break (⇧⏎)', run: insertHardBreak },
+  // The five that are reached occasionally rather than constantly. They were
+  // buttons, and 24 always-visible controls is what pushed this toolbar onto a
+  // second row — an orphaned control on a line of its own reads as a bug. A
+  // named menu is also more discoverable than a glyph nobody recognises: "†"
+  // does not say footnote to anyone who has not already found it.
+  {
+    label: 'Insert',
+    title: 'Insert',
+    options: Object.entries(INSERTS).map(([value, { label }]) => ({ label, value })),
+    run: (view, value) => INSERTS[value]?.run(view),
+  },
 ]
 
 // Nesting is Tab, list continuation is Enter — and Enter is already bound, at

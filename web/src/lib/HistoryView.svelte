@@ -157,10 +157,12 @@
   }
 </script>
 
-<p>
-  <a href="#back" onclick={(e) => { e.preventDefault(); onBack() }}>← back to document</a>
-  History of <strong>{doc.title}</strong>
-</p>
+<div class="viewbar">
+  <a class="back" href="#back" title="Back to the document" aria-label="Back to the document"
+     onclick={(e) => { e.preventDefault(); onBack() }}>←</a>
+  <strong>{doc.title}</strong>
+  <span class="label kind">history</span>
+</div>
 
 <div class="layout">
   <div class="timeline">

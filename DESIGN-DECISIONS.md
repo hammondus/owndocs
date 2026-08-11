@@ -550,6 +550,78 @@ headings are and the panel reads them back.
   asserting that, so adding a `--toc-…` property later is a deliberate act
   rather than an accident that puts the same fact in two places.
 
+### Visual identity: instrumentation around a plain text file
+
+Until 2026-08-11 the UI was browser defaults — system-ui at 16px, default link
+blue, native buttons, no spacing system and no type scale. This gives it a
+point of view, chosen deliberately over two alternatives (a soft card/paper
+register, and a chromeless editor-first one).
+
+**The thesis.** The document is the subject; everything around it is a readout.
+So chrome type sits *below* the document's 16px, and is typeset in the same
+visual language markdown's own markers already use in this editor — monospace,
+low contrast, uppercase micro-labels, tracked. The size and register difference
+is what makes the document read as the thing that matters. The one place with
+air is the text.
+
+**The signature is the caret rule**: a 2px vertical bar in the signal colour
+meaning "this is the live one". It marks the wordmark, a focused field, the
+contents entry you are inside, and the row under the pointer. One device, one
+meaning, everywhere — rather than a different affordance per screen.
+
+**System stacks only, confirmed for the chrome too.** The recorded decision was
+scoped to reading preferences; it now covers the interface. No font files means
+no assets in the Go embed, no licence to track, and nothing to load before text
+can paint — the single-binary property holds. Personality comes from size,
+weight and tracking instead of from a face nobody else has.
+
+**Colour discipline.** One accent, `--signal`, meaning live / yours / here.
+It is deliberately *not* spent on navigation: bar links are ink until pointed
+at. The first pass made every link in every bar signal-blue, which left the
+colour saying nothing. `--on-signal` moves with `--signal` between schemes,
+because dark mode lightens the accent and white text on it is unreadable.
+
+**What the rework changed, not just restyled:**
+
+- A real **app bar**, full bleed and fixed height, carrying only what is true
+  everywhere: what this is, and who you are. Anything about the current
+  document belongs to the view that owns it.
+- One **`.viewbar`**, global rather than per-component, adopted by all four
+  views. They had drifted to three different back links — `← documents`,
+  `← back to document`, `← back` — which is what four copies of an object
+  always does. The arrow is now alone and carries an `aria-label`, since an
+  arrow is not a name.
+- The **document list** is rows with the name in prose and kind/role as a
+  readout beneath, actions revealed on hover *and on focus* — never hidden from
+  the keyboard, and always shown where there is no hover at all.
+- The **toolbar** had grown to 24 always-visible controls and wrapped onto a
+  second line, orphaning one control. Five occasional inserts (image, footnote,
+  definition list, rule, line break) moved into an **Insert** menu. A named
+  menu is also more discoverable than a glyph: `†` does not say footnote to
+  anyone who has not already found it.
+
+**Two things learned the hard way, both recorded so they are not re-learned:**
+
+- **Borderless-by-default was wrong.** It reads well in a dense toolbar, where
+  grouping and hover carry it, and badly everywhere else — "Add", "Pin" and
+  "New viewer link" became indistinguishable from static text. A standalone
+  button looks like a button; the *toolbar* opts out.
+- **`innerText` reflects `text-transform`**, unlike `textContent`. Setting
+  section headings in uppercase broke a browser assertion looking for
+  "Named versions". The assertion is now case-insensitive, because how a label
+  is cased is a styling choice a test must not depend on.
+
+**Copy fixed along the way**, since words are design material: the comments
+panel rendered "Select some text to comment on it." three times at once — as
+the placeholder, as a hint under the box, and as the empty state — and its
+button read "comment on nothing". The button now names what will happen
+(`Comment on A1`) or just says `Comment`; the empty state invites rather than
+repeating the composer's instructions.
+
+Not in scope, and deliberately so: the information design of the history
+timeline, share dialog and sheet chrome. They inherit the tokens and the view
+bar, and read consistently, but their content layout is untouched.
+
 ### Threat model: trusted users, untrusted network
 
 The audience is **staff inside one company**, all authenticated, all known to

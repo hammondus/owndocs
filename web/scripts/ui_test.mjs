@@ -387,17 +387,38 @@ try {
     await page.waitForSelector('#rp-font', { timeout: 3000 })
     await page.select('#rp-font', 'serif')
     await page.select('#rp-size', '20')
+    await page.select('#rp-lh', '1.8')
+    await page.select('#rp-measure', '60')
+    // Asserted on .cm-content — where the text actually renders — not on
+    // .cm-editor. The first version checked the outer element, which picks up
+    // the font whether or not it reaches the text, and so passed while family,
+    // line height and measure all silently did nothing.
     await page.waitForFunction(
       () => {
-        const cs = getComputedStyle(document.querySelector('.cm-editor'))
-        return cs.fontSize === '20px' && /Georgia|Charter|Times/.test(cs.fontFamily)
+        const cs = getComputedStyle(document.querySelector('.cm-content'))
+        return (
+          cs.fontSize === '20px' &&
+          /Georgia|Charter|Times/.test(cs.fontFamily) &&
+          !/monospace/i.test(cs.fontFamily) &&
+          Math.abs(parseFloat(cs.lineHeight) / 20 - 1.8) < 0.05 &&
+          cs.maxWidth !== 'none'
+        )
+      },
+      { timeout: 3000 },
+    )
+    // Code keeps its own family whatever the body font is — its alignment
+    // carries meaning.
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('.md-code, .md-codeblock')
+        return !el || /mono/i.test(getComputedStyle(el).fontFamily)
       },
       { timeout: 3000 },
     )
     await page.reload({ waitUntil: 'networkidle0' })
     await page.waitForSelector('.cm-editor', { timeout: 5000 })
     await page.waitForFunction(
-      () => getComputedStyle(document.querySelector('.cm-editor')).fontSize === '20px',
+      () => getComputedStyle(document.querySelector('.cm-content')).fontSize === '20px',
       { timeout: 3000 },
     )
   })

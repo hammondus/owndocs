@@ -543,11 +543,39 @@ export function mountPreview({ parent, content }) {
   return view
 }
 
+// Reading preferences reach the editor through a CodeMirror *theme*, not
+// through app.css. CodeMirror's base theme sets `font-family: monospace` on
+// the scroller, and its injected styles beat an app rule of the same
+// specificity — which is why the first version appeared to work for size (set
+// on .cm-editor, which the base theme does not touch) while family, line
+// height and measure silently did nothing. A theme is applied after the base
+// theme by construction, so this is precedence by design rather than by luck.
+//
+// The values stay as CSS custom properties so they remain live: prefs.js sets
+// them on the root element and every mounted editor follows without being told.
+const readingTheme = EditorView.theme({
+  '&': {
+    fontSize: 'var(--reading-size, 16px)',
+    fontFamily: 'var(--reading-font, system-ui, sans-serif)',
+  },
+  '.cm-scroller': {
+    fontFamily: 'inherit',
+    lineHeight: 'var(--reading-line-height, 1.6)',
+  },
+  // Centring the text column, while the scroller and its scrollbar stay full
+  // width. flex-grow on .cm-content is why this needs the margin as well.
+  '.cm-content': {
+    maxWidth: 'var(--reading-measure, none)',
+    margin: '0 auto',
+  },
+})
+
 export function mountEditor({ parent, ytext, awareness, readOnly, onSelectionChange }) {
   const undoManager = new Y.UndoManager(ytext)
   const extensions = [
     keymap.of([...yUndoManagerKeymap, ...formatKeymap, ...defaultKeymap]),
     markdown({ base: markdownLanguage }),
+    readingTheme,
     livePreview,
     tableDecorations,
     commentRanges,

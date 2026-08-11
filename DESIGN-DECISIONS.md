@@ -128,10 +128,17 @@ means setting it twice; an account setting is the upgrade path if anyone asks.
 
 Implementation (`prefs.js`, `ReadingPrefs.svelte`):
 
-- **CSS custom properties on the root element**, and the editor reads them and
-  nothing else does. One place to change, no component involved, and it
-  applies in `main.js` before the first paint rather than after some component
-  thinks to ask.
+- **Applied through a CodeMirror theme, not through `app.css`.** The base
+  theme sets `font-family: monospace` on the scroller, and CodeMirror's
+  injected styles beat an app rule of equal specificity. The first version put
+  everything in `app.css` and appeared to work: font *size* is set on
+  `.cm-editor`, which the base theme does not touch, so it took effect while
+  family, line height and measure silently did nothing. `EditorView.theme()`
+  is applied after the base theme by construction — precedence by design
+  rather than by stylesheet order.
+- **The values stay CSS custom properties**, set on the root element in
+  `main.js` before the first paint. The theme references them, so preferences
+  remain live and every mounted editor follows without being told.
 - **Stored preferences merge over the defaults**, never replace them. A blob
   written by an older build is missing whatever was added since, and trusting
   it wholesale is how a new preference arrives permanently unset.
@@ -147,6 +154,9 @@ Implementation (`prefs.js`, `ReadingPrefs.svelte`):
 - **CodeMirror re-measures on change.** It caches per-line heights, and size or
   family changes them without it noticing — `view.requestMeasure()` is what the
   panel's `onChanged` is for.
+- **A multi-word family needs quotes inside the stack.** `Helvetica Neue`
+  unquoted invalidates the whole `font-family` declaration, so that option
+  silently fell back to the previous font rather than failing visibly.
 - **Reachable from the document list as well as from inside a document.** The
   first version put the control only in the markdown editor, which is where
   the preference has an effect but not where anyone looks for a setting —

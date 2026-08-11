@@ -15,7 +15,7 @@ const KEY = 'docs:reading'
 export const FONTS = [
   { id: 'system', label: 'System', stack: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' },
   { id: 'serif', label: 'Serif', stack: 'Charter, Georgia, "Times New Roman", Times, serif' },
-  { id: 'sans', label: 'Sans', stack: 'Helvetica Neue, Helvetica, Arial, sans-serif' },
+  { id: 'sans', label: 'Sans', stack: '"Helvetica Neue", Helvetica, Arial, sans-serif' },
   { id: 'mono', label: 'Monospace', stack: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' },
 ]
 

@@ -31,6 +31,9 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
 .toolbar button { min-width: 2.2rem; padding: .25rem .4rem; border: 1px solid #8884;
                   border-radius: 4px; background: transparent; cursor: pointer; }
 .toolbar button:hover { background: #8882; }
+/* A toolbar button that opens a drawer stays lit while it is open, so it reads
+   as a toggle rather than as a command that did nothing. */
+.toolbar button.pressed { background: #8883; border-color: #888a; }
 .toolbar select { padding: .25rem .3rem; margin: 0; border: 1px solid #8884;
                   border-radius: 4px; background: transparent; }
 .toolbar .sep { align-self: stretch; width: 1px; background: #8884; margin: .1rem .2rem; }

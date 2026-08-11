@@ -851,6 +851,32 @@ function insertDefinition(view) {
   return true
 }
 
+// Insert an emoji from the picker.
+//
+// The document gets the **shortcode**, `:warning:`, not the character. The
+// alternative — inserting ⚠️ directly — would render in tools that know
+// nothing about shortcodes, which is a real argument and was weighed. Against
+// it: this app already renders shortcodes, so writing the character would mean
+// the rendering feature only served people who never open the picker, and the
+// two halves of one feature would disagree about what a document looks like.
+// It also keeps the file ASCII, which is friendlier in a `git diff`. The
+// picker is the authoring side of the renderer, so it speaks the same
+// vocabulary — and you see the character immediately anyway, because the
+// decoration replaces it as you insert it.
+//
+// Focus is deliberately NOT taken back: the picker stays open so several can
+// be inserted in a row, and the selection lives in CodeMirror's state rather
+// than in the DOM, so it survives the editor not being focused.
+export function insertEmoji(view, name) {
+  const { from, to } = view.state.selection.main
+  const insert = `:${name}:`
+  view.dispatch({
+    changes: { from, to, insert },
+    selection: { anchor: from + insert.length },
+  })
+  return true
+}
+
 // A hard line break: a trailing backslash, then the newline. Distinct from
 // pressing Enter, which starts a new paragraph.
 function insertHardBreak(view) {
@@ -934,6 +960,10 @@ export const toolbarCommands = [
   { label: 'S̶', title: 'Strikethrough', run: toggleInline('~~') },
   { label: '<>', title: 'Inline code (⌘E)', run: toggleInline('`') },
   { label: '🖍', title: 'Highlight', run: toggleInline('==') },
+  // A panel, not a command: the toolbar entry only says which one to open, and
+  // EditorView renders it. Keeps the toolbar one ordered list rather than a
+  // list plus a special case wired in beside it.
+  { label: '😀', title: 'Emoji', panel: 'emoji' },
   { label: 'x²', title: 'Superscript', run: toggleInline('^') },
   { label: 'x₂', title: 'Subscript', run: toggleInline('~') },
   { sep: true },

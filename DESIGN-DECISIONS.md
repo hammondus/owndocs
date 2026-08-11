@@ -359,6 +359,45 @@ Two smaller decisions worth recording:
   does. A highlighter pen is a light ground by definition, so inheriting the
   dark-mode foreground would put near-white text on yellow.
 
+### The emoji picker inserts the shortcode, not the character
+
+Shipped 2026-08-11. A toolbar drawer showing the whole curated table as
+itself, grouped, with a search box; Enter takes the first match, so a name you
+already know needs no mouse.
+
+**What lands in the document is `:warning:`, not ⚠️.** The alternative was
+weighed and is a real argument — a literal character renders in every tool,
+including the ones that know nothing about shortcodes, and this project cares
+about the `.md` file reading the same everywhere. Two things decided it:
+
+- This app already renders shortcodes. If the picker wrote characters, the
+  rendering half would serve only the people who never open the picker, and the
+  two halves of one feature would disagree about what a document looks like.
+- The file stays ASCII, which is friendlier in a `git diff` and in a terminal.
+
+Nothing is lost visually: the decoration replaces the shortcode as it is
+inserted, so you see the character immediately — one keystroke later, anyway.
+The cursor lands *at the end of* the shortcode it just wrote, which touches the
+node, so live preview correctly keeps the source visible until you move off it.
+That is the same rule every other marker in this editor follows, and the
+browser test says so out loud, having first been written the other way.
+
+Smaller decisions:
+
+- **`emoji.js` is grouped, not flat.** The picker needs the categories, and a
+  separate list of them would be the same fact written twice. The lookup `Map`
+  is built by flattening the groups, so adding an entry puts it in both.
+- **A toolbar entry with a `panel` id rather than a `run`.** The toolbar stays
+  one ordered list; `EditorView` maps the id to a component. The alternative
+  was a control living outside the toolbar data, beside it, which is how a
+  toolbar stops being a list.
+- **Focus is not taken back after a pick**, so several can be inserted in a
+  row. Safe because the selection lives in CodeMirror's state, not in the DOM.
+- **One `openPanel` value, not a flag per panel.** Two drawers open at once
+  would push the editor off the screen, and only one can be wanted at a time.
+- **The panel uses the `#8881`/`#8884` alpha convention** rather than the
+  hardcoded light greys `ReadingPrefs` uses, so it works in both schemes.
+
 ### Fenced code blocks: highlighting costs 117 files, not 117 downloads
 
 `@codemirror/language-data` is the one dependency this batch adds — a table

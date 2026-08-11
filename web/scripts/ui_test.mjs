@@ -739,6 +739,48 @@ try {
     await waitForDoc(page, /:not_a_real_emoji:/)
   })
 
+  // The picker is a drawer opened from the toolbar, which is the shape that
+  // has presented as a dead control three times in this project. It also
+  // inserts the SHORTCODE rather than the character, so the assertion is that
+  // the document holds `:rocket:` while the editor shows 🚀 — the two halves
+  // of the same feature agreeing.
+  await step('the emoji picker finds one by name and inserts its shortcode', async () => {
+    await page.keyboard.press('Enter')
+    await clickText(page, 'button', '😀')
+    await page.waitForSelector('#emoji-search', { timeout: 3000 })
+    // Groups first, before any search: this is the "browse it visually" case.
+    check(
+      (await page.$$('.grid button')).length > 50,
+      'the whole table is browsable before searching',
+    )
+    await page.type('#emoji-search', 'rocket')
+    await page.waitForFunction(
+      () => document.querySelectorAll('.grid button').length === 1,
+      { timeout: 3000 },
+    )
+    // Enter takes the first match, so a name you know needs no mouse.
+    await page.keyboard.press('Enter')
+    // The panel stays open, so several can be inserted in a row.
+    check(await page.$('#emoji-search'), 'picking one does not close the picker')
+    await clickText(page, 'button', 'close')
+
+    // A space, because the cursor lands *at the end of* the shortcode it just
+    // inserted — which touches the node, so live preview correctly keeps the
+    // source visible. The emoji appears when you move off it, exactly like
+    // every other marker in this editor.
+    await page.focus('.cm-content')
+    await page.keyboard.type(' ')
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('.md-emoji')].some((e) => e.textContent === '🚀'),
+      { timeout: 3000 },
+    )
+    // And back onto it: the file holds `:rocket:`, not the character. Putting
+    // the cursor on a widget is the only way to read the source it replaced.
+    await page.keyboard.press('ArrowLeft')
+    await waitForDoc(page, /:rocket:/)
+    await page.keyboard.press('End')
+  })
+
   // A callout is a blockquote, which is the whole point of the syntax - so the
   // assertion is that it is styled as a callout and NOT as a plain quote, and
   // that the `[!WARNING]` marker became a label rather than a hyperlink.

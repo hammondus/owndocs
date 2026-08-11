@@ -8,8 +8,9 @@
   import { Provider } from '../provider.js'
   import {
     mountEditor, toolbarCommands, setCommentRanges, revealRange,
-    documentHeadings, goToPos,
+    documentHeadings, goToPos, insertEmoji,
   } from '../editor.js'
+  import EmojiPicker from './EmojiPicker.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
   import DocTitle from './DocTitle.svelte'
   import ReadingPrefs from './ReadingPrefs.svelte'
@@ -32,6 +33,10 @@
 
   let showComments = $state(false)
   let showReading = $state(false)
+  // Which toolbar drawer is open, by the `panel` id its entry carries. A
+  // single value rather than one flag per panel: two open at once would push
+  // the editor off the screen, and only one can be wanted at a time.
+  let openPanel = $state('')
   let threads = $state([])
   let selection = $state({ from: 0, to: 0 })
   let mayComment = $derived(canComment(doc.role))
@@ -252,12 +257,22 @@
              inside the editor while the button is clicked -->
         <button
           title={cmd.title}
+          aria-label={cmd.title}
+          class:pressed={cmd.panel && openPanel === cmd.panel}
+          aria-pressed={cmd.panel ? openPanel === cmd.panel : undefined}
           onmousedown={(e) => e.preventDefault()}
-          onclick={() => cmd.run(view)}
+          onclick={() =>
+            cmd.panel
+              ? (openPanel = openPanel === cmd.panel ? '' : cmd.panel)
+              : cmd.run(view)}
         >{cmd.label}</button>
       {/if}
     {/each}
   </div>
+
+  {#if openPanel === 'emoji'}
+    <EmojiPicker onPick={(name) => insertEmoji(view, name)} onClose={() => (openPanel = '')} />
+  {/if}
 {/if}
 
 {#if showReading}

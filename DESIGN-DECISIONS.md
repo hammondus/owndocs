@@ -22,10 +22,46 @@ version history.
 Explicitly out of scope (each is a project-killer for a solo clone):
 
 - **Suggestion mode / track changes** — a second overlay document model.
-- **Pivot tables, charts, array formulas** — each is its own project.
+- **Pivot tables, ~~charts,~~ array formulas** — each is its own project.
+  (Charts shipped after all — see Charts. Pivot tables and array formulas
+  stand.)
 - **docx import/export** — fidelity is endless, and `unioffice` went
   commercial. Export is Markdown/HTML/CSV/xlsx instead.
 - Offline editing, mobile apps.
+
+### Threat model: trusted users, untrusted network
+
+The audience is **staff inside one company**, all authenticated, all known to
+each other. The adversary this is built against is *mistake* — a wrong share, a
+lost edit, a bad restore — not a colleague attacking a colleague. Security is
+required, but it does not have to price in a hostile user, and features whose
+only value is against one are not worth their friction here.
+
+What that rules out spending on, unless someone asks: email verification, 2FA,
+rate limiting and lockout, audit trails, per-field encryption, and hardening
+against a determined authenticated attacker.
+
+What it does **not** relax, because the reasoning is different:
+
+- **The network is not internal even when the audience is.** Behind nginx
+  proxy manager, the login page can face the public internet whether or not
+  the users do. So password hashing (argon2id), session handling, hashed share
+  tokens and `-signup=closed` keep earning their place — they defend the
+  perimeter, not the colleagues.
+- **Server-side permission checks stay**, because they are also what keeps the
+  UI honest. `roleFor` is the thing that makes "viewer" mean something; take it
+  out and a bug becomes a data-loss event rather than a rejected write.
+- **Defences already built and paid for stay built.** The scripting sandbox is
+  the clear case: it exists for "someone shares a sheet whose script runs as
+  you", which is far less alarming among colleagues — but it costs nothing now,
+  and an opaque-origin iframe is not a thing to unpick for tidiness.
+
+The distinction to hold on to: a document id is 128 bits of `crypto/rand`
+(stronger than a UUIDv4's 122, and no reason to change), which makes a leaked
+id in a log survivable — but it is a *name*, not a capability. Share-link
+tokens are the opposite: there the secret **is** the access, which is why only
+their SHA-256 is stored. Treating an unguessable id as if it were a permission
+is how "unlisted means private" systems get built, and this is not one.
 
 ---
 

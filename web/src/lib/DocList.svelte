@@ -3,6 +3,7 @@
   // and reports "open this doc" / "share this doc" upward via callbacks.
   import { onMount } from 'svelte'
   import { api } from './api.js'
+  import { canEdit } from '../roles.js'
 
   let { me, onOpen, onShare, onSignOut } = $props()
 
@@ -67,6 +68,18 @@
   }
 
   const when = (ts) => new Date(ts * 1000).toLocaleDateString()
+
+  // Rename in place, matching the double-click gesture used in the document
+  // headers and on sheet tabs.
+  let renamingId = $state(null)
+
+  async function commitRename(event, doc) {
+    const title = event.target.value.trim()
+    renamingId = null
+    if (!title || title === doc.title) return
+    await api(`/api/docs/${doc.id}`, { method: 'PATCH', body: JSON.stringify({ title }) })
+    await load()
+  }
 
   async function deleteDoc(doc) {
     if (!confirm(`Delete "${doc.title}"?`)) return
@@ -135,7 +148,25 @@
        the list changes, so rows are moved rather than rebuilt. -->
   {#each docs as doc (doc.id)}
     <li>
-      <a href={'#doc=' + doc.id} onclick={(e) => { e.preventDefault(); onOpen(doc) }}>{doc.title}</a>
+      {#if renamingId === doc.id}
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          autofocus
+          value={doc.title}
+          onblur={(e) => commitRename(e, doc)}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') e.target.blur()
+            if (e.key === 'Escape') renamingId = null
+          }}
+        />
+      {:else}
+        <a
+          href={'#doc=' + doc.id}
+          title="Double-click to rename"
+          onclick={(e) => { e.preventDefault(); onOpen(doc) }}
+          ondblclick={(e) => { e.preventDefault(); if (canEdit(doc.role)) renamingId = doc.id }}
+        >{doc.title}</a>
+      {/if}
       <span class="kind">{doc.kind}</span>
       {doc.role}
       {#if doc.role === 'owner'}

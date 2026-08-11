@@ -60,6 +60,12 @@
     showList()
   }
 
+  // Children report a rename rather than writing to route themselves — the
+  // same rule the auth view follows about not setting parent state directly.
+  function renamed(title) {
+    route.doc.title = title
+  }
+
   function showList() {
     location.hash = ''
     route = { view: 'list' }
@@ -113,9 +119,9 @@
          stale CodeMirror/provider from the previous doc can never leak. -->
     {#key route.doc.id}
       {#if route.doc.kind === 'sheet'}
-        <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
+        <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} />
       {:else}
-        <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} />
+        <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} />
       {/if}
     {/key}
   {:else if route.view === 'share'}

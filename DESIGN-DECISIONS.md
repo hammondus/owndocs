@@ -78,6 +78,24 @@ Behind a proxy every request appears to come from the proxy, so that needs
 app directly claim any address. It is trusted only when the immediate peer is
 loopback or private, and only its last entry, which is the one the proxy wrote.
 
+### Renaming: an HTTP write, not a collaborative edit
+
+The rename endpoint existed from the beginning; nothing in the UI ever called
+it. Now the title is editable in place — double-click, matching the gesture the
+sheet tabs already used, so there is one thing to learn rather than two — from
+the document header and from the list.
+
+Worth knowing: **a title lives in SQLite, not in the Yjs document.** So a
+rename is an ordinary HTTP write and does not reach anyone else's open tab
+until they reload. That is the right trade for a title and would be the wrong
+one for content; if it ever grates, the fix is a nudge on the socket exactly
+like `msgComments`, not moving the title into the document.
+
+The permission check moved from `role != "owner" && role != "editor"` to a
+rank comparison. A title is document content in every sense that matters, so
+the bar is "may edit" — and equality tests written that way are precisely what
+adding `commenter` broke in three other places.
+
 ### Threat model: trusted users, untrusted network
 
 The audience is **staff inside one company**, all authenticated, all known to

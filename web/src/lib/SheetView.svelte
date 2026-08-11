@@ -19,13 +19,14 @@
   import { scheduleCompaction } from '../compaction.js'
   import ScriptsPanel from './ScriptsPanel.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
+  import DocTitle from './DocTitle.svelte'
   import { listThreads, cellAnchor, cellKey, anchorKey } from '../comments.js'
   import { canEdit, canComment } from '../roles.js'
   import { runScript } from '../sheet/sandbox.js'
   import { handleCall } from '../sheet/scriptapi.js'
   import { allowTriggers, summariseEdit } from '../sheet/triggers.js'
 
-  let { me, doc, onBack, onShare, onHistory } = $props()
+  let { me, doc, onBack, onShare, onHistory, onRenamed } = $props()
 
   // $derived, not a plain const: props can change, and a const would keep
   // the value from the first render forever.
@@ -1160,7 +1161,7 @@
 
 <p>
   <a href="#list" onclick={(e) => { e.preventDefault(); onBack() }}>← documents</a>
-  <strong>{doc.title}</strong>
+  <DocTitle {doc} canRename={canEdit(doc.role)} {onRenamed} />
   {#if doc.role === 'owner'}
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}

@@ -220,3 +220,43 @@ func mustRole(t *testing.T, srv *httptest.Server, c *http.Client, docID string) 
 func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
+// Renaming is an edit, so the bar is "may edit" — checked by rank rather than
+// by naming the two roles that pass, which is what let `commenter` slip
+// through three similar tests elsewhere.
+func TestRenameNeedsEditAccess(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	bob := apiClient(t, srv, "bob@example.com")
+	docID := createDoc(t, srv, alice)
+
+	rename := func(c *http.Client, title string) int {
+		req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/docs/"+docID,
+			bytes.NewReader([]byte(`{"title":`+strconv.Quote(title)+`}`)))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+
+	for _, tc := range []struct {
+		role string
+		want int
+	}{
+		{"viewer", http.StatusNotFound},
+		{"commenter", http.StatusNotFound},
+		{"editor", http.StatusOK},
+	} {
+		res := postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares",
+			map[string]string{"email": "bob@example.com", "role": tc.role})
+		res.Body.Close()
+		if got := rename(bob, "renamed by a "+tc.role); got != tc.want {
+			t.Fatalf("rename as %s: status %d, want %d", tc.role, got, tc.want)
+		}
+	}
+	if got := rename(alice, "renamed by the owner"); got != http.StatusOK {
+		t.Fatalf("owner could not rename: status %d", got)
+	}
+}

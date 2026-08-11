@@ -135,7 +135,10 @@ func handleRenameDoc(db *sql.DB) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
-		if role != "owner" && role != "editor" {
+		// Rank-compared, not name-tested: a title is document content in every
+		// sense that matters, so the bar is "may edit". Adding `commenter`
+		// broke three equality tests written like this one — see roleRank.
+		if roleRank[role] < roleRank["editor"] {
 			jsonError(w, http.StatusNotFound, "not found")
 			return
 		}

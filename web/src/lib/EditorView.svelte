@@ -8,11 +8,12 @@
   import { Provider } from '../provider.js'
   import { mountEditor, toolbarCommands, setCommentRanges, revealRange } from '../editor.js'
   import CommentsPanel from './CommentsPanel.svelte'
+  import DocTitle from './DocTitle.svelte'
   import { listThreads, textAnchor, resolveTextAnchor } from '../comments.js'
   import { scheduleCompaction } from '../compaction.js'
   import { canEdit, canComment } from '../roles.js'
 
-  let { me, doc, onBack, onShare, onHistory } = $props()
+  let { me, doc, onBack, onShare, onHistory, onRenamed } = $props()
 
   let status = $state('connecting…')
   let peerCount = $state(1)
@@ -161,7 +162,7 @@
 
 <p>
   <a href="#list" onclick={(e) => { e.preventDefault(); onBack() }}>← documents</a>
-  <strong>{doc.title}</strong>
+  <DocTitle {doc} canRename={canEdit(doc.role)} {onRenamed} />
   {#if doc.role === 'owner'}
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}

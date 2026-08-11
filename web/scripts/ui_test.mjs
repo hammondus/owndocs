@@ -350,6 +350,35 @@ try {
     )
   })
 
+  // Renaming through the header. The endpoint predates the UI by a long way;
+  // this covers the wiring that finally exposed it.
+  await step('rename the document from its header', async () => {
+    await page.evaluate(() => {
+      const el = [...document.querySelectorAll('strong')].find((s) =>
+        s.textContent.includes('UI test doc'),
+      )
+      el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    })
+    await page.waitForSelector('input.title', { timeout: 3000 })
+    // Cleared directly rather than by select-all: the field is uncontrolled
+    // and commit reads event.target.value, so this is exactly what a user
+    // clearing it produces. Select-all silently appended instead, and the
+    // rename "failed" by succeeding with the wrong title.
+    await page.$eval('input.title', (el) => {
+      el.value = ''
+    })
+    await page.focus('input.title')
+    await page.keyboard.type('Renamed By Test')
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll('strong')].some(
+          (s) => s.textContent.trim() === 'Renamed By Test',
+        ),
+      { timeout: 3000 },
+    )
+  })
+
   // Comments on a markdown document. Asserts the panel mounts and renders
   // against a real document without throwing — the failure mode that has bitten
   // this project three times, where a component throws inside {#if} and the

@@ -43,11 +43,15 @@ against a determined authenticated attacker.
 
 What it does **not** relax, because the reasoning is different:
 
-- **The network is not internal even when the audience is.** Behind nginx
-  proxy manager, the login page can face the public internet whether or not
-  the users do. So password hashing (argon2id), session handling, hashed share
-  tokens and `-signup=closed` keep earning their place — they defend the
-  perimeter, not the colleagues.
+- **The network is not internal even when the audience is.** Confirmed
+  2026-08-05: the login page *is* publicly reachable, and only company staff
+  have accounts. So password hashing (argon2id), session handling, hashed
+  share tokens and `-signup=closed` keep earning their place — they defend the
+  perimeter, not the colleagues, and the perimeter is the open internet. What
+  that still owes is listed in `ROADMAP.md` under *Harden the login surface*;
+  two of those are defects rather than improvements — the deployed entrypoint
+  never passes `-signup=closed` against a flag that defaults to `open`, and
+  nothing bounds concurrent argon2id calls at 64 MiB each.
 - **Server-side permission checks stay**, because they are also what keeps the
   UI honest. `roleFor` is the thing that makes "viewer" mean something; take it
   out and a bug becomes a data-loss event rather than a rejected write.

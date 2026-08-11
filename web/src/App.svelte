@@ -19,6 +19,10 @@
   // share views also carry the document they operate on.
   let route = $state({ view: 'loading' })
 
+  // An invite token from #invite=<token>. Read once at load, because signing
+  // up clears the hash and the token must outlive that.
+  const inviteToken = new URLSearchParams(location.hash.slice(1)).get('invite') || ''
+
   onMount(async () => {
     try {
       me = await api('/api/me')
@@ -99,7 +103,9 @@
   <h1>docs</h1>
 
   {#if route.view === 'auth'}
-    <AuthView onSignedIn={signedIn} />
+    <!-- An #invite=<token> link lands here signed out; the token is handed to
+         the sign-up form, which is the only thing that can spend it. -->
+    <AuthView onSignedIn={signedIn} invite={inviteToken} />
   {:else if route.view === 'list'}
     <DocList {me} onOpen={openDoc} onShare={openShare} onSignOut={signOut} />
   {:else if route.view === 'editor'}

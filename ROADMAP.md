@@ -32,21 +32,9 @@ automation and the reason is unfound. Verify that path by hand until it is.
 The audience is trusted staff; the login page is on the public internet. These
 defend the perimeter, not the colleagues — see *Threat model*.
 
-- **`-signup=closed` in the deployed entrypoint.** The flag defaults to `open`
-  and `Dockerfile` does not pass it, so the production instance currently lets
-  anyone who finds the URL create an account. Needs an answer for how staff are
-  onboarded once it is closed.
-- **Bound concurrent password verifications.** argon2id is configured at 64 MiB
-  per call and nothing limits how many run at once, so unauthenticated requests
-  to `/api/login` can exhaust memory on a small arm64 box. A semaphore of a few
-  permits, with a 503 past it — this is an availability bug, not a nicety.
-- **Rate-limit and lock out** per account and per source address, on `/api/login`
-  and `/api/share/redeem`. Trap: behind a proxy every request appears to come
-  from the proxy, so this needs `X-Forwarded-For` — but trusting it blindly
-  lets an attacker spoof their way around the limit. Trust it only when the
-  direct peer is private/loopback, else use the peer.
-- **Log failed attempts** with address and account, so an attack is visible at
-  all. Nothing currently records one.
+- **Rate-limit and lock out** repeated failures, per account and per source
+  address, on `/api/login`. `clientIP()` already resolves the source correctly
+  behind the proxy; nothing consumes it yet beyond the log line.
 - Deliberately not now: 2FA, email verification, password-strength rules. See
   *Threat model* for why the bar sits here.
 

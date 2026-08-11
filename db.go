@@ -173,6 +173,28 @@ CREATE TABLE comments (
 CREATE INDEX comments_thread ON comments(thread_id, id);
 `
 
+// Schema v6: invite links. With signup closed — which is how a publicly
+// reachable instance must run — an invite is the only way an account comes
+// into existence, so it is a capability exactly like a share link: the token
+// is stored as SHA-256, the plaintext is returned once at creation, and a lost
+// one is revoked and reissued rather than recovered.
+//
+// Single-use and short-lived, unlike a share link. A share link grants access
+// to one document and revoking it is cheap; an invite creates an *account*, so
+// an old one sitting in a mailbox is a standing offer to join the instance.
+const schemaV6 = `
+CREATE TABLE invites (
+	id         INTEGER PRIMARY KEY,
+	token_hash BLOB NOT NULL UNIQUE,
+	note       TEXT NOT NULL,
+	created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL,
+	used_at    INTEGER,
+	used_by    INTEGER REFERENCES users(id)
+);
+`
+
 func openDB(path string) (*sql.DB, error) {
 	// _pragma values apply per-connection; busy_timeout is belt-and-braces
 	// since MaxOpenConns(1) already serializes everything through one
@@ -195,7 +217,7 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
-	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5} {
+	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6} {
 		if v > ver {
 			continue
 		}

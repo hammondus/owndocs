@@ -19,4 +19,4 @@ USER docs
 COPY --from=build /docs /usr/local/bin/docs
 VOLUME /data
 EXPOSE 8484
-ENTRYPOINT ["docs", "-addr", ":8484", "-db", "/data/docs.db"]
+ENTRYPOINT ["docs", "-addr", ":8484", "-db", "/data/docs.db", "-signup=closed"]

@@ -26,6 +26,48 @@
     onOpen(doc)
   }
 
+  // ---- invites --------------------------------------------------------------
+  // How a new staff member gets an account once signup is closed, which is how
+  // a publicly reachable instance runs. Same shape as a share link: the token
+  // comes back once, so it is shown until dismissed and never again.
+  let invites = $state([])
+  let showInvites = $state(false)
+  let inviteNote = $state('')
+  let freshLink = $state('')
+  let inviteError = $state('')
+
+  async function loadInvites() {
+    try {
+      invites = await api('/api/invites')
+    } catch (err) {
+      inviteError = err.message
+    }
+  }
+
+  async function createInvite(event) {
+    event.preventDefault()
+    inviteError = ''
+    try {
+      const v = await api('/api/invites', {
+        method: 'POST',
+        body: JSON.stringify({ note: inviteNote }),
+      })
+      freshLink = `${location.origin}/#invite=${v.token}`
+      inviteNote = ''
+      await loadInvites()
+    } catch (err) {
+      inviteError = err.message
+    }
+  }
+
+  async function revokeInvite(v) {
+    if (!confirm(`Revoke the invite for "${v.note}"?`)) return
+    await api(`/api/invites/${v.id}`, { method: 'DELETE' })
+    await loadInvites()
+  }
+
+  const when = (ts) => new Date(ts * 1000).toLocaleDateString()
+
   async function deleteDoc(doc) {
     if (!confirm(`Delete "${doc.title}"?`)) return
     await api(`/api/docs/${doc.id}`, { method: 'DELETE' })
@@ -37,6 +79,46 @@
   Signed in as {me.name} &lt;{me.email}&gt; —
   <a href="#signout" onclick={(e) => { e.preventDefault(); onSignOut() }}>sign out</a>
 </p>
+
+<p>
+  <button onclick={() => { showInvites = !showInvites; if (showInvites) loadInvites() }}>
+    {showInvites ? 'hide' : 'invite someone'}
+  </button>
+</p>
+
+{#if showInvites}
+  <fieldset>
+    <legend>Invites</legend>
+    <form onsubmit={createInvite}>
+      <input placeholder="who is this for?" bind:value={inviteNote} required />
+      <button>Create invite link</button>
+    </form>
+    {#if freshLink}
+      <!-- Shown once. Only the hash is stored, so this cannot be produced
+           again — a lost link is revoked and reissued. -->
+      <p class="fresh">
+        <input readonly value={freshLink} onfocus={(e) => e.target.select()} />
+        <button onclick={() => (freshLink = '')}>done</button>
+      </p>
+    {/if}
+    {#if inviteError}<p class="err">{inviteError}</p>{/if}
+    <ul>
+      {#each invites as v (v.id)}
+        <li>
+          <strong>{v.note}</strong>
+          {#if v.used_at}
+            <span class="kind">used {when(v.used_at)}</span>
+          {:else if v.expires_at * 1000 < Date.now()}
+            <span class="kind">expired</span>
+          {:else}
+            <span class="kind">expires {when(v.expires_at)}</span>
+            <button onclick={() => revokeInvite(v)}>revoke</button>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  </fieldset>
+{/if}
 
 <form onsubmit={createDoc}>
   <!-- bind:value keeps the input and the newTitle variable in sync both ways -->

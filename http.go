@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io/fs"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -33,6 +34,13 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen, dev bool) http.Handl
 	mux.HandleFunc("GET /api/docs/{id}/links", requireAuth(db, handleListLinks(db)))
 	mux.HandleFunc("DELETE /api/docs/{id}/links/{lid}", requireAuth(db, handleDeleteLink(db)))
 	mux.HandleFunc("POST /api/share/redeem", requireAuth(db, handleRedeemLink(db)))
+
+	// Invites are how accounts come into existence once signup is closed.
+	// Any signed-in user may mint one — see invites.go for why there is no
+	// admin role gating this.
+	mux.HandleFunc("GET /api/invites", requireAuth(db, handleListInvites(db)))
+	mux.HandleFunc("POST /api/invites", requireAuth(db, handleCreateInvite(db)))
+	mux.HandleFunc("DELETE /api/invites/{id}", requireAuth(db, handleDeleteInvite(db)))
 
 	mux.HandleFunc("GET /api/docs/{id}/history", requireAuth(db, handleListHistory(db)))
 	mux.HandleFunc("GET /api/docs/{id}/replay", requireAuth(db, handleReplay(db)))
@@ -91,6 +99,32 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 		return false
 	}
 	return true
+}
+
+// clientIP is who to blame in a log line — and, later, who to rate-limit.
+//
+// Behind nginx proxy manager every request arrives from the proxy, so the peer
+// address is useless on its own and `X-Forwarded-For` is the real source. But
+// that header is client-supplied: trusting it unconditionally lets anyone
+// reaching the app directly claim any address they like. So it is honoured
+// only when the immediate peer is loopback or private — which is exactly the
+// case where the request came through the proxy — and the *last* entry is
+// taken, since a proxy appends and only the entry it wrote is trustworthy.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer := net.ParseIP(host)
+	if peer == nil || !(peer.IsLoopback() || peer.IsPrivate() || peer.IsLinkLocalUnicast()) {
+		return host
+	}
+	fwd := r.Header.Get("X-Forwarded-For")
+	if fwd == "" {
+		return host
+	}
+	parts := strings.Split(fwd, ",")
+	return strings.TrimSpace(parts[len(parts)-1])
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -8,7 +8,9 @@
 
   // $props() declares what the parent passes in (Svelte 5's replacement
   // for `export let`).
-  let { onSignedIn } = $props()
+  // `invite` is the token from an #invite=<token> link, or '' — it decides
+  // whether the sign-up form is offered at all on a closed instance.
+  let { onSignedIn, invite = '' } = $props()
 
   let error = $state('')
 
@@ -40,6 +42,9 @@
     event.preventDefault()
     const fields = Object.fromEntries(new FormData(event.target))
     try {
+      // The invite token rides along on sign-up. The server ignores it when
+      // signup is open, and requires it when closed.
+      if (path === '/api/signup' && invite) fields.invite = invite
       const user = await api(path, { method: 'POST', body: JSON.stringify(fields) })
       error = ''
       onSignedIn(user)
@@ -68,7 +73,10 @@
 </fieldset>
 
 <fieldset>
-  <legend>Sign up</legend>
+  <legend>{invite ? 'Create your account' : 'Sign up'}</legend>
+  {#if invite}
+    <p class="hint">You were invited. Fill this in to claim it.</p>
+  {/if}
   <form onsubmit={(e) => submit(e, '/api/signup')}>
     <input name="name" placeholder="name" required />
     <input name="email" type="email" placeholder="email" required />

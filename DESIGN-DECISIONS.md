@@ -29,6 +29,55 @@ Explicitly out of scope (each is a project-killer for a solo clone):
   commercial. Export is Markdown/HTML/CSV/xlsx instead.
 - Offline editing, mobile apps.
 
+### Invite links: how an account exists once signup is closed
+
+A publicly reachable instance has to run `-signup=closed`, which left no way to
+add staff — so accounts now come from invite links, modelled on share links
+because they are the same shape of thing: a bearer capability, stored as
+SHA-256, plaintext returned once at creation, revoked and reissued rather than
+recovered.
+
+Two differences from a share link, both following from what an invite grants:
+
+- **Single use.** A share link grants access to one document and is naturally
+  reusable. An invite creates an *account*, and "the link for the new hires" is
+  how one invite quietly becomes six.
+- **Seven days.** An old invite in a mailbox is a standing offer to join the
+  instance, long after the person it was meant for did or did not take it up.
+
+**Any signed-in user may invite.** There is no global admin in this app — roles
+are per-document — and inventing one for this is out of proportion to a company
+where everyone with an account is staff. The upgrade path, if it is ever
+wanted, is a flag on `users` checked in `handleCreateInvite` and nowhere else.
+
+Claiming and account creation share one transaction, and the claim is an
+`UPDATE ... WHERE used_at IS NULL` rather than a check followed by a write.
+Two reasons, one of which is not yet load-bearing: a rejected password must not
+cost someone their invite (it is, today — the rollback is why), and concurrent
+claims must not both succeed (they cannot today anyway, since the pool is
+`MaxOpenConns(1)` and transactions serialize — but that is a pool setting, not
+a guarantee anyone will remember this depends on).
+
+Two defects fixed alongside it, both consequences of the login being public:
+
+- **`-signup=closed` is now in the Dockerfile entrypoint.** The flag defaults
+  to `open` and the entrypoint never passed it, so the production instance had
+  been letting anyone who found the URL create an account.
+- **Concurrent password hashing is bounded.** argon2id at 64 MiB per call is
+  correct against guessing, but it is paid by the server on unauthenticated
+  input — a few dozen simultaneous `/api/login` posts is a gigabyte on a box
+  that has not got many. Four permits, 5s wait, then 503. The fix is a bound,
+  not a cheaper hash, and a rate limiter would not replace it: a burst inside
+  one window allocates before any limiter has counted it. The unknown-account
+  dummy verify takes a permit too, or the timing-equalisation it exists for
+  would have become a way around the bound.
+
+Failed logins are now logged with the source address, resolved by `clientIP()`.
+Behind a proxy every request appears to come from the proxy, so that needs
+`X-Forwarded-For` — but honouring it unconditionally lets anyone reaching the
+app directly claim any address. It is trusted only when the immediate peer is
+loopback or private, and only its last entry, which is the one the proxy wrote.
+
 ### Threat model: trusted users, untrusted network
 
 The audience is **staff inside one company**, all authenticated, all known to
@@ -47,11 +96,9 @@ What it does **not** relax, because the reasoning is different:
   2026-08-05: the login page *is* publicly reachable, and only company staff
   have accounts. So password hashing (argon2id), session handling, hashed
   share tokens and `-signup=closed` keep earning their place — they defend the
-  perimeter, not the colleagues, and the perimeter is the open internet. What
-  that still owes is listed in `ROADMAP.md` under *Harden the login surface*;
-  two of those are defects rather than improvements — the deployed entrypoint
-  never passes `-signup=closed` against a flag that defaults to `open`, and
-  nothing bounds concurrent argon2id calls at 64 MiB each.
+  perimeter, not the colleagues, and the perimeter is the open internet. Two
+  defects that followed from it are fixed — see *Invite links* — and what is
+  still owed is in `ROADMAP.md` under *Harden the login surface*.
 - **Server-side permission checks stay**, because they are also what keeps the
   UI honest. `roleFor` is the thing that makes "viewer" mean something; take it
   out and a bug becomes a data-loss event rather than a rejected write.

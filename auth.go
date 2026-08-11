@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -28,6 +29,36 @@ const (
 
 const sessionCookie = "session"
 const sessionTTL = 90 * 24 * time.Hour
+
+// argon2id costs 64 MiB *per call* — that expense is the point against
+// guessing, but it is paid by the server on unauthenticated input, which makes
+// an unbounded number of concurrent calls a memory-exhaustion primitive: a few
+// dozen simultaneous POSTs to /api/login is a gigabyte on a box that does not
+// have many. The answer is not a cheaper hash, it is a bound on how many run
+// at once; past it, callers wait briefly and then get a 503.
+//
+// Sized so the worst case is a few hundred MiB. A rate limiter does not
+// replace this — a burst arriving inside one window allocates before any
+// limiter has counted it.
+const maxConcurrentHashes = 4
+const hashWaitTimeout = 5 * time.Second
+
+var hashSlots = make(chan struct{}, maxConcurrentHashes)
+
+// withHashSlot runs fn holding one of the permits, or reports that the server
+// is too busy rather than queueing without limit.
+func withHashSlot(fn func()) bool {
+	timer := time.NewTimer(hashWaitTimeout)
+	defer timer.Stop()
+	select {
+	case hashSlots <- struct{}{}:
+		defer func() { <-hashSlots }()
+		fn()
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 func hashPassword(pw string) string {
 	salt := make([]byte, argonSaltLen)
@@ -154,16 +185,20 @@ func currentUser(r *http.Request) *user {
 
 func handleSignup(db *sql.DB, open bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !open {
-			jsonError(w, http.StatusForbidden, "signup is closed on this instance")
-			return
-		}
 		var in struct {
 			Email    string `json:"email"`
 			Name     string `json:"name"`
 			Password string `json:"password"`
+			Invite   string `json:"invite"`
 		}
 		if !readJSON(w, r, &in) {
+			return
+		}
+		// Closed signup is how a publicly reachable instance runs, so an
+		// invite is then the only way in. Checked here rather than at the
+		// route, because the same endpoint serves both modes.
+		if !open && in.Invite == "" {
+			jsonError(w, http.StatusForbidden, "signup is closed on this instance — you need an invite link")
 			return
 		}
 		in.Email = strings.ToLower(strings.TrimSpace(in.Email))
@@ -176,14 +211,47 @@ func handleSignup(db *sql.DB, open bool) http.HandlerFunc {
 			jsonError(w, http.StatusBadRequest, "password must be at least 8 characters")
 			return
 		}
-		res, err := db.Exec("INSERT INTO users (email, name, pass_hash, created_at) VALUES (?,?,?,?)",
-			in.Email, in.Name, hashPassword(in.Password), time.Now().Unix())
+		// One transaction for consuming the invite and creating the account, so
+		// a failed signup does not burn the link and two simultaneous signups
+		// on one link cannot both succeed.
+		tx, err := db.Begin()
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		defer tx.Rollback()
+
+		var inviteID int64
+		if in.Invite != "" {
+			inviteID, err = claimInvite(tx, in.Invite)
+			if err != nil {
+				jsonError(w, http.StatusForbidden, errInviteUnusable.Error())
+				return
+			}
+		}
+		var pass string
+		if !withHashSlot(func() { pass = hashPassword(in.Password) }) {
+			jsonError(w, http.StatusServiceUnavailable, "too busy, try again shortly")
+			return
+		}
+		res, err := tx.Exec("INSERT INTO users (email, name, pass_hash, created_at) VALUES (?,?,?,?)",
+			in.Email, in.Name, pass, time.Now().Unix())
 		if err != nil {
 			// UNIQUE violation is the only expected failure here.
 			jsonError(w, http.StatusConflict, "email already registered")
 			return
 		}
 		id, _ := res.LastInsertId()
+		if inviteID != 0 {
+			if _, err := tx.Exec("UPDATE invites SET used_by = ? WHERE id = ?", id, inviteID); err != nil {
+				jsonError(w, http.StatusInternalServerError, "db error")
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			jsonError(w, http.StatusInternalServerError, "db error")
+			return
+		}
 		token, err := createSession(db, id)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "session create failed")
@@ -209,7 +277,11 @@ func handleLogin(db *sql.DB) http.HandlerFunc {
 		err := db.QueryRow("SELECT id, email, name, pass_hash FROM users WHERE email = ?", in.Email).
 			Scan(&u.ID, &u.Email, &u.Name, &hash)
 		if errors.Is(err, sql.ErrNoRows) {
-			verifyPassword(in.Password, dummyHash)
+			// The dummy verify keeps the response time of an unknown account
+			// indistinguishable from a wrong password — and costs the same
+			// 64 MiB, so it takes a permit like any other.
+			withHashSlot(func() { verifyPassword(in.Password, dummyHash) })
+			log.Printf("failed login for unknown %q from %s", in.Email, clientIP(r))
 			jsonError(w, http.StatusUnauthorized, "wrong email or password")
 			return
 		}
@@ -217,7 +289,17 @@ func handleLogin(db *sql.DB) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "lookup failed")
 			return
 		}
-		if !verifyPassword(in.Password, hash) {
+		var okPass bool
+		if !withHashSlot(func() { okPass = verifyPassword(in.Password, hash) }) {
+			jsonError(w, http.StatusServiceUnavailable, "too many sign-in attempts at once, try again shortly")
+			return
+		}
+		if !okPass {
+			// Logged so an attack against a publicly reachable login is visible
+			// at all. Never the password, and never a distinction between a
+			// wrong password and an unknown account beyond what the response
+			// already reveals.
+			log.Printf("failed login for %q from %s", in.Email, clientIP(r))
 			jsonError(w, http.StatusUnauthorized, "wrong email or password")
 			return
 		}

@@ -379,6 +379,48 @@ try {
     )
   })
 
+  // Reading preferences: a viewer-level display choice, so the assertion is
+  // that it reaches the rendered editor and survives a reload — it lives in
+  // localStorage, not in the document.
+  await step('set a reading preference, and it persists', async () => {
+    await clickText(page, 'button', 'Aa')
+    await page.waitForSelector('#rp-font', { timeout: 3000 })
+    await page.select('#rp-font', 'serif')
+    await page.select('#rp-size', '20')
+    await page.waitForFunction(
+      () => {
+        const cs = getComputedStyle(document.querySelector('.cm-editor'))
+        return cs.fontSize === '20px' && /Georgia|Charter|Times/.test(cs.fontFamily)
+      },
+      { timeout: 3000 },
+    )
+    await page.reload({ waitUntil: 'networkidle0' })
+    await page.waitForSelector('.cm-editor', { timeout: 5000 })
+    await page.waitForFunction(
+      () => getComputedStyle(document.querySelector('.cm-editor')).fontSize === '20px',
+      { timeout: 3000 },
+    )
+  })
+
+  // The document itself must be untouched — the whole point of putting
+  // appearance in the viewer is that it never reaches the file. Asserted as
+  // "no update rows appeared", since that is the observable form of it;
+  // searching the history JSON proves nothing, because that endpoint returns
+  // session metadata and never content.
+  await step('changing a preference writes nothing to the document', async () => {
+    const before = await loggedRows(page)
+    await clickText(page, 'button', 'Aa')
+    await page.waitForSelector('#rp-lh', { timeout: 3000 })
+    await page.select('#rp-lh', '1.8')
+    // Asserting an absence needs a wait: the room batches updates to SQLite
+    // about once a second, so anything this triggered would land inside this.
+    await new Promise((r) => setTimeout(r, 1800))
+    const after = await loggedRows(page)
+    if (after !== before) {
+      throw new Error(`a reading preference produced ${after - before} document update(s)`)
+    }
+  })
+
   // Comments on a markdown document. Asserts the panel mounts and renders
   // against a real document without throwing — the failure mode that has bitten
   // this project three times, where a component throws inside {#if} and the

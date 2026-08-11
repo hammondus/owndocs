@@ -123,7 +123,30 @@ with; a viewer-level font is a setting that cannot start an argument.
 
 Stored in `localStorage`, per person per machine, following the precedent set
 by trigger consent — which is deliberately local for a different reason, but
-establishes that not every choice needs a row in the database.
+establishes that not every choice needs a row in the database. Two machines
+means setting it twice; an account setting is the upgrade path if anyone asks.
+
+Implementation (`prefs.js`, `ReadingPrefs.svelte`):
+
+- **CSS custom properties on the root element**, and the editor reads them and
+  nothing else does. One place to change, no component involved, and it
+  applies in `main.js` before the first paint rather than after some component
+  thinks to ask.
+- **Stored preferences merge over the defaults**, never replace them. A blob
+  written by an older build is missing whatever was added since, and trusting
+  it wholesale is how a new preference arrives permanently unset.
+- **Every `localStorage` access is guarded.** Some privacy modes throw on
+  *touching* it, not on writing, so this is a `try` around the property read
+  as well as the call. A preference failing to save must not take the editor
+  down with it.
+- **A zero measure becomes `none`, not `0ch`** — the difference between "no
+  limit" and a column of zero width.
+- **Code stays monospace** because `.md-code` and `.md-codeblock` set their own
+  family, which outranks the inherited one. That was already true; it is now
+  load-bearing, so it has a test and a line in the panel saying so.
+- **CodeMirror re-measures on change.** It caches per-line heights, and size or
+  family changes them without it noticing — `view.requestMeasure()` is what the
+  panel's `onChanged` is for.
 
 ### Threat model: trusted users, untrusted network
 

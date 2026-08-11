@@ -9,6 +9,7 @@
   import { mountEditor, toolbarCommands, setCommentRanges, revealRange } from '../editor.js'
   import CommentsPanel from './CommentsPanel.svelte'
   import DocTitle from './DocTitle.svelte'
+  import ReadingPrefs from './ReadingPrefs.svelte'
   import { listThreads, textAnchor, resolveTextAnchor } from '../comments.js'
   import { scheduleCompaction } from '../compaction.js'
   import { canEdit, canComment } from '../roles.js'
@@ -25,6 +26,7 @@
   let ydoc, provider, view
 
   let showComments = $state(false)
+  let showReading = $state(false)
   let threads = $state([])
   let selection = $state({ from: 0, to: 0 })
   let mayComment = $derived(canComment(doc.role))
@@ -172,6 +174,9 @@
   <button class="linkish" onclick={() => (showComments = !showComments)}>
     💬 comments{openComments ? ` (${openComments})` : ''}
   </button>
+  <button class="linkish" onclick={() => (showReading = !showReading)} title="How this renders for you">
+    Aa
+  </button>
   <span class="status">{status}</span>
   {#if peerCount > 1}
     <span class="status">{peerCount} online</span>
@@ -190,6 +195,12 @@
       >{cmd.label}</button>
     {/each}
   </div>
+{/if}
+
+{#if showReading}
+  <!-- Changing size or family changes line heights, and CodeMirror does not
+       find that out on its own — it caches measurements per line. -->
+  <ReadingPrefs onChanged={() => view?.requestMeasure()} onClose={() => (showReading = false)} />
 {/if}
 
 {#if showComments}

@@ -3,5 +3,10 @@
 import './app.css'
 import { mount } from 'svelte'
 import App from './App.svelte'
+import { load, apply } from './prefs.js'
+
+// Reading preferences are a display choice, so they apply before the first
+// paint rather than after some component thinks to ask for them.
+apply(load())
 
 mount(App, { target: document.getElementById('app') })

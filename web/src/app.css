@@ -26,10 +26,17 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
 .toolbar button { min-width: 2.2rem; padding: .25rem .4rem; border: 1px solid #8884;
                   border-radius: 4px; background: transparent; cursor: pointer; }
 .toolbar button:hover { background: #8882; }
-.cm-editor { border: 1px solid #8884; border-radius: 6px; height: 72vh; font-size: 1rem; }
+/* Reading preferences (prefs.js) reach the editor through these variables and
+   nowhere else, so the choice applies everywhere at once and touches no
+   component. Fallbacks keep the editor sane if nothing has been applied yet. */
+.cm-editor { border: 1px solid #8884; border-radius: 6px; height: 72vh;
+             font-size: var(--reading-size, 1rem);
+             font-family: var(--reading-font, system-ui, sans-serif); }
 .cm-editor.cm-focused { outline: none; border-color: #888a; }
-.cm-scroller { line-height: 1.6; font-family: inherit; }
-.cm-content { padding: 1rem; }
+.cm-scroller { line-height: var(--reading-line-height, 1.6); font-family: inherit; }
+/* The measure applies to the content, so the text column narrows while the
+   editor's chrome and scrollbar stay full width. */
+.cm-content { padding: 1rem; max-width: var(--reading-measure, none); margin: 0 auto; }
 
 /* live preview styling — classes attached by editor.js decorations */
 .md-strong { font-weight: 700; }

@@ -27,9 +27,9 @@ runner: runner-js
 test: runner-js
 	go vet ./... && go test ./...
 	# The headless JS suites. They existed but nothing ran them, so a break in
-	# the model, the formula engine or the comment anchors was only ever found
-	# by hand. Neither needs a server.
-	cd web && node scripts/sheet_test.mjs && node scripts/table_test.mjs && node scripts/diff_test.mjs
+	# the model, the formula engine, the anchors or the reading prefs was only
+	# ever found by hand. None of them needs a server.
+	cd web && node scripts/sheet_test.mjs && node scripts/table_test.mjs && node scripts/diff_test.mjs && node scripts/prefs_test.mjs
 
 # Browser-level checks: the only tests that mount a component, and the only
 # ones that can see a thrown error inside an {#if} presenting as a dead

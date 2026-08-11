@@ -421,6 +421,21 @@ try {
     }
   })
 
+  // Reachable from the document list as well as from inside a document: the
+  // preference is global, and a setting on one screen only is a setting nobody
+  // finds. This step exists because the first version shipped exactly that.
+  await step('reading preferences are reachable from the document list', async () => {
+    await clickText(page, 'a', '← documents')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await clickText(page, 'button', 'Aa reading')
+    await page.waitForSelector('#rp-font', { timeout: 3000 })
+    await clickText(page, 'button', 'close')
+    // Put the document back, or every step after this one is stranded on the
+    // list. Steps share one browser and run in order by design.
+    await clickText(page, 'a', 'Renamed By Test')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+  })
+
   // Comments on a markdown document. Asserts the panel mounts and renders
   // against a real document without throwing — the failure mode that has bitten
   // this project three times, where a component throws inside {#if} and the

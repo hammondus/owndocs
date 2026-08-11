@@ -4,6 +4,7 @@
   import { onMount } from 'svelte'
   import { api } from './api.js'
   import { canEdit } from '../roles.js'
+  import ReadingPrefs from './ReadingPrefs.svelte'
 
   let { me, onOpen, onShare, onSignOut } = $props()
 
@@ -73,6 +74,11 @@
   // headers and on sheet tabs.
   let renamingId = $state(null)
 
+  // The reading panel also lives here, not only inside a document: the
+  // preference is global, and a setting reachable from exactly one screen is
+  // a setting nobody finds.
+  let showReading = $state(false)
+
   async function commitRename(event, doc) {
     const title = event.target.value.trim()
     renamingId = null
@@ -97,7 +103,17 @@
   <button onclick={() => { showInvites = !showInvites; if (showInvites) loadInvites() }}>
     {showInvites ? 'hide' : 'invite someone'}
   </button>
+  <button onclick={() => (showReading = !showReading)} title="How documents render for you">
+    Aa reading
+  </button>
 </p>
+
+{#if showReading}
+  <!-- No editor to re-measure from here, so onChanged has nothing to do: the
+       CSS variables are already live, and any document opened later picks
+       them up when it mounts. -->
+  <ReadingPrefs onChanged={() => {}} onClose={() => (showReading = false)} />
+{/if}
 
 {#if showInvites}
   <fieldset>

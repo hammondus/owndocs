@@ -147,6 +147,13 @@ Implementation (`prefs.js`, `ReadingPrefs.svelte`):
 - **CodeMirror re-measures on change.** It caches per-line heights, and size or
   family changes them without it noticing — `view.requestMeasure()` is what the
   panel's `onChanged` is for.
+- **Reachable from the document list as well as from inside a document.** The
+  first version put the control only in the markdown editor, which is where
+  the preference has an effect but not where anyone looks for a setting —
+  and it left it invisible entirely to someone in a spreadsheet or on the
+  list. A global preference reachable from one screen is a preference nobody
+  finds. Deliberately *not* in the sheet view: nothing there would change,
+  and a control that does nothing is worse than an absent one.
 
 ### Threat model: trusted users, untrusted network
 

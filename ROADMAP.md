@@ -74,12 +74,13 @@ second answer settles the first.
 
 ## Document formatting: what markdown can and cannot express
 
-Not scheduled — a reference for deciding later. The constraint that shapes all
-of it: **the document is plain markdown text**, so anything here has to survive
-a round trip through a `.md` file the git exporter writes, and be decoratable
-from the CodeMirror syntax tree. That second part is the real cost driver:
-`@codemirror/lang-markdown` parses CommonMark + GFM, and anything beyond that
-needs a Lezer parser extension before it can be styled at all.
+Mostly done now; kept as the reference for where the line falls. The constraint
+that shapes all of it: **the document is plain markdown text**, so anything
+here has to survive a round trip through a `.md` file the git exporter writes,
+and be decoratable from the CodeMirror syntax tree. That second part was the
+real cost driver — `@codemirror/lang-markdown` parses CommonMark + GFM, and
+anything beyond it needs a Lezer parser extension before it can be styled at
+all. Three of those were written: highlight, definition lists, footnotes.
 
 ### Already shipped
 
@@ -87,21 +88,26 @@ Bold, italic, strikethrough, inline code, H1–H6, bullet lists, numbered lists,
 nested lists, task lists, blockquotes, links, images, tables (rendered as real
 HTML tables, with writable column alignment), fenced code blocks with syntax
 highlighting, horizontal rules, hard line breaks, `==highlight==`, superscript
-and subscript, `:emoji:` shortcodes, `> [!NOTE]` callouts, definition lists.
+and subscript, `:emoji:` shortcodes, `> [!NOTE]` callouts, definition lists,
+footnotes.
 
 Everything above is plain text that survives the round trip through the `.md`
-file the exporter writes. See *The plain-markdown constructs* and *The extended
-constructs* in the design doc for what each one cost.
+file the exporter writes. See *The plain-markdown constructs*, *The extended
+constructs* and *Footnotes* in the design doc for what each one cost.
 
-### Still open — each needs a real dependency or a grammar
+Also shipped, and *not* part of the document: a table of contents built from
+the headings, and an emoji picker. Both are display, and live with the reading
+preferences — see *Formatting*.
 
-- **Footnotes** — `[^1]`. Plain text and no dependency, but unlike the rest it
-  is not a local construct: the marker and the note are in different places, so
-  it needs a document-wide pass to pair them and number them
+### Still open — each needs a real dependency
+
 - **Math** — `$…$` / `$$…$$`, needs KaTeX or MathJax
 - **Mermaid diagrams** in a fenced block — likewise a real dependency
 
-Emoji ships a **curated** shortcode table (~250 entries), not the full ~1800.
+Nothing else in markdown is unsupported by accident. Anything not listed here
+is either shipped or in *Not expressible in markdown at all* below.
+
+Emoji ships a **curated** shortcode table (242 entries), not the full ~1800.
 An unknown shortcode stays literal text; adding one is a line in `emoji.js`.
 
 ### Not expressible in markdown at all

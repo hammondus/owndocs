@@ -435,6 +435,68 @@ a colour nobody chose. The colours are CSS custom properties defined in
 unlike the `#8884` alpha trick used elsewhere, a syntax colour is a real hue and
 cannot serve both grounds.
 
+### Footnotes: the one construct that is not local
+
+Shipped 2026-08-11, and left until last on purpose. Every other construct in
+this editor can be decorated from its own node: `**bold**` is bold because of
+the characters around it. `[^why]` renders as **3** because two other
+references happen to precede it, and what it says lives somewhere else in the
+file. The number is a property of the *document*, so this is the only one
+needing a whole-document pass.
+
+**Both halves would otherwise parse as an ordinary `Link`.** `[^1]` is a
+bracketed span like any other, and so is `[^1]: the note`, which is why the
+inline rule has to run **before** `Link` rather than merely alongside it —
+otherwise the reference is styled as a hyperlink and the generic marker rule
+hides its brackets. Tested in both directions: a footnote is not left as a
+link, and an ordinary link is not mistaken for a footnote.
+
+**Numbered by order of first reference.** That is what every other renderer
+does and the only order a reader can predict — definitions usually sit together
+at the bottom, so numbering by *those* would number them by the order they were
+typed. A definition nobody cites still gets a number, after all the referenced
+ones, so it renders as a footnote rather than as leftover text on the page. A
+reference citing nothing also keeps its number, because dropping it would
+renumber every note after it; it is marked instead, since the usual cause is a
+typo in one half of a pair.
+
+**A consequence worth stating, because it looks like a bug and is not:** with
+notes listed in a different order from their citations, the definitions at the
+bottom read `2. 1. 4.` rather than `1. 2. 3.`. Pandoc and GitHub avoid this by
+*reordering the printed notes*, which they can do because they render to a
+separate output document. This previews the source in place, and reordering the
+author's lines is not something a live preview may do. The numbers pair
+correctly, which is what they are for; an author who wants them ascending at
+the foot of the page can move the lines.
+
+**A definition must be able to interrupt a paragraph.** Block parsers are not
+consulted for a line in the middle of one unless the construct declares it can
+interrupt, so without an `endLeaf` predicate, typing `[^1]: the note` directly
+under the text that cites it does *nothing at all* — the line is swallowed as
+paragraph continuation and the failure is completely silent. Pandoc wants a
+blank line there; being lenient costs one predicate and removes a trap.
+
+**The button writes both halves at once** — reference at the cursor, definition
+at the foot of the document, cursor left in the note. A reference written
+without a definition is this construct's failure mode, so the affordance that
+creates one alone is the wrong affordance. The label is the lowest number *not
+already in use*, not the count plus one: deleting a note from the middle would
+otherwise hand out a label that is still taken further down.
+
+**Clicking a number follows the pairing** — a reference goes to what it cites, a
+definition back to where it was first cited. Widgets are inert DOM, so this is
+a mousedown handler that reads the label out of the document at the widget's
+position, the same trick `handleCheckboxClick` uses and for the same reason:
+nothing is stored in the widget, so nothing can go stale.
+
+The pairing pass is `indexFootnotes` in `mdext.js`, taking a tree and a slice
+function rather than an `EditorState` — the rule `table.js` set — so the
+numbering is tested in node against a real parse. `editor.js` holds it in a
+`StateField` rebuilt on every document change. That is a whole-document tree
+walk per keystroke, accepted for the same reason `buildTableDecorations`
+accepts one, and it is the cheaper of the two: that field rebuilds on selection
+changes as well.
+
 ### Table of contents: a reading preference, not a document feature
 
 Shipped 2026-08-11. Off by default; left or right; a depth limit from H1 to

@@ -5,14 +5,14 @@
 //
 // Run from web/: node scripts/mdext_test.mjs
 import { markdownLanguage } from '@codemirror/lang-markdown'
-import { markdownExtensions } from '../src/mdext.js'
+import { markdownExtensions, indexFootnotes } from '../src/mdext.js'
 import { emojiFor } from '../src/emoji.js'
 
 // Exactly what editor.js builds. `markdownLanguage` is lang-markdown's
 // *extended* parser and already carries GFM plus Subscript, Superscript and
 // Emoji — so those three were parsing in this app before any of this work, and
-// were only ever missing a decoration. Only Highlight and DefinitionList are
-// added here.
+// were only ever missing a decoration. Only Highlight, DefinitionList and
+// Footnote are added here.
 //
 // configure() takes the extension (or a nested array of them) directly. An
 // object like `{extensions: [...]}` is not a MarkdownConfig, and is accepted
@@ -99,6 +99,105 @@ eq(nodes('# Heading\n\nWidget\n: A thing\n', 'DefinitionTerm'), ['Widget'], 'a l
 // A definition list must not swallow the constructs that share its shape.
 eq(has('| a | b |\n| - | - |\n', 'Table'), true, 'tables still parse with the leaf parser installed')
 eq(has('Title\n-----\n', 'SetextHeading2'), true, 'setext headings still parse')
+
+// ---- footnotes -------------------------------------------------------------
+// The grammar's job here is only to mark the two halves. Pairing and numbering
+// them is indexFootnotes, tested below.
+
+eq(nodes('A claim.[^1]', 'FootnoteRef'), ['[^1]'], 'a reference is recognised')
+eq(nodes('A claim.[^why-it-broke]', 'FootnoteRef'), ['[^why-it-broke]'], 'a label can be a word')
+eq(nodes('[^1]: The note.', 'Footnote'), ['[^1]: The note.'], 'a definition is a block of its own')
+eq(nodes('[^1]: The note.', 'FootnoteMark'), ['[^1]: '], 'the marker is a node, so it can be replaced by a number')
+eq(
+  nodes('[^1]: A **strong** note.', 'StrongEmphasis'),
+  ['**strong**'],
+  'a definition body is parsed as inline markdown',
+)
+
+// The reason the inline rule has to run before Link: without it, both halves
+// are ordinary bracketed spans and get styled as hyperlinks.
+eq(nodes('A claim.[^1]', 'Link'), [], 'a reference is not left as a link')
+eq(nodes('See [the docs](http://x)', 'Link'), ['[the docs](http://x)'], 'ordinary links still parse')
+eq(nodes('See [the docs](http://x)', 'FootnoteRef'), [], 'and are not mistaken for footnotes')
+
+// The shapes that must NOT be footnotes.
+eq(nodes('An array index a[^2]', 'FootnoteRef'), ['[^2]'], 'a bracketed caret is a reference wherever it appears')
+eq(nodes('[^ 1]: spaced', 'Footnote'), [], 'a label cannot contain a space')
+eq(nodes('[]: empty', 'Footnote'), [], 'a definition needs a caret')
+eq(nodes('[^1] not a definition', 'Footnote'), [], 'a reference alone is not a definition')
+eq(nodes('  [^1]: indented', 'Footnote'), ['[^1]: indented'], 'a definition may be indented')
+
+// Block parsers are not consulted mid-paragraph unless the construct says it
+// can interrupt one. Without that, typing the note directly under the text
+// that cites it does nothing whatsoever, and nothing says why.
+eq(
+  nodes('A claim.[^1]\n[^1]: the note\n', 'Footnote'),
+  ['[^1]: the note'],
+  'a definition interrupts a paragraph rather than vanishing into it',
+)
+eq(
+  nodes('A claim.[^1]\n[^1]: the note\n', 'Paragraph'),
+  ['A claim.[^1]'],
+  'and the paragraph above it ends where it should',
+)
+
+// A definition inside a list must not swallow the item, and a reference inside
+// one must still be found.
+eq(nodes('- item with a note[^a]\n', 'FootnoteRef'), ['[^a]'], 'a reference works inside a list item')
+
+// ---- footnote numbering ----------------------------------------------------
+// The pairing pass, which is where the real logic is. A footnote's number is
+// not a property of the text carrying it — it comes from how many other
+// references precede it — so this is the one construct that cannot be checked
+// by looking at a single node.
+
+const index = (doc) => indexFootnotes(parser.parse(doc), (a, b) => doc.slice(a, b))
+const numbering = (doc) => Object.fromEntries(index(doc).numbers)
+
+eq(numbering('A[^1] B[^2]\n\n[^1]: x\n[^2]: y\n'), { 1: 1, 2: 2 }, 'numbered in order')
+
+// The case the whole pass exists for: numbers come from REFERENCE order, not
+// from the labels and not from the order the notes were written.
+eq(
+  numbering('First[^zebra] second[^apple]\n\n[^apple]: a\n[^zebra]: z\n'),
+  { zebra: 1, apple: 2 },
+  'labels do not decide the number, and neither does definition order',
+)
+eq(
+  numbering('One[^b] two[^a] three[^b]\n\n[^a]: x\n[^b]: y\n'),
+  { b: 1, a: 2 },
+  'citing the same note twice does not give it two numbers',
+)
+
+// The two half-finished states, both of which must still render.
+eq(numbering('A claim[^missing]\n'), { missing: 1 }, 'a reference with no note still gets a number')
+eq(numbering('Text\n\n[^lonely]: nobody cites this\n'), { lonely: 1 }, 'a note nobody cites still gets one')
+eq(
+  numbering('A[^used]\n\n[^unused]: first in the file\n[^used]: cited\n'),
+  { used: 1, unused: 2 },
+  'cited notes are numbered before uncited ones, whatever their order in the file',
+)
+
+{
+  const i = index('A claim[^1] and more[^1]\n\n[^1]: The note.\n')
+  eq(i.defs.has('1'), true, 'the definition is located')
+  eq(i.firstRef.get('1') < i.defs.get('1'), true, 'the FIRST reference is the one recorded')
+  eq(i.numbers.size, 1, 'one label, one number')
+}
+{
+  // Dangling in the other direction, which the renderer marks in red.
+  const i = index('A claim[^nope]\n')
+  eq(i.defs.has('nope'), false, 'a citation of nothing has no definition to point at')
+}
+
+// A definition may itself cite another note.
+eq(
+  numbering('A[^a]\n\n[^a]: see also[^b]\n[^b]: the other one\n'),
+  { a: 1, b: 2 },
+  'a reference inside a note is numbered too',
+)
+
+eq(numbering('No footnotes here.\n'), {}, 'a document without footnotes indexes to nothing')
 
 // ---- superscript, subscript, emoji -----------------------------------------
 // Shipped by @lezer/markdown; asserted because switching them on is a config

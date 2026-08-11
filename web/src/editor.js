@@ -12,7 +12,7 @@ import { defaultKeymap } from '@codemirror/commands'
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 import * as Y from 'yjs'
 import { parseTableData } from './table.js'
-import { markdownExtensions } from './mdext.js'
+import { markdownExtensions, footnoteLabel, isFootnoteDef, indexFootnotes } from './mdext.js'
 import { emojiFor } from './emoji.js'
 import {
   listMarker,
@@ -255,6 +255,9 @@ function buildDecorations(view, from, to) {
   const { state } = view
   const decos = []
   const lineDecos = new Map() // line.from -> class, deduped
+  // Absent in the standalone preview only if someone forgets to include the
+  // field; `false` makes that a missing number rather than a thrown plugin.
+  const footnotes = state.field(footnoteIndex, false)
 
   const addLines = (from, to, cls) => {
     for (let pos = from; pos <= to; ) {
@@ -327,6 +330,34 @@ function buildDecorations(view, from, to) {
             )
           }
           return false
+        }
+        if (name === 'FootnoteRef' || name === 'FootnoteMark') {
+          const isRef = name === 'FootnoteRef'
+          // A definition's marker is revealed when the cursor is anywhere in
+          // the note; a reference's, only when it is on the reference itself.
+          const scope = isRef ? node : node.node.parent || node
+          const label = footnoteLabel(state.sliceDoc(node.from, node.to))
+          const n = label && footnotes ? footnotes.numbers.get(label) : null
+          if (!n || selectionTouches(state, scope.from, scope.to)) {
+            decos.push(mark('md-dim').range(node.from, node.to))
+            return false
+          }
+          // A reference with nothing to cite still gets a number — dropping it
+          // would renumber everything after it — but says so, because the
+          // usual cause is a typo in one half of the pair.
+          const missing = isRef && !footnotes.defs.has(label)
+          const cls = `md-fn-num ${isRef ? 'md-fn-ref' : 'md-fn-def'}${missing ? ' md-fn-missing' : ''}`
+          decos.push(
+            Decoration.replace({ widget: new TextWidget(isRef ? String(n) : `${n}.`, cls) }).range(
+              node.from,
+              node.to,
+            ),
+          )
+          return false
+        }
+        if (name === 'Footnote') {
+          addLines(node.from, node.to, 'md-footnote')
+          return // descend, so the marker above is reached
         }
         if (name === 'DefinitionTerm' || name === 'DefinitionDesc') {
           addLines(node.from, node.to, name === 'DefinitionTerm' ? 'md-dt' : 'md-dd')
@@ -447,6 +478,63 @@ const tableDecorations = StateField.define({
   },
   provide: (field) => EditorView.decorations.from(field),
 })
+
+// ---- footnotes: the document-wide pass -------------------------------------
+//
+// Every other construct in this editor can be decorated from its own node.
+// A footnote cannot: `[^why]` renders as "3" because two other references
+// happen to come before it, and what it says lives somewhere else in the file.
+// So the number is a property of the *document*, and this field is where that
+// is worked out.
+//
+// Numbered by order of first **reference**, which is what every other renderer
+// does and the only order a reader can predict — the definitions are usually
+// all at the bottom, so numbering by those would number them by how they were
+// typed. A definition that is never referenced still gets a number, after the
+// referenced ones, so it renders as a footnote rather than as leftover text.
+//
+// The pairing itself is `indexFootnotes` in mdext.js, which is DOM-free and
+// tested there. This only supplies it with a tree.
+//
+// Recomputed on every document change. That is a whole-document tree walk, and
+// worth it here for the same reason `buildTableDecorations` accepts one — which
+// already runs on every doc *and* selection change, so this is the cheaper of
+// the two.
+function buildFootnoteIndex(state) {
+  const tree = ensureSyntaxTree(state, state.doc.length, 50) || syntaxTree(state)
+  return indexFootnotes(tree, (a, b) => state.sliceDoc(a, b))
+}
+
+const footnoteIndex = StateField.define({
+  create: buildFootnoteIndex,
+  update: (value, tr) => (tr.docChanged ? buildFootnoteIndex(tr.state) : value),
+})
+
+// Clicking a number follows the pairing: a reference goes to what it cites, a
+// definition goes back to where it was cited. Widgets are inert DOM, so this
+// is a mousedown handler reading the label out of the document at the widget's
+// position — the same trick handleCheckboxClick uses, and for the same reason:
+// nothing has to be stored in the widget, so nothing can go stale.
+function handleFootnoteClick(event, view) {
+  const el = event.target
+  if (!(el instanceof HTMLElement) || !el.classList.contains('md-fn-num')) return false
+  event.preventDefault()
+  const index = view.state.field(footnoteIndex, false)
+  if (!index) return true
+  const pos = view.posAtDOM(el)
+  const src = view.state.sliceDoc(pos, Math.min(view.state.doc.length, pos + 128))
+  const label = footnoteLabel(src)
+  if (!label) return true
+  const target = isFootnoteDef(src) ? index.firstRef.get(label) : index.defs.get(label)
+  if (target !== undefined) goToPos(view, target)
+  return true
+}
+
+// One mousedown handler, because CodeMirror takes one per event name and both
+// of these are "a widget was clicked".
+function handleWidgetClick(event, view) {
+  return handleCheckboxClick(event, view) || handleFootnoteClick(event, view)
+}
 
 // ---- comment highlights ---------------------------------------------------
 // Where the commented ranges are is not something the editor can work out: it
@@ -851,6 +939,48 @@ function insertDefinition(view) {
   return true
 }
 
+// Insert a reference at the cursor and its definition at the foot of the
+// document — the two halves in one action, because a reference written without
+// a definition is the failure mode this construct has.
+//
+// The label is the lowest number not already in use, not "the count plus one":
+// deleting a note from the middle would otherwise hand out a label that is
+// still taken further down.
+function insertFootnote(view) {
+  const { state } = view
+  const index = state.field(footnoteIndex, false)
+  let n = 1
+  while (index?.numbers.has(String(n))) n++
+  const label = String(n)
+
+  const { from, to } = state.selection.main
+  const end = state.doc.length
+  const atLineStart = end === 0 || state.sliceDoc(end - 1, end) === '\n'
+  // Definitions gather at the bottom: straight under an existing one, and
+  // after a blank line when starting the group.
+  const lastText = lastNonBlankLine(state)
+  const gap = (atLineStart ? '' : '\n') + (isFootnoteDef(lastText) ? '' : '\n')
+  const note = `${gap}[^${label}]: `
+
+  // One change when the cursor is already at the end, since two insertions at
+  // the same offset is a question about ordering this does not need to answer.
+  const changes =
+    to >= end
+      ? [{ from, to, insert: `[^${label}]${note}` }]
+      : [{ from, to, insert: `[^${label}]` }, { from: end, insert: note }]
+  const cs = state.changes(changes)
+  // The end of the document is where the note now is, whichever branch ran.
+  view.dispatch({ changes: cs, selection: { anchor: cs.newLength } })
+  view.focus()
+  return true
+}
+
+function lastNonBlankLine(state) {
+  let line = state.doc.lineAt(state.doc.length)
+  while (line.number > 1 && !line.text.trim()) line = state.doc.line(line.number - 1)
+  return line.text.trim()
+}
+
 // Insert an emoji from the picker.
 //
 // The document gets the **shortcode**, `:warning:`, not the character. The
@@ -996,6 +1126,7 @@ export const toolbarCommands = [
   { sep: true },
   { label: '🔗', title: 'Link (⌘K)', run: insertLink },
   { label: '🖼', title: 'Image', run: insertImage },
+  { label: '†', title: 'Footnote', run: insertFootnote },
   { sep: true },
   { label: '⊞', title: 'Table', run: insertTable },
   { label: '≡', title: 'Table column alignment (cycles left / centre / right)', run: cycleColumnAlign },
@@ -1037,6 +1168,9 @@ const formatKeymap = [
 const markdownSetup = () => [
   markdown({ base: markdownLanguage, codeLanguages: languages, extensions: markdownExtensions }),
   syntaxHighlighting(codeHighlight),
+  // Both editors, so the read-only history preview numbers footnotes the same
+  // way the live one does.
+  footnoteIndex,
 ]
 
 // Read-only standalone editor for previewing a historical state: same
@@ -1095,7 +1229,7 @@ export function mountEditor({ parent, ytext, awareness, readOnly, onSelectionCha
     livePreview,
     tableDecorations,
     commentRanges,
-    EditorView.domEventHandlers({ mousedown: handleCheckboxClick }),
+    EditorView.domEventHandlers({ mousedown: handleWidgetClick }),
     EditorView.lineWrapping,
     yCollab(ytext, awareness, { undoManager }),
   ]

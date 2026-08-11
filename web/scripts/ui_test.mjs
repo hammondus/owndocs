@@ -836,6 +836,79 @@ try {
     )
   })
 
+  // Footnotes are the one construct whose rendering depends on the whole
+  // document, so this is the one where a unit test on a single node proves
+  // least. mdext_test.mjs has the numbering; these are the two things only a
+  // browser shows: that the button writes both halves at once, and that a
+  // number renders where the source says `[^1]`.
+  await step('the footnote button writes both halves and numbers them', async () => {
+    await clickText(page, 'a', '← documents')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI footnote doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    await page.focus('.cm-content')
+
+    await page.keyboard.type('A claim worth citing.')
+    await clickText(page, 'button', '†')
+    // The cursor lands in the note, at the foot of the document.
+    await page.keyboard.type('Where it came from.')
+    await waitForDoc(page, /^\[\^1\]: Where it came from\.$/m)
+  })
+
+  // Each of these puts the cursor somewhere explicit first. Both halves are
+  // markers, so live preview only replaces them once the cursor is off them —
+  // and the cursor is left sitting in the note by the button that made it.
+  const toDocStart = async () => {
+    await page.keyboard.down('Meta')
+    await page.keyboard.press('ArrowUp')
+    await page.keyboard.up('Meta')
+  }
+
+  await step('a footnote renders as its number, and the number is the pair', async () => {
+    await toDocStart()
+    await page.waitForFunction(
+      () => {
+        const ref = document.querySelector('.md-fn-ref')
+        const def = document.querySelector('.md-fn-def')
+        return ref?.textContent === '1' && def?.textContent === '1.' && !ref.classList.contains('md-fn-missing')
+      },
+      { timeout: 3000 },
+    )
+
+    // A second note. Numbering is by reference order across the whole
+    // document, which is the only part of this that needed a design, so the
+    // assertion is on both numbers together rather than on either alone.
+    await page.keyboard.press('End')
+    await clickText(page, 'button', '†')
+    await page.keyboard.type('The second one.')
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('.md-fn-ref')].map((e) => e.textContent).join() === '1,2',
+      { timeout: 3000 },
+    )
+  })
+
+  await step('a reference citing nothing says so', async () => {
+    await toDocStart()
+    await page.keyboard.press('End')
+    await page.keyboard.type('[^gone]')
+    // Away from it, so it renders.
+    await page.keyboard.down('Meta')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.up('Meta')
+    await page.waitForFunction(
+      () => {
+        const missing = [...document.querySelectorAll('.md-fn-ref')].filter((e) =>
+          e.classList.contains('md-fn-missing'),
+        )
+        // Numbered like any other — dropping it would renumber the notes after
+        // it — but marked, because one half of the pair is missing.
+        return missing.length === 1 && missing[0].textContent === '3'
+      },
+      { timeout: 3000 },
+    )
+  })
+
   await step('a document for the contents', async () => {
     await clickText(page, 'a', '← documents')
     await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })

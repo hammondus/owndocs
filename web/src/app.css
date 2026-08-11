@@ -97,6 +97,20 @@ input, button, select { font: inherit; padding: .35rem .5rem; margin: .15rem 0; 
    the only thing left saying which lines are definitions. */
 .md-dt { font-weight: 600; }
 .cm-line.md-dd { padding-left: 1.6rem; }
+
+/* Footnotes. Both halves render as the same number, which is what says they
+   are a pair — and both are clickable, so the number is styled like the link
+   it behaves as. Raised the same way superscript is, and for the same reason:
+   vertical-align would grow the line box CodeMirror has already measured. */
+.md-fn-num { color: #4a8fdd; cursor: pointer; }
+.md-fn-ref { font-size: .78em; position: relative; top: -.4em; }
+/* The definition's number sits on the baseline — it is a list marker there,
+   not a citation. */
+.md-fn-def { font-size: .85em; font-weight: 600; margin-right: .4em; }
+/* A reference citing nothing. It keeps its number, since dropping it would
+   renumber every note after it, but says that the other half is missing. */
+.md-fn-missing { color: #c33; text-decoration: underline dotted; }
+.cm-line.md-footnote { font-size: .92em; padding-left: 1.2rem; opacity: .9; }
 .md-codeblock { font-family: ui-monospace, monospace; font-size: .9em; background: #8881; }
 .md-task-checkbox { margin: 0 .35em 0 0; vertical-align: middle; cursor: pointer; }
 .md-table { border-collapse: collapse; margin: .3em 0; cursor: default; }

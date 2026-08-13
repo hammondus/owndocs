@@ -2940,6 +2940,116 @@ Open underneath this: whether instantiating substitutes per-instance values
 rewrite, so it forces the client-side path regardless of the choice above —
 see *Open questions*.
 
+## Sheet protection (decided, not built)
+
+### Locked by default, and you unlock the inputs
+
+Decided 2026-08-13, from a concrete complaint: sheets where there are more
+formulas than data, and the only thing keeping a colleague from overwriting a
+formula is a colour applied by hand.
+
+**Excel's shape, not a new one.** Every cell is locked; you mark the *input*
+cells unlocked; then you turn protection on for the sheet. That is the right
+way round for these sheets specifically — they are mostly formulas, so the
+short list is the one worth writing down. The stored map therefore holds the
+*exceptions*, keyed exactly as `fmt` and the exact-arithmetic map already are:
+cell as `rowId.colId`, a whole row as `r.<rowId>`, a whole column as
+`c.<colId>`. That is the third use of that keying, so "unlock this column" is
+one entry and it syncs, versions, undoes and git-exports for nothing.
+
+**In the Yjs document, not in SQLite.** The `rich` flag went in a column
+because it is a property *of* a document; protection is per *sheet*, and sheets
+are a client-side convention the server has never heard of. There is nowhere
+else it could live.
+
+**The colour stops being hand-applied.** Marking a cell unlocked is what tints
+it, so the visual cue and the actual editability are one fact instead of two
+that drift apart. The tint is a *default* background that a cell's own colour
+overrides, so it never fights formatting applied deliberately, and it is a
+reading preference so it can be turned off for a clean print.
+
+### What it is, and what it is not
+
+**It is not a security boundary, and must never be described as one.** `ws.go`
+checks the *role* on a document write and then stores the bytes:
+`rm.ingest(c, data[1:])`. The server never looks inside an update, so it cannot
+tell which cells one touched. Cell-level protection is therefore client-side by
+construction, and anyone with editor access and a browser console can write
+whatever they like.
+
+The asymmetry is worth holding onto, because two of the three restrictions are
+real and one is guard rails:
+
+- **Viewer and commenter cannot edit at all** — server-enforced, a closed
+  socket, and a patched client achieves nothing.
+- **An editor cannot change a protected cell** — client-side only.
+
+Which is the right trade for what was actually asked for. It stops the
+accident, and an accident is not committed through devtools. But "editor" means
+somebody trusted, being protected from a mistake rather than from themselves.
+If real authorisation is ever wanted at range granularity, the only honest
+shape is two documents — the locked one shared read-only, the inputs editable —
+and that needs cross-*document* references, which do not exist (only
+cross-sheet). Price that separately if it is ever asked for.
+
+The rule that only an owner may *change* protection is likewise client-side.
+There is no server-side place to put it, for the same reason.
+
+### The owner is protected too, and overrides deliberately
+
+The complaint that shaped this: in Google Sheets the owner has a permanent,
+implicit bypass, so the only way to see what a colleague sees is to sign in as
+one.
+
+So protection applies to **everyone including the owner, by default**. What you
+see is what they see, and testing costs nothing because it is the resting
+state. The owner gets an explicit toggle — "edit protected cells" — off by
+default and visibly on while it is on. Deliberate, visible and temporary,
+rather than permanent and invisible.
+
+Editors get no such toggle, and cannot unprotect the sheet either, so
+protection actually holds for them.
+
+### The cost is the mutation sweep, not the feature
+
+Storage is a map and the UI is a toggle and a tint. The work — and the risk —
+is that **every write path has to consult the guard, and missing one is a
+silent hole**. As of now that is 27 `this.tx(...)` sites and 23 public mutators
+in `model.js`: `setCell`, `setCellShifted`, `writeRect`, `fill`, the three
+`set*Format`, `clearFormat`, the three `set*Exact`, the chart verbs, and the
+structural row/column operations. Plus three paths that are easy to forget
+because they do not look like editing:
+
+- **The script API.** A script must be subject to protection, or it is the same
+  invisible bypass the owner override was designed to avoid. Unless run by an
+  owner with override on.
+- **Undo.** An undo that restores a protected cell is a write to one.
+- **`restoreFrom`.** History restore is a wholesale replace and would go
+  straight through any per-cell check that is not on its path.
+
+So the deliverable is not the feature, it is **a table-driven test that
+enumerates every public mutator and asserts each refuses on a protected
+sheet**. That turns "did I cover them all" from a hope into a check, and it is
+what makes the next mutator safe to add.
+
+Structural operations are blocked outright while a sheet is protected: deleting
+a row takes protected cells with it, and there is no useful sense in which that
+is allowed when editing them is not.
+
+### One owner, which is the known limit
+
+`handleCreateDoc` writes the creator as owner; `handleAddShare` refuses `owner`
+as a grantable role and refuses to change an existing owner's; a share link
+cannot carry it. So there is exactly one owner per document and no way to
+transfer it — which means "the owner can override" means literally one person,
+and while they are away nobody can change a protected cell or unprotect the
+sheet.
+
+Accepted for now, deliberately: the escape hatch is that the owner can
+unprotect for somebody before going away. The proper fix is transferable or
+multiple ownership, wanted and recorded — see `ROADMAP.md`, *Ownership*, and
+*Open questions* for which of the two shapes it should take.
+
 ## Incidents
 
 - **2026-08-05, the comments panel threw before it could render.** User
@@ -3060,6 +3170,26 @@ see *Open questions*.
   than passing quietly.
 
 ## Open questions
+
+- **Ownership: transfer, or more than one owner?** Wanted, not yet shaped —
+  see `ROADMAP.md`. Today `owner` is the creator, is not grantable, is not
+  carried by a share link, and cannot be changed, so every owner-only power
+  (deleting the document, and later overriding sheet protection) belongs to one
+  person who may be on leave.
+
+  **Transfer** is the smaller change: one endpoint, and the old owner becomes
+  an editor. It keeps "exactly one owner" true, which is what every
+  `role != "owner"` test in the codebase currently assumes.
+
+  **Multiple owners** is the more useful one and the more invasive: `roleFor`
+  stops being a single answer per person, "cannot change the owner's role"
+  becomes "cannot remove the last owner", and the share UI has to say what
+  granting it means. It also removes a whole class of "the one person is away"
+  problem rather than moving it.
+
+  Worth deciding *before* sheet protection ships rather than after, because
+  protection adds a second owner-only power and doubles what a wrong answer
+  costs.
 
 - Snapshot-trigger thresholds (currently >100 tail rows or >128 KiB) and the
   1s batch-flush interval: revisit once there's real typing traffic.

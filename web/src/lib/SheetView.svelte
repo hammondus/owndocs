@@ -17,6 +17,7 @@
   import { toTSV, toCSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
   import { NUMBER_FORMATS, formatNumber, isDateFormat } from '../sheet/format.js'
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
+  import { acceptsRef, insertRef, formulaRefs, refColor } from '../sheet/refs.js'
   import { scheduleCompaction } from '../compaction.js'
   import ScriptsPanel from './ScriptsPanel.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
@@ -56,6 +57,18 @@
   // While editing: which cell and the in-progress text. null = not editing.
   // The cell overlay input and the formula bar both bind to edit.value.
   let edit = $state(null)
+
+  // ---- pointing at cells to build a formula --------------------------------
+  // The span the last pointed-at reference occupies in edit.value, kept alive
+  // after the mouse comes up. That is what makes a second click *move* the
+  // reference rather than append one — the behaviour every other spreadsheet
+  // has, and the reason `=SUM(` then two clicks does not read `=SUM(A1B2`.
+  // Cleared by any keystroke, because once somebody types the reference is
+  // theirs and no longer ours to rewrite.
+  let pointSpan = null
+  // Live only while the button is down, so a drag grows one reference.
+  let pointing = null
+  let formulaInputEl
   let totalW = $state(0)
   let totalH = $state(0)
   // Bumped on every model change. The model isn't $state (it's a plain
@@ -273,6 +286,16 @@
 
   // Column/row pixel layout: prefix sums over widths/heights, padded well
   // past the materialized area so there's always empty grid to scroll into.
+  // Layout is derived from the model, and `draw` is what usually builds it —
+  // but a click can arrive before the first frame, and everything that maps a
+  // pixel to a cell needs it. Built on demand rather than guarded at each call
+  // site, because a guard that returns nothing leaves the caller to invent a
+  // row number.
+  function ensureLayout() {
+    if (!layout && model) buildLayout()
+    return layout
+  }
+
   function buildLayout() {
     const R = Math.max(model.rowCount() + 40, 100)
     const C = Math.max(model.colCount() + 8, 26)
@@ -292,12 +315,12 @@
   }
 
   function colAt(x) {
-    const { C, colX } = layout
+    const { C, colX } = ensureLayout()
     for (let c = 0; c < C; c++) if (x < colX[c + 1]) return c
     return C - 1
   }
   function rowAt(y) {
-    const { R, rowY } = layout
+    const { R, rowY } = ensureLayout()
     for (let r = 0; r < R; r++) if (y < rowY[r + 1]) return r
     return R - 1
   }
@@ -478,6 +501,23 @@
       ctx.setLineDash([])
     }
 
+    // What the formula in play refers to — the one being typed, or the one in
+    // the selected cell. Drawn under the selection border so the cell you are
+    // on stays the loudest thing on the grid.
+    if (model) {
+      const src = edit ? edit.value : model.getInput(sel.r, sel.c)
+      formulaRefs(src).forEach((q, i) => {
+        if (q.r1 >= R || q.c1 >= C) return
+        ctx.strokeStyle = refColor(i)
+        ctx.lineWidth = 2
+        ctx.strokeRect(
+          screenX(q.c1), screenY(q.r1),
+          colX[Math.min(q.c2, C - 1) + 1] - colX[q.c1],
+          rowY[Math.min(q.r2, R - 1) + 1] - rowY[q.r1],
+        )
+      })
+    }
+
     // Own selection border.
     ctx.strokeStyle = '#1565c0'
     ctx.lineWidth = 2
@@ -549,7 +589,9 @@
   }
 
   function setSelection(r, c, extend) {
-    const { R, C } = layout
+    const l = ensureLayout()
+    if (!l) return
+    const { R, C } = l
     r = Math.max(0, Math.min(r, R - 1))
     c = Math.max(0, Math.min(c, C - 1))
     sel = extend
@@ -571,6 +613,54 @@
     if (y2 > el.scrollTop + el.clientHeight - HEADER_H) el.scrollTop = y2 - el.clientHeight + HEADER_H
   }
 
+  // Both the cell overlay and the formula bar edit the same value, so the
+  // caret can be in either — and which one has to be *remembered* rather than
+  // asked for. By the time a mousedown handler runs, the browser has already
+  // moved focus to the grid, so `document.activeElement` says "grid" for a
+  // click that is meant to point at a cell. Tracked on focus instead, and the
+  // input keeps its selection after blurring, so the caret is still readable.
+  let focusedInput = null
+
+  function caretInput() {
+    return edit && focusedInput ? focusedInput : null
+  }
+
+  // A click on a cell while a formula is being typed writes a reference
+  // instead of moving the selection — but only when the formula is actually
+  // expecting one. See refs.js: when in doubt it declines, and the click keeps
+  // its ordinary meaning.
+  function tryPoint(r, c, e) {
+    if (!edit || readOnly) return false
+    const input = caretInput()
+    if (!input) return false
+    const caret = input.selectionStart ?? edit.value.length
+    const replacing = pointSpan && caret === pointSpan.end ? pointSpan : null
+    if (!replacing && !acceptsRef(edit.value, caret)) return false
+    pointSpan = replacing
+    pointing = { anchor: { r, c }, caret }
+    applyPoint(r, c)
+    // Keeps the grid from stealing focus back off the input being typed into.
+    e.preventDefault()
+    return true
+  }
+
+  async function applyPoint(r, c) {
+    const a = pointing.anchor
+    const rect = {
+      r1: Math.min(a.r, r), c1: Math.min(a.c, c),
+      r2: Math.max(a.r, r), c2: Math.max(a.c, c),
+    }
+    const res = insertRef(edit.value, pointing.caret, rect, pointSpan)
+    edit.value = res.text
+    pointSpan = res.span
+    scheduleDraw()
+    // The input has to be re-rendered before the caret can be put back into
+    // it, and it has to go back or the next keystroke lands at the wrong end.
+    await tick()
+    focusedInput?.focus({ preventScroll: true })
+    focusedInput?.setSelectionRange(res.caret, res.caret)
+  }
+
   async function startEdit(initial) {
     if (readOnly) return
     edit = { r: sel.r, c: sel.c, value: initial ?? model.getInput(sel.r, sel.c) }
@@ -583,6 +673,7 @@
   }
 
   function commitEdit(dr, dc) {
+    pointSpan = pointing = focusedInput = null
     if (!edit) return
     model.setCell(edit.r, edit.c, edit.value)
     edit = null
@@ -592,6 +683,7 @@
   }
 
   function cancelEdit() {
+    pointSpan = pointing = focusedInput = null
     edit = null
     containerEl.focus({ preventScroll: true })
     scheduleDraw()
@@ -1045,6 +1137,9 @@
 
     const r = rowAt(sy + y - HEADER_H)
     const c = colAt(sx + x - HEADER_W)
+    // Before the commit below, deliberately: pointing at a cell is part of
+    // writing the formula, not the end of writing it.
+    if (tryPoint(r, c, e)) return
     if (edit && (edit.r !== r || edit.c !== c)) commitEdit(0, 0)
     dragging = true
     setSelection(r, c, e.shiftKey)
@@ -1085,6 +1180,15 @@
       scheduleDraw()
       return
     }
+    // Dragging while pointing grows the one reference rather than selecting.
+    if (pointing) {
+      const { x, y } = gridPos(e)
+      applyPoint(
+        rowAt(containerEl.scrollTop + Math.max(y, HEADER_H) - HEADER_H),
+        colAt(containerEl.scrollLeft + Math.max(x, HEADER_W) - HEADER_W),
+      )
+      return
+    }
     if (!dragging) {
       updateCursor(e)
       return
@@ -1117,6 +1221,9 @@
   }
 
   function onMouseUp() {
+    // `pointSpan` deliberately survives: the reference stays replaceable until
+    // somebody types.
+    pointing = null
     if (chartDrag) {
       if (chartDrag.patch) model.updateChart(chartDrag.id, chartDrag.patch)
       chartDrag = null
@@ -1330,6 +1437,7 @@
     if (readOnly) return
     if (!edit) edit = { r: sel.r, c: sel.c, value: '' }
     edit.value = e.target.value
+    pointSpan = null
     scheduleDraw()
   }
 
@@ -1473,7 +1581,9 @@
 <div class="formula-bar">
   <span class="cell-name">{cellName}</span>
   <input
+    bind:this={formulaInputEl}
     value={barValue}
+    onfocus={() => { focusedInput = formulaInputEl }}
     oninput={onFormulaBarInput}
     onkeydown={onInputKeyDown}
     readonly={readOnly}
@@ -1504,6 +1614,8 @@
       style={editStyle()}
       bind:this={cellInputEl}
       bind:value={edit.value}
+      onfocus={() => { focusedInput = cellInputEl }}
+      oninput={() => { pointSpan = null }}
       onkeydown={onInputKeyDown}
     />
   {/if}

@@ -1656,6 +1656,107 @@ try {
     }
   })
 
+  // Writing a formula by pointing at cells. The logic is unit-tested in
+  // refs_test.mjs; what only a browser can show is that a click reaches it at
+  // all — the first attempt failed because by the time a mousedown handler
+  // runs the browser has already moved focus to the grid, so asking
+  // `document.activeElement` which input holds the caret answers "grid".
+  await step('a formula can be written by pointing at cells', async () => {
+    if (await page.$('[aria-label="Back to documents"]')) {
+      await clickSel(page, '[aria-label="Back to documents"]')
+    }
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI point mode')
+    await page.select('select', 'sheet')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('canvas', { timeout: 5000 })
+
+    const cellAt = async (r, c) => {
+      const b = await page.$eval('.grid', (el) => {
+        const x = el.getBoundingClientRect()
+        return { x: x.x, y: x.y }
+      })
+      return { x: b.x + 48 + c * 100 + 50, y: b.y + 24 + r * 24 + 12 }
+    }
+    const bar = () => page.$eval('.formula-bar input', (e) => e.value)
+
+    const a1 = await cellAt(0, 0)
+    await page.mouse.click(a1.x, a1.y)
+    for (const v of ['10', '20', '30']) {
+      await page.focus('.formula-bar input')
+      await page.keyboard.type(v)
+      await page.keyboard.press('Enter')
+    }
+
+    // Start a formula, then drag A1:A3 rather than typing the range.
+    await page.mouse.click((await cellAt(0, 1)).x, (await cellAt(0, 1)).y)
+    await page.focus('.formula-bar input')
+    await page.keyboard.type('=SUM(')
+    const a3 = await cellAt(2, 0)
+    await page.mouse.move(a1.x, a1.y)
+    await page.mouse.down()
+    await page.mouse.move(a3.x, a3.y, { steps: 5 })
+    await page.mouse.up()
+    await page.waitForFunction(
+      () => document.querySelector('.formula-bar input').value === '=SUM(A1:A3',
+      { timeout: 3000 },
+    )
+    ok('the drag wrote the range')
+
+    // The outline has to be on screen *while* the range is being drawn, which
+    // means a half-typed formula has to be readable. Sampled off the canvas,
+    // since that is where it is drawn.
+    const refColourOnScreen = () =>
+      page.evaluate(() => {
+        const cv = document.querySelector('canvas')
+        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data
+        for (let i = 0; i < d.length; i += 4) {
+          // #8e44ad, the first reference colour.
+          if (Math.abs(d[i] - 142) < 12 && Math.abs(d[i + 1] - 68) < 12 && Math.abs(d[i + 2] - 173) < 12) return true
+        }
+        return false
+      })
+    check(await refColourOnScreen(), 'and the cells it refers to are outlined before it is finished')
+
+    await page.focus('.formula-bar input')
+    await page.keyboard.type(')')
+    await page.keyboard.press('Enter')
+    await page.mouse.click((await cellAt(0, 1)).x, (await cellAt(0, 1)).y)
+    await page.waitForFunction(
+      () => document.querySelector('.formula-bar input').value === '=SUM(A1:A3)',
+      { timeout: 3000 },
+    )
+    check(await refColourOnScreen(), 'selecting the finished formula outlines them too')
+  })
+
+  // The failure mode that would make this actively worse than typing: a click
+  // that writes into somebody's formula when they meant to select a cell.
+  await step('a click still selects when the formula is not expecting a reference', async () => {
+    const cellAt = async (r, c) => {
+      const b = await page.$eval('.grid', (el) => {
+        const x = el.getBoundingClientRect()
+        return { x: x.x, y: x.y }
+      })
+      return { x: b.x + 48 + c * 100 + 50, y: b.y + 24 + r * 24 + 12 }
+    }
+    const d5 = await cellAt(4, 3)
+
+    await page.mouse.click((await cellAt(0, 4)).x, (await cellAt(0, 4)).y)
+    await page.focus('.formula-bar input')
+    // The caret now follows a complete reference, so the next click means
+    // "stop typing and select that cell".
+    await page.keyboard.type('=A1')
+    await page.mouse.click(d5.x, d5.y)
+    await page.waitForFunction(
+      () => document.querySelector('.cell-name').textContent.trim() === 'D5',
+      { timeout: 3000 },
+    )
+    check(
+      !(await page.$eval('.formula-bar input', (e) => e.value)).includes('D5'),
+      'the reference was not appended to the formula',
+    )
+  })
+
 } finally {
   await browser.close()
   server.kill()

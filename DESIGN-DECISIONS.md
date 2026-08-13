@@ -2195,6 +2195,56 @@ the whole rectangle before writing anything. Bulk writers must pre-size; that is
 now said in `ensureSize`'s own comment, because the cost lands on callers rather
 than on the method that looks expensive.
 
+### Writing a formula by pointing, and seeing what one refers to
+
+Shipped 2026-08-13, from the complaint that formulas had to be typed out in
+full while every other spreadsheet lets you click the cells.
+
+Two halves of one idea, and both are pure text-and-geometry in `refs.js` — no
+DOM — so the rules are tested under node and the browser only supplies a caret
+position and a click.
+
+**The hard part is knowing when a click means "reference" and not "select".**
+`acceptsRef` decides it from the text before the caret: a reference may follow
+an operator, `(`, `,`, `:` or the opening `=`, and nothing else. Typing `=A1`
+and then clicking must *not* append — the caret follows a complete reference,
+and what was meant was "stop typing and select that cell".
+
+It is deliberately conservative, because the two failure directions are not
+symmetric. A wrong "no" costs somebody typing a reference, which is what they
+do today. A wrong "yes" writes into their formula *and* moves their selection
+somewhere they did not ask for. So when in doubt it declines.
+
+**A half-typed formula still says what it refers to.** `=SUM(A1:A3` is not
+parseable, and without repair the outline would appear only when the closing
+bracket is typed — exactly when it has stopped being useful. So unclosed
+brackets are closed and a trailing operator is dropped before parsing, with
+quoted strings skipped so a `(` inside one is not counted. That is what puts
+the highlight on screen *while* a range is being dragged.
+
+**The reference span is remembered after the mouse comes up.** A drag fires one
+insert per cell crossed, and without replacing the previous span each would
+append — `=SUM(A1A2A3`. Keeping the span alive past mouseup is also what makes
+a *second* click move the reference rather than add one, as it does in every
+other spreadsheet. Any keystroke clears it: once somebody types, the reference
+is theirs and no longer ours to rewrite.
+
+**Which input holds the caret has to be remembered, not asked for.** The first
+version read `document.activeElement` in the mousedown handler and always got
+the grid: the browser moves focus before the handler runs. Tracked on `focus`
+instead, and an input keeps its selection after blurring, so the caret position
+is still readable when the click arrives. The formula bar and the cell overlay
+both edit the same value, so either can be the one.
+
+Only this sheet's own references are outlined. A formula may reach into another
+tab, and an outline drawn on the wrong grid is worse than none.
+
+**A latent bug this surfaced:** `layout` maps pixels to cells and was built
+only inside `draw`, so a click landing before the first frame threw on
+destructuring null. It is derived state and is now built on demand. The browser
+test made it likely enough to see; a person opening a sheet and clicking
+immediately would have hit it.
+
 ### Selection readout: the sum you didn't want to write a formula for
 
 Selecting a block shows `Sum · Avg · Min · Max · Count` at the bottom right

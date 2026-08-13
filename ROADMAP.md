@@ -187,6 +187,16 @@ Shipped: the selection readout now prints in the selection's own number format
 - Reorder tabs by drag
 - Move / copy a sheet between docs
 
+## Sheets — formulas
+
+Shipped: writing a formula by pointing at cells, and outlining what a formula
+refers to — see *Writing a formula by pointing* in the design doc.
+
+- F4 to cycle a reference through `$` absolute forms
+- Arrow keys in point mode, to pick a reference without the mouse
+- Colouring the reference *text* to match its outline, which needs an input
+  that can carry markup rather than a plain `<input>`
+
 ## Sheets — copy, paste and fill
 
 - Double-click the fill handle to fill down

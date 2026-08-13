@@ -149,7 +149,12 @@ export class Workbook {
       this._flushEdit()
       this._pendingEdit = { sheetId, keys: [] }
     }
-    this._pendingEdit.keys.push(...keys)
+    // Appended, never spread. `push(...keys)` passes one argument per key, and
+    // a paste is one transaction — so a 400k-cell paste spread 400k arguments
+    // into a call and overflowed the stack, taking the sheet down with it.
+    // Only when a trigger listener is registered, which is why it never showed
+    // up in a headless test.
+    for (const k of keys) this._pendingEdit.keys.push(k)
     clearTimeout(this._editTimer)
     this._editTimer = setTimeout(() => this._flushEdit(), delay)
   }
@@ -458,11 +463,23 @@ export class SheetModel {
   // Materialize row/col ids up to and including position (r, c). Appending
   // is the only way rows come into existence outside insertRow — see the
   // lazy-materialization note in the design doc.
+  // Grow the materialized grid to reach (r, c).
+  //
+  // One insert per axis, not one per row. `Y.Array.push` takes an array, and a
+  // push-per-row is a separate CRDT insert each — 10,000 of them to materialize
+  // 10,000 rows, where one will do.
+  //
+  // The bigger cost this used to carry is in the *callers*: growing invalidates
+  // the index, so a loop that grows the sheet one row at a time makes the next
+  // `setCell` rebuild the whole index, which is O(rows²) across a paste. Bulk
+  // writers call this once up front for that reason — see `writeRect`.
   ensureSize(r, c) {
     if (r < this.rows.length && c < this.cols.length) return
     this.tx(() => {
-      while (this.rows.length <= r) this.rows.push([newId()])
-      while (this.cols.length <= c) this.cols.push([newId()])
+      const rows = r + 1 - this.rows.length
+      if (rows > 0) this.rows.push(Array.from({ length: rows }, () => newId()))
+      const cols = c + 1 - this.cols.length
+      if (cols > 0) this.cols.push(Array.from({ length: cols }, () => newId()))
     })
     this._invalidate()
   }
@@ -973,26 +990,45 @@ export class SheetModel {
     return m ? m.formatOf(ref.row, ref.col) : null
   }
 
-  // The format a range agrees on, or null when its cells disagree. Scans a
-  // bounded number of cells: this runs on every formula commit, and one
-  // disagreement anywhere is enough to give up.
-  _rangeFormat(a, b) {
-    if (a.kind !== 'a1' || b.kind !== 'a1') return null
-    const m = a.sheet === undefined ? this : this.wb.sheetByName(a.sheet)
-    if (!m) return null
-    m._index()
+  // The number format a rectangle agrees on, or null when its cells disagree
+  // or none of them carries one. Scans a bounded number of cells: this runs on
+  // every formula commit, and one disagreement anywhere is enough to give up.
+  //
+  // Public because two callers ask the same question, and they must not answer
+  // it differently: formula inference (`=SUM` over a currency column produces
+  // currency) and the selection readout (which prints that sum in the bar). One
+  // rule, so the bar and the formula it stands in for agree about what the
+  // answer is denominated in — the same doctrine the readout already follows
+  // for *which cells count*.
+  //
+  // Deliberately unclamped: the caller decides what rectangle it means. The
+  // readout passes the clamped one, so a whole-column selection is measured by
+  // what is in it rather than by the view's padding rows; formula inference
+  // passes the literal range.
+  rectFormat(rect) {
+    this._index()
     let found = null
     let seen = 0
-    for (let r = Math.min(a.row, b.row); r <= Math.max(a.row, b.row); r++) {
-      for (let c = Math.min(a.col, b.col); c <= Math.max(a.col, b.col); c++) {
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      for (let c = rect.c1; c <= rect.c2; c++) {
         if (++seen > RANGE_FORMAT_SCAN_LIMIT) return found
-        const f = numberFormatOf(m.formatOf(r, c))
+        const f = numberFormatOf(this.formatOf(r, c))
         if (!f) continue
         if (!found) found = f
         else if (!sameNumberFormat(found, f)) return null
       }
     }
     return found
+  }
+
+  _rangeFormat(a, b) {
+    if (a.kind !== 'a1' || b.kind !== 'a1') return null
+    const m = a.sheet === undefined ? this : this.wb.sheetByName(a.sheet)
+    if (!m) return null
+    return m.rectFormat({
+      r1: Math.min(a.row, b.row), r2: Math.max(a.row, b.row),
+      c1: Math.min(a.col, b.col), c2: Math.max(a.col, b.col),
+    })
   }
 
   // Store `input` — A1-notation text as produced by getInput — at (r,c),
@@ -1080,6 +1116,12 @@ export class SheetModel {
     const nr = Math.max(rows || 0, h)
     const nc = Math.max(cols || 0, w)
     this.tx(() => {
+      // Grow once for the whole rectangle before writing anything. Without
+      // this, `setCell` grows the sheet a row at a time and each growth
+      // invalidates the index that the next `setCell` rebuilds — quadratic in
+      // the number of rows pasted, and measurably so: 500k cells took 26s this
+      // way and 1.1s pre-sized.
+      this.ensureSize(r + nr - 1, c + nc - 1)
       // Clearing first matters: a cut region that overlaps the destination
       // must not wipe what we are about to write into it.
       if (clear) {
@@ -1330,6 +1372,12 @@ export class SheetModel {
     }
     return {
       count, errors, numeric,
+      // What the block is denominated in, so the readout can print a column of
+      // currency totals as currency rather than as a bare number. Computed on
+      // the *clamped* rect, which is why it is returned from here rather than
+      // asked for separately: the caller would have to re-derive the same
+      // bounds to get the same answer.
+      format: numeric ? this.rectFormat({ r1, c1, r2, c2 }) : null,
       // Null, not 0, when the rect holds no numbers: "no answer" and "the
       // answer is zero" have to look different to whoever renders this.
       // (=SUM over a text-only range is 0; a readout showing "Sum 0" for a

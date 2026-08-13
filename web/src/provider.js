@@ -24,7 +24,9 @@ const MSG_COMMENTS = 2
 const MAX_WS_UPDATE = 15 * 1024 * 1024
 
 export class Provider {
-  constructor(doc, docId, { onStatus = () => {}, onSynced = () => {}, onComments = () => {}, wsUrl } = {}) {
+  constructor(doc, docId, {
+    onStatus = () => {}, onSynced = () => {}, onComments = () => {}, onProblem = () => {}, wsUrl,
+  } = {}) {
     this.doc = doc
     this.docId = docId
     this.wsUrl = wsUrl // override for non-browser use (tests); default from location
@@ -34,6 +36,12 @@ export class Provider {
     // Fired when the server says a comment changed. Nobody drives a UI from
     // it yet; it completes the transport so the comment views can just listen.
     this.onComments = onComments
+    // Something the person at the keyboard has to know about and act on, as
+    // opposed to a status the connection reports about itself. Today there is
+    // one: a change too large to send. It has to reach the screen rather than
+    // the console, because the local document keeps the change while the
+    // server never gets it — which looks exactly like a save until a reload.
+    this.onProblem = onProblem
     this.stopped = false
     this.backoff = 500
     this.resyncNeeded = false
@@ -60,14 +68,24 @@ export class Provider {
   }
 
   _send(type, payload) {
-    if (this.ws?.readyState !== WebSocket.OPEN) return
+    // Size before readyState, deliberately. While disconnected an ordinary
+    // update is dropped and the reconnect diff carries it — but an oversized
+    // one will be just as oversized in that diff, so the person needs telling
+    // now rather than on reconnect.
     if (payload.length > MAX_WS_UPDATE) {
+      const mb = (n) => (n / (1024 * 1024)).toFixed(1)
       console.error(
         `docs: refusing to send a ${payload.length}-byte update (limit ${MAX_WS_UPDATE}). ` +
         'This edit is too large for one message; it will sync via the next reconnect diff or not at all.'
       )
+      this.onProblem(
+        `That change is too large to save — ${mb(payload.length)} MB, and the limit is ` +
+        `${mb(MAX_WS_UPDATE)} MB per change. It is still on your screen but has NOT reached the server. ` +
+        'Undo it and make the change in smaller pieces.'
+      )
       return
     }
+    if (this.ws?.readyState !== WebSocket.OPEN) return
     const msg = new Uint8Array(1 + payload.length)
     msg[0] = type
     msg.set(payload, 1)
@@ -155,6 +173,15 @@ export class Provider {
       this.resyncNeeded = true
       // Surface the close code: 1009 = a message exceeded the server limit,
       // 1008 = policy violation (write from viewer), 1006 = abnormal.
+      // 1009 means the server read limit tripped, so something got past the
+      // guard above — a message built somewhere that does not go through
+      // `_send`, or a limit that moved. Say so rather than looping quietly.
+      if (ev.code === 1009) {
+        this.onProblem(
+          'The server rejected the last change for being too large. It is still on your screen but ' +
+          'has NOT been saved. Undo it and make the change in smaller pieces.'
+        )
+      }
       this.onStatus(`disconnected (${ev.code || '?'}), retrying…`)
       setTimeout(() => this.connect(), this.backoff)
       this.backoff = Math.min(this.backoff * 2, 10000)
@@ -166,6 +193,14 @@ export class Provider {
     if (typeof window !== 'undefined') window.removeEventListener('beforeunload', this._unload)
     removeAwarenessStates(this.awareness, [this.doc.clientID], 'destroy')
     this.awareness.off('update', this._onAwareness)
+    // Awareness starts a repeating timer in its constructor to expire peers
+    // that went quiet, and only its own destroy() clears it. Without this call
+    // every document opened leaves a live interval behind, and the closure
+    // pins the Awareness, which pins the Y.Doc — so a session that visits
+    // twenty documents holds twenty of them. This app recreates the provider
+    // on every navigation (`#key route.doc.id`), which makes that the normal
+    // case rather than an edge one.
+    this.awareness.destroy()
     this.doc.off('update', this._onUpdate)
     this.ws?.close()
   }

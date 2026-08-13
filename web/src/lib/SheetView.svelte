@@ -15,7 +15,7 @@
   import { colName, fmtNum } from '../sheet/engine.js'
   import { isDec, decSigRound } from '../sheet/exact.js'
   import { toTSV, toCSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
-  import { NUMBER_FORMATS, formatNumber } from '../sheet/format.js'
+  import { NUMBER_FORMATS, formatNumber, isDateFormat } from '../sheet/format.js'
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
   import { scheduleCompaction } from '../compaction.js'
   import ScriptsPanel from './ScriptsPanel.svelte'
@@ -47,6 +47,8 @@
   }
 
   let status = $state('connecting…')
+  // A change that did not reach the server. Sticky: see the banner below.
+  let problem = $state('')
   let peerCount = $state(1)
 
   // Selection: anchor (r,c) to head (r2,c2). A single cell has both equal.
@@ -120,6 +122,7 @@
       // The server says only that comments changed, never what changed, so
       // the answer is always the same: refetch.
       onComments: loadComments,
+      onProblem: (msg) => { problem = msg },
     })
 
     loadComments()
@@ -1275,6 +1278,22 @@
       : Number.isInteger(n) ? String(n)
         : String(parseFloat(n.toPrecision(6)))
 
+  // Printed in the selection's own number format when its cells agree on one,
+  // which is what makes a column of currency totals read as currency instead
+  // of as a bare number. `model.stats` resolves the format with the same rule
+  // that carries formats through formulas, so the bar and `=SUM` over the same
+  // block are denominated alike.
+  //
+  // `formatNumber` returns null for 'auto' — the format that says "no opinion"
+  // — so the fallback is the plain rendering, not an empty bar.
+  const fmtStat = (n, fmt, plain) => (fmt ? formatNumber(n, fmt) : null) ?? plain(n)
+
+  // Sum is the exception, and only for dates. Min, Max and Avg of a column of
+  // dates are all dates — the earliest, the latest, the midpoint. The *sum* of
+  // two dates is not a date and rendering it as one produces a confident,
+  // meaningless year 4051. So a date format is dropped for that one figure.
+  const sumFormat = (fmt) => (fmt && isDateFormat(fmt.n) ? null : fmt)
+
   let selStats = $derived.by(() => {
     revision // recompute when a collaborator (or a script) changes a value
     if (!model) return null
@@ -1354,10 +1373,22 @@
   {/if}
   <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
 
-  <span class="status readout" class:live={status === 'synced'}>
+  <!-- Never green while a change is unsaved. The *connection* is fine,
+       which is exactly why the dot alone would be misleading: it would
+       report health beside a banner saying work was lost. -->
+  <span class="status readout" class:live={status === 'synced' && !problem}>
     <span class="dot"></span>{status}{peerCount > 1 ? ` · ${peerCount} online` : ''}
   </span>
 </div>
+
+{#if problem}
+  <!-- Not a toast and not on a timer: this says a change was not saved, and it
+       has to stay on screen until somebody acts on it. -->
+  <div class="problem" role="alert">
+    <strong>Not saved.</strong> {problem}
+    <button class="linkish" onclick={() => (problem = '')}>dismiss</button>
+  </div>
+{/if}
 
 {#if !readOnly}
   <div class="toolbar">
@@ -1614,10 +1645,10 @@
         {selStats.tooBig} cells — too many to total
       {:else}
         {#if selStats.numeric}
-          <span>Sum <b>{fmtNum(selStats.sum)}</b></span>
-          <span>Avg <b>{fmtAvg(selStats.avg)}</b></span>
-          <span>Min <b>{fmtNum(selStats.min)}</b></span>
-          <span>Max <b>{fmtNum(selStats.max)}</b></span>
+          <span>Sum <b>{fmtStat(selStats.sum, sumFormat(selStats.format), fmtNum)}</b></span>
+          <span>Avg <b>{fmtStat(selStats.avg, selStats.format, fmtAvg)}</b></span>
+          <span>Min <b>{fmtStat(selStats.min, selStats.format, fmtNum)}</b></span>
+          <span>Max <b>{fmtStat(selStats.max, selStats.format, fmtNum)}</b></span>
         {/if}
         <span>Count <b>{selStats.count}</b></span>
         {#if selStats.errors}<span class="warn" aria-hidden="true">⚠</span>{/if}
@@ -1627,6 +1658,22 @@
 </div>
 
 <style>
+
+  /* Loud on purpose. Every other readout here is deliberately quiet; this one
+     is the exception, because the document on screen and the document on the
+     server have stopped agreeing. */
+  .problem {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border: 1px solid var(--danger);
+    border-left-width: 3px;
+    border-radius: var(--r);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+  }
+  .problem :global(button) { margin-left: auto; }
   .toolbar {
     display: flex;
     gap: 0.25rem;

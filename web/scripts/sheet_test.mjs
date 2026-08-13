@@ -5,7 +5,7 @@ import * as Y from 'yjs'
 import { parseFormula, serialize, evaluate, isErr, fmtNum, colName, parseColName, setClock } from '../src/sheet/engine.js'
 import { Workbook, SheetModel, FIRST_SHEET } from '../src/sheet/model.js'
 import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../src/sheet/clipboard.js'
-import { parseTypedNumber, formatNumber, mergeFormat, resolveFormat } from '../src/sheet/format.js'
+import { formatNumber, parseTypedNumber, mergeFormat, resolveFormat } from '../src/sheet/format.js'
 import { serialFromParts, partsFromSerial, parseDate, formatDate, setDayFirst } from '../src/sheet/dates.js'
 import { niceScale, extractChartData, drawChart, chartDragPatch } from '../src/sheet/chart.js'
 import { parseA1, formatA1, handleCall } from '../src/sheet/scriptapi.js'
@@ -1857,6 +1857,65 @@ eq([canComment('owner'), canComment('editor'), canComment('commenter'), canComme
    [true, true, true, false], 'canComment stops at commenter')
 eq([canEdit(''), canEdit(undefined), canComment('nonsense')], [false, false, false],
    'an unknown role grants nothing')
+
+// ---- the selection readout's number format ---------------------------------
+// The bar used to print with the engine's plain fmtNum, so a column of currency
+// totals read as a bare number. It now takes the format the selection agrees
+// on — resolved by the same rule that carries formats through formulas, so the
+// bar and =SUM over the same block cannot disagree about what the answer is
+// denominated in.
+{
+  const m = newModel()
+  m.setCell(0, 0, '10')
+  m.setCell(1, 0, '20')
+  m.setFormat({ r1: 0, c1: 0, r2: 1, c2: 0 }, { n: 'cur', cur: '$' })
+
+  const rect = { r1: 0, c1: 0, r2: 1, c2: 0 }
+  eq(m.stats(rect).format, { n: 'cur', cur: '$' }, 'a column that agrees reports its format')
+  eq(formatNumber(m.stats(rect).sum, m.stats(rect).format), '$30.00', 'so the sum prints as currency')
+
+  // One disagreeing cell is enough to give up: printing a mixed block in one
+  // of its formats would state something untrue about the other cells.
+  m.setCell(2, 0, '5')
+  m.setFormat({ r1: 2, c1: 0, r2: 2, c2: 0 }, { n: 'pct' })
+  eq(m.stats({ r1: 0, c1: 0, r2: 2, c2: 0 }).format, null, 'a mixed block agrees on nothing')
+
+  // No format at all is the same answer as disagreement — there is nothing to
+  // apply — and the caller falls back to its plain rendering.
+  const plain = newModel()
+  plain.setCell(0, 0, '1')
+  plain.setCell(1, 0, '2')
+  eq(plain.stats({ r1: 0, c1: 0, r2: 1, c2: 0 }).format, null, 'an unformatted block reports no format')
+
+  // A block with no numbers has nothing to denominate.
+  const words = newModel()
+  words.setCell(0, 0, 'a')
+  words.setCell(1, 0, 'b')
+  words.setFormat({ r1: 0, c1: 0, r2: 1, c2: 0 }, { n: 'cur' })
+  eq(words.stats({ r1: 0, c1: 0, r2: 1, c2: 0 }).format, null, 'no numbers means no format')
+}
+
+// The format comes off the *clamped* rect, so selecting a whole column is
+// measured by what is in it rather than by the view's padding rows.
+{
+  const m = newModel()
+  m.setCell(0, 0, '10')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { n: 'cur', cur: '$' })
+  eq(m.stats({ r1: 0, c1: 0, r2: 5000, c2: 0 }).format, { n: 'cur', cur: '$' },
+    'a whole-column selection still finds the format')
+}
+
+// rectFormat is the shared rule: formula inference asks it too, so this is the
+// assertion that the two callers cannot drift apart.
+{
+  const m = newModel()
+  m.setCell(0, 0, '10')
+  m.setCell(1, 0, '20')
+  m.setFormat({ r1: 0, c1: 0, r2: 1, c2: 0 }, { n: 'cur', cur: '$' })
+  m.setCell(3, 0, '=SUM(A1:A2)')
+  eq(m.stats({ r1: 0, c1: 0, r2: 1, c2: 0 }).format, m.formatOf(3, 0),
+    'the readout and the formula it stands in for are denominated alike')
+}
 
 if (failures > 0) {
   console.error(`\n${failures} FAILURES`)

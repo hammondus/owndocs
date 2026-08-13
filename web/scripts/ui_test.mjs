@@ -236,7 +236,13 @@ try {
     }
   }
 
-  const step = async (what, fn) => {
+  // `expect` names a console error the step is *supposed* to provoke. Used
+  // once, for the oversized-update guard: refusing to send is the correct
+  // behaviour and it logs, deliberately, so the failure is diagnosable from a
+  // console someone kept. Silencing it in the provider to keep this file happy
+  // would be the tail wagging the dog; matching it here is honest, and an
+  // expectation that stops matching still fails the step.
+  const step = async (what, fn, { expect = null } = {}) => {
     let thrown = null
     try {
       await fn()
@@ -247,7 +253,12 @@ try {
     // selector*, while the console holds the reason — "canEdit is not defined"
     // rather than "waiting failed". Reporting only the timeout sends you back
     // to the browser by hand, which is the cost this file exists to remove.
-    const errs = console_.drain()
+    let errs = console_.drain()
+    if (expect) {
+      const before = errs.length
+      errs = errs.filter((e) => !expect.test(e))
+      if (errs.length === before) errs.push(`expected a console error matching ${expect}, and none arrived`)
+    }
     if (!thrown && errs.length === 0) return ok(what)
     fail(
       what,
@@ -1529,6 +1540,53 @@ try {
       { timeout: 5000 },
     )
   })
+
+  // A change too large to sync. The server's read limit is 16 MiB per message
+  // and one paste is one Yjs update, so a big enough paste cannot be sent —
+  // and until now that failed in the console, leaving the change on screen and
+  // absent from the server, which looks exactly like a save until a reload.
+  //
+  // Driven as a real paste rather than by poking the provider: the guard is
+  // unit-tested in provider_test.mjs, and what this adds is that the banner —
+  // new markup inside an {#if} — actually renders. That is the shape this file
+  // exists for.
+  await step('a paste too large to sync says so instead of failing quietly', async () => {
+    // Whichever screen the previous step left behind.
+    if (await page.$('[aria-label="Back to documents"]')) {
+      await clickSel(page, '[aria-label="Back to documents"]')
+    }
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI oversize sheet')
+    await page.select('select', 'sheet')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('canvas', { timeout: 5000 })
+
+    // 400k cells of long-ish values — measured at 20.4 MiB as one Yjs update,
+    // against a 15 MiB guard. The same cells holding short integers come to
+    // 13.2 MiB and sync fine, which is the margin this fixture is picked
+    // around: cell *count* is not the limit, bytes are.
+    await page.evaluate(() => {
+      const rows = 20000, cols = 20
+      const tsv = Array.from({ length: rows }, (_, r) =>
+        Array.from({ length: cols }, (_, c) => String(r * 7 + c).padStart(24, '0')).join('\t')).join('\n')
+      const dt = new DataTransfer()
+      dt.setData('text/plain', tsv)
+      document.querySelector('.grid').dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+      )
+    })
+
+    await page.waitForSelector('.problem', { timeout: 30000 })
+    const said = await textOf(page, '.problem')
+    check(/Not saved/.test(said), 'the banner leads with the consequence', said)
+    check(/too large to save/.test(said), 'and says why', said)
+    check(/[Uu]ndo/.test(said), 'and what to do', said)
+
+    // Dismissable, because the person may want the screen back — but only by
+    // asking, never on a timer.
+    await clickText(page, 'button', 'dismiss')
+    await page.waitForFunction(() => !document.querySelector('.problem'), { timeout: 3000 })
+  }, { expect: /refusing to send a \d+-byte update/ })
 
 } finally {
   await browser.close()

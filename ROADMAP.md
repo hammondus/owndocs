@@ -145,10 +145,9 @@ design doc; the open questions underneath it are in *Open questions*.
 - Merged cells
 - Conditional formatting
 - Font size / family
-- Selection readout in the selection's own number format — a column of
-  currency totals as a bare number today, because the bar prints with the
-  engine's plain `fmtNum` rather than resolving a format the whole range
-  agrees on
+
+Shipped: the selection readout now prints in the selection's own number format
+— see *Selection readout* in the design doc.
 
 ## Sheets — tabs
 

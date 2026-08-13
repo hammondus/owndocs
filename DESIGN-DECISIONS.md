@@ -2134,6 +2134,67 @@ The rules, chosen to be defensible rather than merely Excel-compatible:
   has no number format of its own, which also means it does not re-derive
   when a formula is later edited.
 
+### A change too large to sync says so
+
+Shipped 2026-08-13, after measuring where a sheet stops being usable.
+
+`ws.go` sets a **16 MiB per-message read limit**, and one paste is one Yjs
+transaction, so one update. The client has always guarded against exceeding it —
+but the guard wrote to `console.error` and returned, which is the worst possible
+shape for this particular failure: **the change stays on screen and never
+reaches the server**, so it looks exactly like a save until somebody reloads.
+
+So the provider gained an `onProblem` channel, separate from `onStatus`. A
+status is something the connection reports about itself; a problem is something
+the person at the keyboard has to act on. Both views render it as a banner that
+does not dismiss on a timer, because the thing it is reporting does not go away
+on a timer either.
+
+Three details worth keeping:
+
+- **The message says how large, that it is unsaved, and what to do.** Each is a
+  decision the reader has to make, and the test asserts all three — a message
+  that only said "too large" would leave somebody staring at work they believe
+  is saved.
+- **Size is checked before socket readiness.** While disconnected an ordinary
+  update is dropped and the reconnect diff carries it; an oversized one will be
+  just as oversized in that diff, so waiting for a connection to report it just
+  delays the news.
+- **The status dot is never green while a problem stands.** The connection is
+  genuinely fine, which is exactly why the dot alone would mislead — it would
+  report health beside a banner saying work was lost.
+
+**What the limit is not.** It bounds a single *change*, not the document: the
+client sends a **diff** on reconnect, never full state (an earlier version sent
+full state, and combined with this limit that turned one oversized document into
+an infinite reconnect loop — see the comment in `provider.js`). Total document
+size is bounded instead by the 64 MiB snapshot upload, several times further
+out. So the practical ceiling is "how much can one paste carry", which measured
+at roughly **450k cells of plain numbers, or 300k with formulas** — plain data
+encodes at ~35 bytes a cell, formulas at ~48.
+
+### Pasting is linear, and was quadratic
+
+Found by measurement on the same pass. `writeRect` — the paste and fill path —
+wrote cell by cell, and `setCell` grows the sheet through `ensureSize`, which
+grew it **one row at a time**. Each growth invalidates the index, which the next
+`setCell` rebuilds in full: O(rows²) for one paste.
+
+It did not look like anything from the inside. It looked like large pastes being
+slow, which large pastes are expected to be.
+
+| cells | before | after |
+| --- | --- | --- |
+| 100,000 | 909 ms | 232 ms |
+| 250,000 | 5.6 s | 495 ms |
+| 500,000 | 26.5 s | 1.1 s |
+
+Two changes, and the second is the one that matters: `ensureSize` now does one
+insert per axis rather than one per row, and `writeRect` calls it **once** for
+the whole rectangle before writing anything. Bulk writers must pre-size; that is
+now said in `ensureSize`'s own comment, because the cost lands on callers rather
+than on the method that looks expensive.
+
 ### Selection readout: the sum you didn't want to write a formula for
 
 Selecting a block shows `Sum · Avg · Min · Max · Count` at the bottom right
@@ -2160,6 +2221,28 @@ is worth committing a formula to answer.
 - **Errors are skipped and admitted to**, with a `⚠` and a count in the
   tooltip. Silently totalling around a `#DIV/0!` is the failure mode that
   makes a readout untrustworthy.
+- **The figures take the selection's own number format**, when its cells agree
+  on one — added 2026-08-13, and until then the bar printed with the engine's
+  plain `fmtNum`, so a column of currency totals read as a bare number.
+
+  The agreement rule is *not* restated here: `rectFormat` is the same method
+  formula inference already used to decide that `=SUM` over a currency column
+  produces currency. Making it public and sharing it is the same doctrine as
+  the first bullet — two places in one app answering "what is this block?"
+  differently is a bug report waiting to happen, and the bar stands in for
+  exactly the formula it is being compared against. Disagreement, or no format
+  at all, falls back to the plain rendering: printing a mixed block in one of
+  its formats would state something untrue about the other cells.
+
+  It is resolved on the **clamped** rect, so a whole-column selection is
+  measured by what is in it — the same clamp the totals already use, which is
+  why the format is returned from `stats` rather than asked for separately.
+
+  **Sum is the one exception, and only for dates.** Min, Max and Average of a
+  column of dates are all dates — the earliest, the latest, the midpoint. The
+  *sum* of two dates is not a date, and rendering it as one produces a
+  confident, meaningless year 4051. So a date format is dropped for that one
+  figure and it prints as a serial.
 - **A single cell shows nothing.** There is nothing to aggregate, and the
   formula bar is already showing that cell.
 - The rect is clamped to the materialized grid, so a whole-column selection —
@@ -2906,6 +2989,28 @@ see *Open questions*.
   diff resync removed the producer of huge resyncs; protocol version gate;
   client-side defensive decode + compaction lockout. The log-is-truth design
   did its job: worst case was a fallback and a forensic session, not loss.
+
+- **2026-08-13, two faults found by testing the size limit rather than by
+  anyone reporting them.**
+
+  **A stack overflow on any large paste.** `_noteEdit` accumulated changed keys
+  with `push(...keys)` — one argument per key. A paste is one transaction, so a
+  400k-cell paste spread 400,000 arguments into a call and blew the stack,
+  taking the sheet down. It only fired when an on-edit trigger listener was
+  registered, which is why no headless test ever saw it: `sheet_test.mjs`
+  registers none. Fixed by appending in a loop.
+
+  **A leaked timer per document opened.** `Awareness` starts a repeating
+  interval in its constructor to expire peers that go quiet, and only its own
+  `destroy()` clears it — which `Provider.destroy()` never called. Each
+  interval's closure pins the Awareness, which pins the `Y.Doc`, so a session
+  visiting twenty documents held twenty of them. This app recreates the
+  provider on every navigation (`#key route.doc.id`), so it was the normal case
+  rather than an edge one.
+
+  It surfaced as `provider_test.mjs` hanging instead of exiting, which is now
+  the standing assertion: if that call is ever removed, the suite stops rather
+  than passing quietly.
 
 ## Open questions
 

@@ -26,6 +26,8 @@
   let { me, doc, onBack, onShare, onHistory, onRenamed, onOpenDoc, onRichChanged, startWithComments } = $props()
 
   let status = $state('connecting…')
+  // A change that did not reach the server. Sticky: see the banner below.
+  let problem = $state('')
   let peerCount = $state(1)
 
   // bind:this fills this variable with the actual <div> DOM element once it
@@ -130,6 +132,7 @@
         scheduleCompaction({ docId: doc.id, doc: ydoc, role: doc.role, synced })
       },
       onComments: loadComments,
+      onProblem: (msg) => { problem = msg },
     })
 
     const [color, colorLight] = cursorColors[ydoc.clientID % cursorColors.length]
@@ -334,10 +337,22 @@
 
   <!-- A status light: the dot carries the state, the words explain it. Green
        only when the document is actually reconciled with the server. -->
-  <span class="status readout" class:live={status === 'synced'}>
+  <!-- Never green while a change is unsaved. The *connection* is fine,
+       which is exactly why the dot alone would be misleading: it would
+       report health beside a banner saying work was lost. -->
+  <span class="status readout" class:live={status === 'synced' && !problem}>
     <span class="dot"></span>{status}{peerCount > 1 ? ` · ${peerCount} online` : ''}
   </span>
 </div>
+
+{#if problem}
+  <!-- Not a toast and not on a timer: this says a change was not saved, and it
+       has to stay on screen until somebody acts on it. -->
+  <div class="problem" role="alert">
+    <strong>Not saved.</strong> {problem}
+    <button class="linkish" onclick={() => (problem = '')}>dismiss</button>
+  </div>
+{/if}
 
 <!-- Rendered for every role, and filtered by `bar`. What a commenter must not
      reach is the editing commands: they are mounted read-only for the reason
@@ -466,6 +481,21 @@
 
 <style>
 
+  /* Loud on purpose. Every other readout here is deliberately quiet; this one
+     is the exception, because the document on screen and the document on the
+     server have stopped agreeing. */
+  .problem {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border: 1px solid var(--danger);
+    border-left-width: 3px;
+    border-radius: var(--r);
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+  }
+  .problem :global(button) { margin-left: auto; }
   .doc-layout {
     display: flex;
     gap: 1rem;

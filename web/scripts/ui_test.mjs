@@ -18,6 +18,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import puppeteer from 'puppeteer-core'
+import { CALLABLE } from '../src/sheet/engine.js'
 
 const PORT = process.env.UI_TEST_PORT || 8599 // never 8484: that is the dev instance
 const BASE = `http://127.0.0.1:${PORT}`
@@ -138,6 +139,10 @@ async function clickSel(page, selector) {
   }, selector)
   if (!clicked) throw new Error(`no element matching ${JSON.stringify(selector)}`)
 }
+
+// Lets a committed edit land before the step ends, so its console output is
+// drained by the step that caused it.
+const waitForNothing = () => new Promise((r) => setTimeout(r, 150))
 
 const docIdFromHash = (url) => new URL(url).hash.replace(/^#doc=/, '')
 
@@ -1809,6 +1814,56 @@ try {
     await page.keyboard.type('9')
     check((await bar()) === '=A1+9B2', `the caret moved rather than the reference (got ${JSON.stringify(await bar())})`)
     await page.keyboard.press('Escape')
+  })
+
+  // The formula reference. functions_test.mjs asserts the list matches the
+  // engine's registry; this asserts the panel actually renders that list, and
+  // that picking one leaves the cell ready to point at cells — which is where
+  // the two formula features meet.
+  await step('the formula reference lists what the engine can do', async () => {
+    if (await page.$('[aria-label="Back to documents"]')) {
+      await clickSel(page, '[aria-label="Back to documents"]')
+    }
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI formula reference')
+    await page.select('select', 'sheet')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('canvas', { timeout: 5000 })
+
+    await clickText(page, 'button', 'formulas')
+    await page.waitForSelector('#fn-search', { timeout: 3000 })
+
+    // Counted against the engine's own list rather than a number typed here,
+    // so adding a function and forgetting the panel fails this too.
+    const names = await page.evaluate(() =>
+      [...document.querySelectorAll('.row .sig b')].map((e) => e.textContent.trim()),
+    )
+    const listed = names.filter((n) => CALLABLE.includes(n))
+    check(
+      listed.length === CALLABLE.length,
+      `every callable function is on screen (${listed.length} of ${CALLABLE.length})`,
+    )
+
+    await page.type('#fn-search', 'round')
+    await page.waitForFunction(
+      () => document.querySelectorAll('.row').length === 1,
+      { timeout: 3000 },
+    )
+    ok('search narrows it')
+
+    // Picking one starts it in the cell, caret inside the brackets.
+    await clickSel(page, '.row')
+    await page.waitForFunction(
+      () => document.querySelector('.cell-edit')?.value === '=ROUND(',
+      { timeout: 3000 },
+    )
+    check(!(await page.$('#fn-search')), 'and closes the panel')
+
+    // And from there the cell is ready to be pointed at, which is the whole
+    // reason the caret is left where it is.
+    await page.keyboard.type('A1, 2)')
+    await page.keyboard.press('Enter')
+    await waitForNothing()
   })
 
 } finally {

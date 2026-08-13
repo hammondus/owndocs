@@ -2195,6 +2195,41 @@ the whole rectangle before writing anything. Bulk writers must pre-size; that is
 now said in `ensureSize`'s own comment, because the cost lands on callers rather
 than on the method that looks expensive.
 
+### The formula reference lists what the engine has, not what it once had
+
+Shipped 2026-08-13. A drawer in the sheet toolbar listing everything a formula
+may contain — the functions, and the operators and reference forms alongside
+them, because "what can I write here" is one question and answering half of it
+sends somebody to guess at the other half.
+
+**The list derives from the engine, and a test enforces it.** `CALLABLE` in
+`engine.js` is the registry plus its special forms; `functions.js` holds one
+row per name; `functions_test.mjs` compares the two sets in *both* directions.
+Adding a function without documenting it fails the build, and documenting one
+that does not exist fails it too. That is the whole reason the descriptions are
+data in a module rather than prose in a README — a README cannot be made to
+fail.
+
+**`IF` is why `CALLABLE` exists at all.** It is a special form, handled by
+`call` itself so its branches stay unevaluated, and so it is *not* in
+`FUNCTIONS`. A reference derived from the registry alone would silently omit
+the one function most likely to be looked up. The test asserts that gap stays
+covered.
+
+The examples are checked too: every one is parsed, and any that names something
+the engine does not have fails. An example on screen is about to be copied, so
+a broken one is worse than none.
+
+**Picking a row starts the function in the selected cell**, caret inside the
+brackets — which is exactly where pointing at cells takes over, so the two
+formula features meet. The reason to open this panel is to try something, and
+"now type it out" is the step worth removing. On a read-only sheet the rows
+render as plain listings rather than as buttons that would do nothing.
+
+The browser test counts the rendered rows against `CALLABLE` rather than
+against a number written in the test, so a function added to the engine and
+missed by the panel fails there as well.
+
 ### Writing a formula by pointing, and seeing what one refers to
 
 Shipped 2026-08-13, from the complaint that formulas had to be typed out in

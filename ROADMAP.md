@@ -190,8 +190,12 @@ Shipped: the selection readout now prints in the selection's own number format
 ## Sheets — formulas
 
 Shipped: writing a formula by pointing at cells, outlining what a formula
-refers to, F4 to cycle absolute forms, and arrow keys in point mode — see
-*Writing a formula by pointing* in the design doc.
+refers to, F4 to cycle absolute forms, arrow keys in point mode, and the
+formula reference drawer — see *Writing a formula by pointing* and *The formula
+reference* in the design doc.
+
+Adding a function to the engine now means adding a row to `functions.js`; the
+test fails until you do, in both directions.
 
 - Colouring the reference *text* to match its outline, which needs an input
   that can carry markup rather than a plain `<input>`

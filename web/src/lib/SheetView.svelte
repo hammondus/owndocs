@@ -22,6 +22,7 @@
   } from '../sheet/refs.js'
   import { scheduleCompaction } from '../compaction.js'
   import ScriptsPanel from './ScriptsPanel.svelte'
+  import FunctionsPanel from './FunctionsPanel.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
   import DocTitle from './DocTitle.svelte'
   import { listThreads, cellAnchor, cellKey, anchorKey } from '../comments.js'
@@ -94,6 +95,7 @@
   let charts = $state([])
   let selectedChart = $state(null)
   let showScripts = $state(false)
+  let showFunctions = $state(false)
   let showComments = $state(false)
   let threads = $state([])
   let triggerError = $state('')
@@ -1396,6 +1398,18 @@
     }
   }
 
+  // Picking a function from the reference starts it in the selected cell, with
+  // the caret inside the brackets — which is exactly where pointing at cells
+  // takes over, so the two features meet.
+  async function useFunction(f) {
+    showFunctions = false
+    if (readOnly) return
+    await startEdit(`=${f.name}(`)
+    const input = cellInputEl
+    input?.focus({ preventScroll: true })
+    input?.setSelectionRange(input.value.length, input.value.length)
+  }
+
   // ---- toolbar row/col operations ----------------------------------------
 
   function insertRowsAt(after) {
@@ -1617,12 +1631,17 @@
     <span class="sep"></span>
     <button onclick={insertChart} title="Chart the selected range">📊 chart</button>
     <button onclick={downloadCsv} title="Download this sheet as CSV">↓ csv</button>
+    <button onclick={() => (showFunctions = !showFunctions)} title="What a formula can contain">ƒx formulas</button>
     <button onclick={() => (showScripts = !showScripts)} title="Scripts">⚙ scripts</button>
   </div>
 {/if}
 
 {#if triggerError}
   <p class="trigger-error">⚠ on-edit script failed — {triggerError}</p>
+{/if}
+
+{#if showFunctions}
+  <FunctionsPanel {readOnly} onPick={useFunction} onClose={() => (showFunctions = false)} />
 {/if}
 
 {#if showScripts && workbook}

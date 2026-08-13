@@ -545,6 +545,12 @@ function compare(l, r) {
   return l < r ? -1 : l > r ? 1 : 0
 }
 
+// Names `call` handles itself rather than looking up in FUNCTIONS, because
+// they need their arguments *unevaluated*. Anything added here must be added
+// to this list too — it is what the function reference derives from, and
+// functions.js has a test that fails if the two disagree.
+export const SPECIAL_FORMS = ['IF']
+
 function call(ast, ctx) {
   // IF is a special form: only the taken branch is evaluated, so an error
   // in the untaken branch (or a self-reference there) cannot poison it.
@@ -791,6 +797,11 @@ export const FUNCTIONS = {
     return s.slice(start - 1, start - 1 + n)
   },
 }
+
+// Everything a formula may call, from the one place that knows: the registry
+// plus the special forms. The function reference lists exactly this, so it
+// cannot drift from what the engine actually accepts.
+export const CALLABLE = [...Object.keys(FUNCTIONS), ...SPECIAL_FORMS].sort()
 
 // Three numeric args, no ranges: DATE(y,m,d) and TIME(h,m,s).
 function date3(args, fn) {

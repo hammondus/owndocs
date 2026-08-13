@@ -40,6 +40,39 @@ defend the perimeter, not the colleagues — see *Threat model*.
 Shipped: rate limiting and lockout on `/api/login`, per account and per source
 address — see *Rate-limiting the login surface* in the design doc.
 
+## Website, and a demo anyone can log into
+
+Decided 2026-08-14. `site/` static pages served by nginx from its own
+container, plus a demo that hands every visitor their own throwaway instance.
+See *The site and the demo* in the design doc — the reasoning that matters is
+why the demo isolates instead of moderating, and why the caps are bytes rather
+than cells.
+
+Build order, and the first two are useful without the third:
+
+1. **`site/`** — what it is, how to host it, and the self-hosting instructions
+   that today only exist in `README.md`. Static, no build step beyond what is
+   already here.
+2. **`make site-shots`** — the images the site uses, driven through the real
+   app by the `ui_test.mjs` harness. Locks the sync property in while the site
+   is small enough to retrofit cheaply.
+3. **The demo supervisor** — a mode of the same binary. Starts `docs -demo` per
+   visitor on a free port with a temp database, routes by hostname, kills it
+   after ~20 idle minutes and deletes the directory.
+
+Wanted with it, none of which exist:
+
+- `-demo` mode: seeds the three users, and caps documents and bytes
+- Caps announced in the UI, and the message naming the *real* figure beside the
+  demo one — the unsaved-change banner is the shape
+- A ceiling on concurrent sessions, and a per-source rate limit on creating one
+- `robots.txt` and `noindex`
+- A contact address and a paragraph of acceptable use
+- Wildcard DNS and certificate for `*.demo.<domain>` — a one-off ops task, and
+  the reason a subdomain beat a path prefix
+
+The name is still open — see *Open questions*.
+
 ## Sheet protection
 
 Decided 2026-08-13. Accident prevention, not authorisation — see *Sheet

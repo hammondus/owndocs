@@ -3046,6 +3046,118 @@ Open underneath this: whether instantiating substitutes per-instance values
 rewrite, so it forces the client-side path regardless of the choice above —
 see *Open questions*.
 
+## The site and the demo (decided, not built)
+
+### The site is static, in this repo, and mostly cannot go stale
+
+Decided 2026-08-14. A `site/` directory of static pages served by nginx from
+its own container: what this is, how to host it yourself, and a way into the
+demo.
+
+In this repo rather than its own, so a change to the app and the change to what
+the site claims about it land in one commit. That is necessary but nowhere near
+sufficient — "it lives beside the code" is how every stale marketing site
+begins. So the claims are sorted into three tiers, and only two of them are
+real:
+
+- **Enforced.** A test fails when the site and the code disagree. The formula
+  list already works this way (`functions.js`), and roles and keyboard
+  shortcuts can join it, because each has a registry to compare against.
+- **Generated.** `make site-shots` drives the real app through the real
+  browser — the `ui_test.mjs` harness, which already does exactly this — and
+  writes the images the site uses. **Screenshots rot worst and most visibly**,
+  and this makes a stale one impossible rather than unlikely.
+- **Prose.** The pitch and the self-hosting instructions. Reviewed like code
+  and kept short, because short prose is cheap to keep true and long prose is
+  not.
+
+Anything that cannot be put in the first two tiers should be *shorter*, not
+more carefully written.
+
+### Every visitor gets their own instance, because the demo cannot be moderated
+
+The server checks a role on a document write and then stores opaque bytes; it
+never sees content. On a public demo that means no scanning, no answering a
+takedown without opening documents as a user to find the offending one, and no
+way to tell which document a complaint even refers to. Every moderation tool
+one would reach for is unavailable **by design**, and getting them would cost
+the design.
+
+So the demo does not moderate. It **isolates**. Abuse wants an audience:
+somebody writes something vile because a stranger will see it. One instance per
+visitor removes the audience, which removes the motive rather than policing the
+result — and it removes the sharper exposure a single shared demo has, which is
+one visitor writing abuse *at* another inside a document they are both in.
+
+It also collapses "documents must not stay around" into the same mechanism: an
+instance is a temp directory, and expiry is deleting it.
+
+A supervisor — a mode of the same binary — starts `docs -demo` on a free port
+with a temp database, proxies to it, and kills it after roughly twenty idle
+minutes. **A 17 MiB static binary over SQLite is what makes this affordable**;
+it would be an absurd design for anything that needed a database server.
+
+### A subdomain per session, not a path prefix
+
+The client assumes it is at the root: ten absolute `/api/…` call sites, a
+WebSocket URL built from `location.host`, and no vite `base`. Serving a session
+at `/demo/<token>/` would mean teaching all of that about a base path —
+permanent complexity in the app for a demo-only need.
+
+Routing by a cookie at one origin avoids that, and fails for the reason that
+matters most here. **Seeing the collaboration work means being two people at
+once**, which means two cookie jars, which means a private window — and a
+private window carries neither the app's `session` cookie nor the routing
+cookie, so it would land in a *different* instance and have nobody to
+collaborate with.
+
+So: `<token>.demo.example.com`, routed by hostname. The app stays at the root
+and is unmodified, a private window reaches the same instance while keeping its
+own login, and the cost is a wildcard DNS record and a wildcard certificate —
+a one-off operational task rather than standing code.
+
+The site has to say this out loud: *open a private window to be the second
+person*. It is not guessable, and the demo is pointless without it.
+
+### The limits are smaller, and they say so
+
+A demo needs caps a real instance does not. The trap is somebody hitting one
+and concluding that *this* is what the software does — so the caps are
+announced, and the message when one is reached names the real figure beside the
+demo one.
+
+**The caps have to be counts and bytes, not cells**, and that follows from the
+same content-blindness as everything else: the server can count documents, and
+it can measure the bytes of an update or a snapshot, but it cannot count cells
+or characters without reading the document. The client can guard cell counts as
+a courtesy; only the byte and document caps are enforceable.
+
+The real figures are measured, not guessed — see *A change too large to sync*
+and *Pasting is linear*: roughly 35 bytes per cell of plain data and 48 with
+formulas, a 16 MiB ceiling on a single change, 64 MiB on a snapshot, and about
+450,000 cells in one paste. A demo message should say something like "the demo
+caps a sheet at 5,000 cells; a self-hosted instance handles about 450,000 in a
+single paste."
+
+The banner for this already exists — the unsaved-change banner built for the
+oversized-paste guard is the same shape and the same place.
+
+### What is left once it is isolated
+
+Isolation removes the reason to abuse the demo, not the ability to waste it:
+
+- **A ceiling on concurrent sessions**, refused politely rather than by
+  falling over. One process per visitor is fine until somebody scripts a
+  thousand.
+- **A rate limit on session creation, per source.** `ratelimit.go` is the
+  shape, though not the same limiter.
+- **`robots.txt` and `noindex`.** There is no `robots.txt` today. Without it a
+  scratchpad somebody abandons can end up in search results under the domain.
+- **A contact address and a paragraph of acceptable use.** Minimal, but "there
+  is no way to report this" is a bad position to be in even once.
+- **Its own container**, with memory and CPU limits and no persistent volume,
+  so a restart is also a wipe.
+
 ## Sheet protection (decided, not built)
 
 ### Locked by default, and you unlock the inputs
@@ -3276,6 +3388,12 @@ multiple ownership, wanted and recorded — see `ROADMAP.md`, *Ownership*, and
   than passing quietly.
 
 ## Open questions
+
+- **What the thing is called.** "Your Docs" and "Own Docs" are both hard to
+  search for, which matters for something people are meant to find, and the
+  first reads ambiguously — whose? A distinctive name with "your own docs" as
+  the tagline would serve better. The cost of deciding is small now and grows:
+  the repo is `docs` and the app bar renders the wordmark `DOCS`.
 
 - **Ownership: transfer, or more than one owner?** Wanted, not yet shaped —
   see `ROADMAP.md`. Today `owner` is the creator, is not grantable, is not

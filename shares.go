@@ -52,7 +52,7 @@ func handleListShares(db *sql.DB) http.HandlerFunc {
 }
 
 // POST /api/docs/{id}/shares {email, role} — owner grants or changes a role.
-func handleAddShare(db *sql.DB, h *hub) http.HandlerFunc {
+func handleAddShare(db *sql.DB, h *hub, mail *mailer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireRole(db, w, r, "owner"); !ok {
 			return
@@ -97,6 +97,12 @@ func handleAddShare(db *sql.DB, h *hub) http.HandlerFunc {
 		// reconnect (an editor downgraded to viewer must lose write NOW).
 		if existing != "" && existing != in.Role {
 			h.evictUser(docID, uid)
+		}
+		// Only a *new* grant is news. Changing somebody's role on a document
+		// they already have is bookkeeping, and mailing it would train people
+		// to ignore the ones that matter.
+		if existing == "" {
+			mail.shared(docID, uid, currentUser(r).ID, in.Role)
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}

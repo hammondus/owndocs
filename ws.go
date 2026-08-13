@@ -161,6 +161,27 @@ func (h *hub) flushDoc(docID string) {
 // evictUser disconnects a user's live connections to a document — called
 // when their role is revoked or changed, so enforcement is immediate rather
 // than deferred to the next reconnect.
+// hasUser reports whether a person has this document open right now. Used by
+// the mailer to skip somebody who can already watch it happen — see
+// DESIGN-DECISIONS.md, *Notifications*. Same walk as evictUser, which is why
+// that one is the precedent the design cited for it being cheap.
+func (h *hub) hasUser(docID string, userID int64) bool {
+	h.mu.Lock()
+	rm := h.rooms[docID]
+	h.mu.Unlock()
+	if rm == nil {
+		return false
+	}
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	for c := range rm.clients {
+		if c.userID == userID {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *hub) evictUser(docID string, userID int64) {
 	h.mu.Lock()
 	rm := h.rooms[docID]

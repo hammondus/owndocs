@@ -14,16 +14,16 @@ undecided things stay under **Open questions** in the design doc.
 ## Comment threads
 
 Decided: bodies, identity and resolved-state in SQLite; anchors as opaque
-blobs. See *Comments* for why, and for the two traps. Build order — each step
-is useful on its own:
+blobs. See *Comments* for why, and for the two traps.
 
-1. Email, optional: unset SMTP config means none, and the app is whole
-   without it. Two events only — mentioned, and shared-with-you. The presence
-   skip and the per-(user, document) debounce belong here rather than in the
-   inbox — see *Notifications* for why.
+Shipped, and this section is now complete: mentions and the in-app inbox
+(schema v8), the unresolved count on each row of the document list, the
+`commenter` role in the share UI, and optional notification email — two events,
+submission-only to an existing relay, off unless `-smtp` is set.
 
-Shipped: mentions and the in-app inbox (schema v8), the unresolved count on
-each row of the document list, and the `commenter` role in the share UI.
+Still owed, and not scheduled: signup never verifies an email address, so
+notifications go to unverified ones. Fine for a small self-hosted team; worth a
+second look if an instance ever runs `-signup=open`.
 
 Not yet covered by `make test-ui`: composing a comment on a text selection.
 The selection drives fine; the compose click does not produce a thread under

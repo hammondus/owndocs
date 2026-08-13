@@ -130,7 +130,7 @@ func handleListComments(db *sql.DB) http.HandlerFunc {
 // POST /api/docs/{id}/comments {anchor, body} — opens a thread with its first
 // comment. Both rows go in one transaction: a thread with nothing in it is not
 // a state any reader should have to handle.
-func handleCreateThread(db *sql.DB, h *hub) http.HandlerFunc {
+func handleCreateThread(db *sql.DB, h *hub, mail *mailer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireRole(db, w, r, "commenter"); !ok {
 			return
@@ -175,13 +175,17 @@ func handleCreateThread(db *sql.DB, h *hub) http.HandlerFunc {
 		// commit together or not at all. Best-effort on failure — losing a
 		// notification must never cost somebody the comment they just wrote —
 		// but there is no reason to make it likely.
-		if err := recordNotifications(tx, r.PathValue("id"), tid, cid, uid, in.Body); err != nil {
+		mentioned, err := recordNotifications(tx, r.PathValue("id"), tid, cid, uid, in.Body)
+		if err != nil {
 			log.Printf("notifications: thread %d: %v", tid, err)
 		}
 		if err := tx.Commit(); err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
+		// After the commit, never before: an email about a comment that got
+		// rolled back is a lie that cannot be taken back.
+		mail.mentioned(r.PathValue("id"), mentioned, uid, in.Body)
 		h.notifyComments(r.PathValue("id"))
 		// Comments explicitly empty rather than nil: the list endpoint returns
 		// [] for a thread with no replies, and a client should not have to
@@ -193,7 +197,7 @@ func handleCreateThread(db *sql.DB, h *hub) http.HandlerFunc {
 }
 
 // POST /api/docs/{id}/comments/{tid} {body} — reply to a thread.
-func handleReply(db *sql.DB, h *hub) http.HandlerFunc {
+func handleReply(db *sql.DB, h *hub, mail *mailer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireRole(db, w, r, "commenter"); !ok {
 			return
@@ -217,9 +221,11 @@ func handleReply(db *sql.DB, h *hub) http.HandlerFunc {
 			return
 		}
 		id, _ := res.LastInsertId()
-		if err := recordNotifications(db, r.PathValue("id"), tid, id, u.ID, in.Body); err != nil {
+		mentioned, err := recordNotifications(db, r.PathValue("id"), tid, id, u.ID, in.Body)
+		if err != nil {
 			log.Printf("notifications: reply %d: %v", id, err)
 		}
+		mail.mentioned(r.PathValue("id"), mentioned, u.ID, in.Body)
 		h.notifyComments(r.PathValue("id"))
 		writeJSON(w, http.StatusOK, comment{
 			ID: id, ThreadID: tid, AuthorID: u.ID, AuthorName: u.Name, Body: in.Body, CreatedAt: now,

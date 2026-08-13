@@ -25,7 +25,7 @@ func closedServer(t *testing.T) *httptest.Server {
 		t.Fatal(err)
 	}
 	h := newHub(db, nil)
-	srv := httptest.NewServer(routes(db, h, nil, false, true))
+	srv := httptest.NewServer(routes(db, h, nil, nil, false, true))
 	t.Cleanup(srv.Close)
 	return srv
 }

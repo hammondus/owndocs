@@ -185,7 +185,7 @@ func TestSignupClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	srv := httptest.NewServer(routes(db, newHub(db, nil), nil, false, false))
+	srv := httptest.NewServer(routes(db, newHub(db, nil), nil, nil, false, false))
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]string{"email": "a@b.c", "name": "A", "password": "password123"})

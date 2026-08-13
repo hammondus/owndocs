@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen, dev bool) http.Handler {
+func routes(db *sql.DB, h *hub, mail *mailer, staticFS fs.FS, signupOpen, dev bool) http.Handler {
 	mux := http.NewServeMux()
 
 	if dev {
@@ -31,7 +31,7 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen, dev bool) http.Handl
 	mux.HandleFunc("DELETE /api/docs/{id}", requireAuth(db, handleDeleteDoc(db, h)))
 
 	mux.HandleFunc("GET /api/docs/{id}/shares", requireAuth(db, handleListShares(db)))
-	mux.HandleFunc("POST /api/docs/{id}/shares", requireAuth(db, handleAddShare(db, h)))
+	mux.HandleFunc("POST /api/docs/{id}/shares", requireAuth(db, handleAddShare(db, h, mail)))
 	mux.HandleFunc("DELETE /api/docs/{id}/shares/{uid}", requireAuth(db, handleRemoveShare(db, h)))
 	mux.HandleFunc("POST /api/docs/{id}/links", requireAuth(db, handleCreateLink(db)))
 	mux.HandleFunc("GET /api/docs/{id}/links", requireAuth(db, handleListLinks(db)))
@@ -51,8 +51,8 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen, dev bool) http.Handl
 	mux.HandleFunc("DELETE /api/docs/{id}/versions/{vid}", requireAuth(db, handleDeleteVersion(db)))
 
 	mux.HandleFunc("GET /api/docs/{id}/comments", requireAuth(db, handleListComments(db)))
-	mux.HandleFunc("POST /api/docs/{id}/comments", requireAuth(db, handleCreateThread(db, h)))
-	mux.HandleFunc("POST /api/docs/{id}/comments/{tid}", requireAuth(db, handleReply(db, h)))
+	mux.HandleFunc("POST /api/docs/{id}/comments", requireAuth(db, handleCreateThread(db, h, mail)))
+	mux.HandleFunc("POST /api/docs/{id}/comments/{tid}", requireAuth(db, handleReply(db, h, mail)))
 	mux.HandleFunc("PATCH /api/docs/{id}/comments/{tid}", requireAuth(db, handleResolveThread(db, h)))
 	mux.HandleFunc("DELETE /api/docs/{id}/comments/{tid}", requireAuth(db, handleDeleteThread(db, h)))
 	mux.HandleFunc("PATCH /api/docs/{id}/comments/{tid}/{cid}", requireAuth(db, handleEditComment(db, h)))

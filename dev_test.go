@@ -23,7 +23,7 @@ func TestDevLogin(t *testing.T) {
 
 	// Dev mode off: the endpoints must not exist. (An unmatched /api path
 	// falls through to the static handler, hence 404 via the file server.)
-	off := httptest.NewServer(routes(db, newHub(db, nil), static, true, false))
+	off := httptest.NewServer(routes(db, newHub(db, nil), nil, static, true, false))
 	defer off.Close()
 	res, _ := http.Get(off.URL + "/api/dev/users")
 	if res.StatusCode != http.StatusNotFound {
@@ -32,7 +32,7 @@ func TestDevLogin(t *testing.T) {
 	res.Body.Close()
 
 	// Dev mode on: quick login works for seeded users only.
-	on := httptest.NewServer(routes(db, newHub(db, nil), static, true, true))
+	on := httptest.NewServer(routes(db, newHub(db, nil), nil, static, true, true))
 	defer on.Close()
 
 	body, _ := json.Marshal(map[string]string{"email": "alice@dev.local"})

@@ -19,6 +19,13 @@ import (
 
 // testServer wires the full stack (routes + hub + sqlite) onto httptest.
 func testServer(t *testing.T) (*httptest.Server, *sql.DB, *hub) {
+	return testServerWithMail(t, nil)
+}
+
+// The same server with a mailer attached. Separate rather than a variadic on
+// testServer, because "which of these tests can send mail" is worth being able
+// to read off the call.
+func testServerWithMail(t *testing.T, mail *mailer) (*httptest.Server, *sql.DB, *hub) {
 	t.Helper()
 	db, err := openDB(t.TempDir() + "/test.db")
 	if err != nil {
@@ -26,8 +33,11 @@ func testServer(t *testing.T) (*httptest.Server, *sql.DB, *hub) {
 	}
 	t.Cleanup(func() { db.Close() })
 	h := newHub(db, nil)
+	if mail != nil {
+		mail.db, mail.hub = db, h
+	}
 	static := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<!doctype html>test")}}
-	srv := httptest.NewServer(routes(db, h, static, true, false))
+	srv := httptest.NewServer(routes(db, h, mail, static, true, false))
 	t.Cleanup(srv.Close)
 	return srv, db, h
 }

@@ -32,9 +32,21 @@ func main() {
 	signup := flag.String("signup", "open", "account creation: open or closed (close before exposing to the internet)")
 	allowOrigin := flag.String("allow-origin", "", "extra websocket origin to accept, e.g. http://localhost:5173 for the vite dev server")
 	dev := flag.Bool("dev", false, "seed dev users with passwordless quick login — NEVER on a real instance")
+	// Mail is submission-only to a relay that already exists — see
+	// DESIGN-DECISIONS.md, *Notifications*. Unset means the feature is off,
+	// not broken. Credentials come from the environment rather than argv,
+	// which is visible in `ps`, exactly as the git exporter's do.
+	smtpAddr := flag.String("smtp", "", "submission relay host:port for notification email; empty disables it")
+	mailFrom := flag.String("mail-from", "", "From address for notification email")
+	baseURL := flag.String("base-url", "", "public origin of this instance, e.g. https://docs.example.com — used for links in email")
 	flag.Parse()
 	if *signup != "open" && *signup != "closed" {
 		log.Fatalf("-signup must be open or closed, got %q", *signup)
+	}
+	// Refused at startup rather than discovered as a broken link in somebody's
+	// mailbox: the server has no other way to know its own public URL.
+	if *smtpAddr != "" && (*mailFrom == "" || *baseURL == "") {
+		log.Fatal("-smtp needs -mail-from and -base-url as well")
 	}
 
 	if dir := filepath.Dir(*dbPath); dir != "." {
@@ -68,9 +80,21 @@ func main() {
 		origins = append(origins, *allowOrigin)
 	}
 	hub := newHub(db, origins)
+	mail := newMailer(mailConfig{
+		Addr:    *smtpAddr,
+		From:    *mailFrom,
+		BaseURL: *baseURL,
+		User:    os.Getenv("SMTP_USERNAME"),
+		Pass:    os.Getenv("SMTP_PASSWORD"),
+	}, db, hub)
+	if mail == nil {
+		log.Print("notification email is off (-smtp unset); the in-app inbox is unaffected")
+	} else {
+		log.Printf("notification email via %s as %s", *smtpAddr, *mailFrom)
+	}
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           routes(db, hub, staticFS, *signup == "open", *dev),
+		Handler:           routes(db, hub, mail, staticFS, *signup == "open", *dev),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

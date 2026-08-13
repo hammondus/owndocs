@@ -75,10 +75,13 @@ func collaborators(q execQuerier, docID string) ([]mentionable, error) {
 // caller logs rather than fails on. A notification is a convenience layered
 // over the comment, and losing one must never cost somebody the comment they
 // just wrote.
-func recordNotifications(q execQuerier, docID string, tid, cid, actorID int64, body string) error {
+// Returns the ids that got a *mention*, so the caller can mail them once the
+// comment is committed. Replies deliberately do not appear in that list: they
+// are in the inbox and nothing about a reply says somebody is being waited on.
+func recordNotifications(q execQuerier, docID string, tid, cid, actorID int64, body string) ([]int64, error) {
 	people, err := collaborators(q, docID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	now := time.Now().Unix()
 	notified := map[int64]bool{actorID: true}
@@ -94,10 +97,15 @@ func recordNotifications(q execQuerier, docID string, tid, cid, actorID int64, b
 		return err
 	}
 
+	var mentioned []int64
 	for _, uid := range mentionsIn(body, people) {
-		if err := add(uid, "mention"); err != nil {
-			return err
+		if uid == actorID {
+			continue
 		}
+		if err := add(uid, "mention"); err != nil {
+			return nil, err
+		}
+		mentioned = append(mentioned, uid)
 	}
 
 	// Everyone who has already spoken in this thread. On a brand-new thread
@@ -105,26 +113,26 @@ func recordNotifications(q execQuerier, docID string, tid, cid, actorID int64, b
 	// opening a thread and replying to one.
 	rows, err := q.Query("SELECT DISTINCT author_id FROM comments WHERE thread_id = ?", tid)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
 	var participants []int64
 	for rows.Next() {
 		var uid int64
 		if err := rows.Scan(&uid); err != nil {
-			return err
+			return nil, err
 		}
 		participants = append(participants, uid)
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	for _, uid := range participants {
 		if err := add(uid, "reply"); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return mentioned, nil
 }
 
 // GET /api/notifications — the inbox, newest first.

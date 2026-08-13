@@ -28,3 +28,29 @@ End-to-end sync check (needs a running server): `cd web && node scripts/e2e.mjs`
 
     make release      # dist/docs-linux-arm64, static binary
     make deploy       # on the server: git pull && docker compose up -d --build
+
+### Notification email (optional)
+
+Off unless `-smtp` is set, and the app is whole without it: mentions and
+replies always land in the in-app inbox. Mail covers the two events where the
+recipient is by definition not in the app — you were mentioned, and a document
+was shared with you.
+
+Submission only, to a relay that already exists. This app never touches SPF,
+DKIM, DMARC or bounces; if mail matters more than best-effort, the relay is
+where to fix it.
+
+The Dockerfile's ENTRYPOINT carries the base flags, so add these in
+`docker-compose.yml` — `command:` is appended to it:
+
+    command: ["-smtp", "relay.internal:587",
+              "-mail-from", "docs@example.com",
+              "-base-url", "https://docs.example.com"]
+    environment:
+      SMTP_USERNAME: docs
+      SMTP_PASSWORD: ...
+
+Credentials come from the environment rather than the command line, which is
+visible in `ps`. `-base-url` is required with `-smtp` and refused at startup
+without it: the server has no other way to know its own public URL, and a
+message whose only link is broken is worse than no message.

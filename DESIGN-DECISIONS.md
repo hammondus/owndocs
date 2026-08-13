@@ -2796,6 +2796,38 @@ STARTTLS and PLAIN is enough, so no new dependency; headers are hand-built and
 a non-ASCII subject goes through `mime`. Unset config means the feature is off,
 not broken.
 
+**Shipped 2026-08-13**, and three things the plan above did not settle:
+
+- **Config is refused at startup, not discovered in a mailbox.** `-smtp` needs
+  `-mail-from` and `-base-url` with it, because the server has no other way to
+  know its own public URL and a message whose only link is broken is worse than
+  no message. Credentials come from `SMTP_USERNAME`/`SMTP_PASSWORD` rather than
+  argv, which is visible in `ps` — the rule the git exporter already follows.
+- **A nil `*mailer` is the "off" state**, and answers every method. That is what
+  keeps `mail.mentioned(...)` unconditional at the call sites: an instance with
+  no relay behaves exactly as it did before the file existed, and there is no
+  `if mail != nil` to forget.
+- **One worker, a bounded channel, and a dropped job when it is full.** The
+  queue is 256 deep on a path a signed-in user can drive, so the honest failure
+  is a log line rather than memory growth. This is the shape "must not grow a
+  queue pretending otherwise" was asking for.
+
+Two consequences worth knowing, both of which surfaced as failing tests before
+they surfaced as opinions:
+
+- **The debounce collapses a share followed by a mention.** Granting somebody
+  access and then naming them in a comment a minute later is one act by one
+  person, and they get the share notice only. That is the rule working, not a
+  gap — the inbox has both regardless, which is the whole reason mail can
+  afford to be quiet.
+- **A role *change* is not a share.** Only a first grant mails; changing
+  somebody's role on a document they already have is bookkeeping, and mailing
+  it would train people to ignore the ones that matter.
+
+`hub.hasUser` is the presence test, the same walk as `evictUser` — which is why
+that was named as the precedent for it being a few lines rather than a
+subsystem.
+
 Loose end for whoever builds it: signup never verifies an email address, so
 notifications go to unverified addresses. Fine for a small self-hosted team,
 worth a second look if an instance runs `-signup=open`.

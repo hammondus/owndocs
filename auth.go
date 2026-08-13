@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -263,6 +264,11 @@ func handleSignup(db *sql.DB, open bool) http.HandlerFunc {
 }
 
 func handleLogin(db *sql.DB) http.HandlerFunc {
+	// One limiter per registration, which is once. Kept in the closure rather
+	// than threaded through routes(): nothing else has any business touching
+	// it, and a package-level var would be shared by two servers in one test
+	// binary.
+	limiter := newLoginLimiter()
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Email    string `json:"email"`
@@ -272,6 +278,17 @@ func handleLogin(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		in.Email = strings.ToLower(strings.TrimSpace(in.Email))
+		source := clientIP(r)
+		// Checked before the lookup and before any hashing, so a locked-out
+		// attacker consumes neither a database read nor one of the 64 MiB hash
+		// permits. Retry-After is in seconds and rounded up, since rounding
+		// down would invite a retry that is still refused.
+		if wait := limiter.retryAfter(in.Email, source); wait > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+			log.Printf("rate-limited login for %q from %s", in.Email, source)
+			jsonError(w, http.StatusTooManyRequests, "too many sign-in attempts, try again shortly")
+			return
+		}
 		var u user
 		var hash string
 		err := db.QueryRow("SELECT id, email, name, pass_hash FROM users WHERE email = ?", in.Email).
@@ -281,7 +298,8 @@ func handleLogin(db *sql.DB) http.HandlerFunc {
 			// indistinguishable from a wrong password — and costs the same
 			// 64 MiB, so it takes a permit like any other.
 			withHashSlot(func() { verifyPassword(in.Password, dummyHash) })
-			log.Printf("failed login for unknown %q from %s", in.Email, clientIP(r))
+			limiter.fail(in.Email, source)
+			log.Printf("failed login for unknown %q from %s", in.Email, source)
 			jsonError(w, http.StatusUnauthorized, "wrong email or password")
 			return
 		}
@@ -299,10 +317,12 @@ func handleLogin(db *sql.DB) http.HandlerFunc {
 			// at all. Never the password, and never a distinction between a
 			// wrong password and an unknown account beyond what the response
 			// already reveals.
-			log.Printf("failed login for %q from %s", in.Email, clientIP(r))
+			limiter.fail(in.Email, source)
+			log.Printf("failed login for %q from %s", in.Email, source)
 			jsonError(w, http.StatusUnauthorized, "wrong email or password")
 			return
 		}
+		limiter.succeed(in.Email)
 		token, err := createSession(db, u.ID)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "session create failed")

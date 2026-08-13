@@ -35,11 +35,11 @@ automation and the reason is unfound. Verify that path by hand until it is.
 The audience is trusted staff; the login page is on the public internet. These
 defend the perimeter, not the colleagues — see *Threat model*.
 
-- **Rate-limit and lock out** repeated failures, per account and per source
-  address, on `/api/login`. `clientIP()` already resolves the source correctly
-  behind the proxy; nothing consumes it yet beyond the log line.
 - Deliberately not now: 2FA, email verification, password-strength rules. See
   *Threat model* for why the bar sits here.
+
+Shipped: rate limiting and lockout on `/api/login`, per account and per source
+address — see *Rate-limiting the login surface* in the design doc.
 
 ## Kanban: a third document kind
 

@@ -1137,8 +1137,12 @@ required, but it does not have to price in a hostile user, and features whose
 only value is against one are not worth their friction here.
 
 What that rules out spending on, unless someone asks: email verification, 2FA,
-rate limiting and lockout, audit trails, per-field encryption, and hardening
-against a determined authenticated attacker.
+audit trails, per-field encryption, and hardening against a determined
+authenticated attacker.
+
+Rate limiting and lockout were on that list until 2026-08-13, when they were
+asked for — see *Rate-limiting the login surface* below. The reasoning did not
+change; the "unless someone asks" did.
 
 What it does **not** relax, because the reasoning is different:
 
@@ -1165,6 +1169,55 @@ their SHA-256 is stored. Treating an unguessable id as if it were a permission
 is how "unlisted means private" systems get built, and this is not one.
 
 ---
+
+### Rate-limiting the login surface
+
+Shipped 2026-08-13. Repeated failures on `/api/login` are counted and locked
+out, per account **and** per source address. It sits with the other perimeter
+defences, not with the colleague-versus-colleague ones the *Threat model*
+declines: the login page is publicly reachable and only staff have accounts.
+
+**Counted on two keys at once, because they fail differently.** A per-account
+counter stops one account being ground down from a botnet; a per-source counter
+stops one host working through a list of accounts. Neither catches the other's
+case, so both run.
+
+The thresholds are deliberately lopsided — five failures per account, fifty per
+address. An office behind one NAT is a **single address** to this app, and a
+strict source limit would lock out a whole floor because one person is having a
+bad morning. Five is right for an account because somebody who has typed their
+own password wrong five times is not about to get it right on the sixth.
+
+**In memory, not in SQLite**, and that is a decision rather than a shortcut. A
+restart clears every counter — accepted, because an attacker cannot cause a
+restart, and the alternative is a disk write per failed attempt, which turns a
+guessing flood into a write amplifier and leaves a table to prune. One process,
+one map, no schema. The sweep is lazy and inside the lock a caller already
+holds, so there is no goroutine to own or shut down.
+
+Three rules that are each easy to get subtly wrong, and each has a test:
+
+- **A success clears the account's counter but never the source's.** Clearing
+  both would hand an attacker a reset button: one account they legitimately
+  hold, signed into between bursts, wipes the address limit every time.
+- **Unknown accounts are counted like any other.** A limiter that skipped them
+  answers "locked" for a real address and "invalid" for a made-up one, which is
+  an account-existence oracle built out of the defence — and this codebase
+  already pays for a dummy argon2 verify to close exactly that channel on the
+  timing side.
+- **The check runs before the lookup and before any hashing**, so a locked-out
+  attacker consumes neither a database read nor one of the four 64 MiB hash
+  permits. `withHashSlot` bounds concurrency and this bounds attempts; a burst
+  arriving inside one window allocates before any limiter has counted it, which
+  is why both exist.
+
+**The lockout is progressive and capped**, doubling from one minute to fifteen.
+That shape is the answer to the obvious objection, which is real and worth
+stating: anyone who knows a colleague's email can lock them out by failing five
+times. A permanent lock would make that a denial of service on a person; a
+minute that grows only under continued attack makes it an annoyance for the
+victim and real time for the attacker. There is no way to have lockout without
+some version of this trade, and the short base is the cheapest version of it.
 
 ## Collaboration engine
 

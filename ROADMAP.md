@@ -21,10 +21,9 @@ is useful on its own:
    without it. Two events only — mentioned, and shared-with-you. The presence
    skip and the per-(user, document) debounce belong here rather than in the
    inbox — see *Notifications* for why.
-2. Share UI: offer the `commenter` role (the API takes it already)
 
-Shipped: mentions and the in-app inbox (schema v8), and the unresolved count on
-each row of the document list.
+Shipped: mentions and the in-app inbox (schema v8), the unresolved count on
+each row of the document list, and the `commenter` role in the share UI.
 
 Not yet covered by `make test-ui`: composing a comment on a text selection.
 The selection drives fine; the compose click does not produce a thread under

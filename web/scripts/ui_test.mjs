@@ -1588,6 +1588,74 @@ try {
     await page.waitForFunction(() => !document.querySelector('.problem'), { timeout: 3000 })
   }, { expect: /refusing to send a \d+-byte update/ })
 
+  // The `commenter` role, granted through the real share screen. It has worked
+  // end to end since schema v5 — the API takes it, the socket enforces it,
+  // roles.js knows it — and nothing offered it, so nobody could reach it. This
+  // asserts the whole chain rather than the dropdown alone: granting it here
+  // has to produce a person who can comment and cannot edit.
+  await step('a commenter can be granted, and gets a reading toolbar', async () => {
+    if (await page.$('[aria-label="Back to documents"]')) {
+      await clickSel(page, '[aria-label="Back to documents"]')
+    }
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI commenter doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    const docID = docIdFromHash(page.url())
+
+    await clickText(page, 'a', 'share')
+    await page.waitForSelector('input[type="email"]', { timeout: 5000 })
+
+    // All three grantable roles, and no `owner` — which is not a thing to hand
+    // out, and which the server refuses on this endpoint.
+    const roles = await page.evaluate(() =>
+      [...document.querySelectorAll('form select option')].map((o) => o.value),
+    )
+    check(
+      JSON.stringify(roles) === JSON.stringify(['editor', 'commenter', 'viewer']),
+      `the picker offers every grantable role (got ${JSON.stringify(roles)})`,
+    )
+
+    await page.type('input[type="email"]', 'bob@dev.local')
+    await page.select('form select', 'commenter')
+    await clickText(page, 'button', 'Add')
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('li')].some((li) => /bob@dev\.local/.test(li.textContent) && /commenter/.test(li.textContent)),
+      { timeout: 5000 },
+    )
+    ok('and grants it')
+
+    const ctx = await browser.createBrowserContext()
+    const bob = await ctx.newPage()
+    const bobConsole = watchConsole(bob)
+    try {
+      await bob.goto(`${BASE}/#doc=${docID}`, { waitUntil: 'networkidle0' })
+      await clickText(bob, 'button', 'Bob')
+      await bob.waitForSelector('.cm-content', { timeout: 5000 })
+
+      const labels = await bob.evaluate(() =>
+        [...document.querySelectorAll('.toolbar button, .toolbar select')].map((e) => e.textContent.trim()),
+      )
+      // The gate, not a courtesy: EditorState.readOnly stops user input, but a
+      // toolbar button is a programmatic dispatch that goes straight past it.
+      check(!labels.includes('B'), `no editing commands for a commenter (got ${JSON.stringify(labels)})`)
+      check(labels.includes('Aa'), 'but the reading controls survive')
+
+      // Commenting is the whole point of the role, so the way in must be there.
+      check(
+        await bob.evaluate(() =>
+          [...document.querySelectorAll('.viewbar button')].some((b) => /comments/.test(b.textContent)),
+        ),
+        'and the comments panel is reachable',
+      )
+
+      const errs = bobConsole.drain()
+      check(errs.length === 0, `Bob's page logged nothing${errs.length ? ': ' + errs.join('; ') : ''}`)
+    } finally {
+      await ctx.close()
+    }
+  })
+
 } finally {
   await browser.close()
   server.kill()

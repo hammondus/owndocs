@@ -2549,6 +2549,21 @@ Costs, stated plainly:
 - **A new `commenter` role** between `viewer` and `editor`, which touches the
   `permissions` CHECK constraint, `roleFor`, and the share UI.
 
+  The share UI was the part that got left. Everything else shipped with
+  schema v5 — the endpoints validate against `roleRank`, the socket enforces
+  it, `roles.js` withholds the editing toolbar for it — and the two controls
+  that hand out access went on offering `editor` and `viewer` only, so the
+  role worked end to end and could not be reached. Closed 2026-08-13.
+
+  The fix worth keeping is not the extra option, it is that **both controls
+  now read one list**. The person picker and the link buttons had each hard
+  coded their own pair, which is exactly how they came to disagree with the
+  server and with each other; one array means a fourth role cannot be added
+  to one and forgotten in the other. Each option also says what it grants
+  rather than only naming itself — "commenter" is the one nobody guesses, and
+  the difference between commenting and editing is the whole reason it
+  exists.
+
 Two things to get right when building, both verified against the current
 code rather than assumed:
 

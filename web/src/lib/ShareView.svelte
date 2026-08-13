@@ -7,6 +7,17 @@
 
   let { doc, onBack } = $props()
 
+  // The three grantable roles. `owner` is absent because it is not a thing to
+  // hand out — the server refuses it on both endpoints — and the list is
+  // shared by the person picker and the link buttons so the two can never
+  // offer different sets, which is exactly how `commenter` came to work
+  // everywhere except here.
+  const ROLES = [
+    { value: 'editor', can: 'can change the document' },
+    { value: 'commenter', can: 'can comment, but not change it' },
+    { value: 'viewer', can: 'can read it' },
+  ]
+
   let people = $state([])
   let links = $state([])
   let addEmail = $state('')
@@ -92,9 +103,14 @@
   </ul>
   <form onsubmit={addPerson}>
     <input type="email" placeholder="email of existing account" bind:value={addEmail} required />
+    <!-- Ordered by what each role can do, most to least, which is also
+         `roleRank`'s order. Each says what it grants rather than only naming
+         itself: "commenter" is the one nobody guesses, and the difference
+         between commenting and editing is the whole reason the role exists. -->
     <select bind:value={addRole}>
-      <option value="editor">editor</option>
-      <option value="viewer">viewer</option>
+      {#each ROLES as r (r.value)}
+        <option value={r.value}>{r.value} — {r.can}</option>
+      {/each}
     </select>
     <button>Add</button>
   </form>
@@ -114,8 +130,14 @@
     {/each}
   </ul>
   <p>
-    <button onclick={() => createLink('viewer')}>New viewer link</button>
-    <button onclick={() => createLink('editor')}>New editor link</button>
+    {#each ROLES as r (r.value)}
+      <button onclick={() => createLink(r.value)}>New {r.value} link</button>
+    {/each}
+  </p>
+  <p class="note">
+    Anyone with the link gets that role, without an account of their own being
+    named — so a commenter link is the one to hand out when you want remarks
+    back but not edits.
   </p>
   {#if newLinkURL}
     <p>
@@ -133,5 +155,10 @@
   }
   li {
     padding: 0.15rem 0;
+  }
+  .note {
+    font-size: 0.8rem;
+    opacity: 0.75;
+    max-width: 40rem;
   }
 </style>

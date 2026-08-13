@@ -404,6 +404,21 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
 .md-code { font-family: var(--mono); font-size: .9em;
            background: var(--surface-2); border-radius: var(--r); padding: 0 .25em; }
 .md-link { color: var(--signal); text-decoration: underline; }
+/* A link to another document looks exactly like any other link, deliberately:
+   it *is* one, and inventing a second link style would be a new visual device
+   earning nothing. What separates them is that this one can be followed, so
+   the pointer is the affordance and the tooltip (the target's current title)
+   is the confirmation. Links to the outside world stay inert for now. */
+.md-doclink { cursor: pointer; }
+/* Dimmed and dashed rather than struck through or red: the usual cause is a
+   document that was deleted or never shared, which is a fact about access
+   rather than an error in the text. It still reads as a link, because it is
+   one — the label the author wrote is still theirs. */
+.md-doclink-missing {
+  color: var(--ink-3);
+  text-decoration-style: dashed;
+  cursor: default;
+}
 .md-dim { opacity: .4; }
 .md-heading { font-weight: 700; letter-spacing: -0.01em; }
 /* Six sizes, one per level, because the Style menu offers six and three of
@@ -526,4 +541,277 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
 .cm-comment-range {
   background: color-mix(in srgb, #f9a825 14%, transparent);
   border-bottom: 2px solid #f9a825;
+}
+
+/* ---- the rich-document palette -------------------------------------------
+   Eight hues in two roles, and a size scale: the tokens a rich document may
+   name. What they *mean* is settled here, per scheme, which is the whole
+   reason a document names a colour rather than giving one. See
+   DESIGN-DECISIONS, *A palette of named tokens, not a colour picker*.
+
+   Generated in OKLCH at fixed lightness and chroma with only the hue varying,
+   so no colour carries more visual weight than its neighbours and the set
+   reads as one system rather than as eight separate decisions. To add a hue:
+   a row in palette.js and a line in each block below.
+
+   Text colours have to contrast with --surface, so they are dark in light mode
+   and light in dark mode. `yellow` therefore reads amber as text — there is no
+   light yellow that contrasts with white — and the name follows the hue so the
+   two roles stay in step. */
+:root {
+  --doc-c-red: oklch(0.50 0.15 25);
+  --doc-c-orange: oklch(0.50 0.15 60);
+  --doc-c-yellow: oklch(0.50 0.15 95);
+  --doc-c-green: oklch(0.50 0.15 145);
+  --doc-c-teal: oklch(0.50 0.15 195);
+  --doc-c-blue: oklch(0.50 0.15 255);
+  --doc-c-purple: oklch(0.50 0.15 300);
+  --doc-c-pink: oklch(0.50 0.15 345);
+
+  /* Highlight grounds do NOT vary by scheme, following .md-highlight exactly:
+     a highlighter pen is a light ground by definition, so inheriting the
+     dark-mode foreground would make it unreadable. Ground and ink are pinned
+     together, and that pinning is what halves the contrast work. */
+  --doc-h-red: oklch(0.90 0.09 25);
+  --doc-h-orange: oklch(0.90 0.09 60);
+  --doc-h-yellow: oklch(0.90 0.09 95);
+  --doc-h-green: oklch(0.90 0.09 145);
+  --doc-h-teal: oklch(0.90 0.09 195);
+  --doc-h-blue: oklch(0.90 0.09 255);
+  --doc-h-purple: oklch(0.90 0.09 300);
+  --doc-h-pink: oklch(0.90 0.09 345);
+  --doc-h-ink: #1a1a1a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --doc-c-red: oklch(0.80 0.13 25);
+    --doc-c-orange: oklch(0.80 0.13 60);
+    --doc-c-yellow: oklch(0.80 0.13 95);
+    --doc-c-green: oklch(0.80 0.13 145);
+    --doc-c-teal: oklch(0.80 0.13 195);
+    --doc-c-blue: oklch(0.80 0.13 255);
+    --doc-c-purple: oklch(0.80 0.13 300);
+    --doc-c-pink: oklch(0.80 0.13 345);
+  }
+}
+
+.md-c-red { color: var(--doc-c-red); }
+.md-c-orange { color: var(--doc-c-orange); }
+.md-c-yellow { color: var(--doc-c-yellow); }
+.md-c-green { color: var(--doc-c-green); }
+.md-c-teal { color: var(--doc-c-teal); }
+.md-c-blue { color: var(--doc-c-blue); }
+.md-c-purple { color: var(--doc-c-purple); }
+.md-c-pink { color: var(--doc-c-pink); }
+
+.md-h-red { background: var(--doc-h-red); color: var(--doc-h-ink); border-radius: 2px; padding: 0 .1em; }
+.md-h-orange { background: var(--doc-h-orange); color: var(--doc-h-ink); border-radius: 2px; padding: 0 .1em; }
+.md-h-yellow { background: var(--doc-h-yellow); color: var(--doc-h-ink); border-radius: 2px; padding: 0 .1em; }
+.md-h-green { background: var(--doc-h-green); color: var(--doc-h-ink); border-radius: 2px; padding: 0 .1em; }
+.md-h-teal { background: var(--doc-h-teal); color: var(--doc-h-ink); border-radius: 2px; padding: 0 .1em; }
+.md-h-blue { background: var(--doc-h-blue); color: var(--doc-h-ink); border-radius: 2px; padding: 0 .1em; }
+.md-h-purple { background: var(--doc-h-purple); color: var(--doc-h-ink); border-radius: 2px; padding: 0 .1em; }
+.md-h-pink { background: var(--doc-h-pink); color: var(--doc-h-ink); border-radius: 2px; padding: 0 .1em; }
+
+/* Relative, never absolute: an absolute size overrides a reading preference
+   the reader deliberately set, span by span, and there is no good answer to
+   which should win. "Larger than the text around it" stays true at any base
+   size. */
+.md-size-sm { font-size: .85em; }
+.md-size-lg { font-size: 1.25em; }
+.md-size-xl { font-size: 1.5em; }
+
+/* Alignment, the one block-level thing a rich document can say. A line class,
+   because a fenced div is lines — see DESIGN-DECISIONS, *Alignment is a fenced
+   div*. There is no `left`: a paragraph is already left-aligned, and removing
+   the div says so more honestly than a class claiming to set it. */
+.md-align-center { text-align: center; }
+.md-align-right { text-align: right; }
+/* Justify works across the *visual* lines a soft-wrapped logical line produces,
+   which is what makes it worth having in a wrapping editor at all. It has no
+   effect on a line short enough not to wrap, which is correct and occasionally
+   surprising: justifying a one-line paragraph looks like nothing happened. */
+.md-align-justify { text-align: justify; }
+
+/* ---- print ----------------------------------------------------------------
+   Printing *is* the PDF export. There is no second renderer and there does not
+   need to be one — see DESIGN-DECISIONS, *Print is the PDF export*: every
+   construct a document can contain is a span or a line, so pagination is the
+   browser's problem rather than this app's, and the browser is already good at
+   it. What would have forced a renderer of our own is page layout, and there
+   is deliberately none.
+
+   Two rules shape everything below. What prints is the *document*, so every
+   control, readout and drawer around it goes. And what prints is an artifact
+   that leaves this machine, so it is typeset for paper rather than for the
+   screen of whoever happened to press print.
+
+   This block must stay LAST in the file. It restates :root tokens that the
+   prefers-color-scheme block above also sets, and at equal specificity the
+   later rule is the one that wins. */
+@media print {
+  /* Dark mode must not follow the document onto paper. Browsers routinely drop
+     background colours when printing but keep foreground ones, so a dark
+     scheme prints as pale grey text on white — present, and unreadable. The
+     light palette is restated unconditionally rather than guarded, because
+     there is no such thing as a dark sheet of paper.
+
+     Ink is blacker and the signal deeper than on screen: a display is
+     backlit and paper is not, so the hairline greys that read as "quiet" on a
+     monitor read as "missing" out of a laser printer. */
+  :root {
+    --ground: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f1f3f5;
+    --line: #ccd2d9;
+    --line-strong: #a8b1bc;
+    --ink: #000000;
+    --ink-2: #33383f;
+    --ink-3: #5c636d;
+    --signal: #12347f;
+    --signal-soft: #eef2fb;
+    --on-signal: #ffffff;
+    --danger: #8f2718;
+  }
+
+  /* Reading preferences are set as inline custom properties on the root
+     element by prefs.js, and an inline declaration beats any stylesheet rule
+     that is not !important. That is the whole reason these three carry it.
+
+     They are overridden rather than inherited because a reading preference is
+     about the screen of the person who set it, while a PDF is an artifact that
+     goes to someone else. 24px body text chosen for one laptop is not a
+     statement about the document and must not travel with it. Point sizes,
+     since this is paper; and no measure, because the page margin already is
+     the measure. Font *family* is left alone — that one is a taste the author
+     may reasonably want carried through. */
+  :root {
+    --reading-size: 11pt !important;
+    --reading-line-height: 1.45 !important;
+    --reading-measure: none !important;
+  }
+
+  @page {
+    margin: 18mm 16mm;
+  }
+
+  /* Instrumentation, not document: two bars of controls and a status light,
+     none of which means anything once printed. */
+  .appbar,
+  .viewbar,
+  .toolbar {
+    display: none;
+  }
+
+  /* Drawers and the contents column. Svelte scopes these components' own
+     rules, which outrank a bare class selector here — hence !important rather
+     than a longer selector chain that would break the next time one of those
+     components changed its markup. The contents go because they are a
+     navigation control: without page numbers they list what the reader can
+     already see. */
+  nav.toc,
+  .panel {
+    display: none !important;
+  }
+
+  /* The reading column is centred and capped for a screen. On paper the margin
+     box does that job, and a second cap inside it prints a narrow ribbon down
+     the middle of the sheet. */
+  .page {
+    max-width: none;
+    padding: 0;
+  }
+
+  /* CodeMirror lays itself out inside a scroller of fixed height with
+     `overflow: auto`, and a paginating renderer cannot break inside that — it
+     prints the first sheet and stops. Releasing the height and the overflow is
+     what lets the document flow across pages.
+
+     This is the half of printing that CodeMirror does not do for us. The other
+     half it does: it listens for `beforeprint` itself and disables viewport
+     limiting, so the whole document is in the DOM and not just the screenful
+     that was scrolled to. */
+  .cm-editor,
+  .cm-scroller,
+  .cm-content {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  /* On screen the editor is a panel with an edge, because it is one control
+     among several. On paper it is the page, and a rule boxing the text in —
+     stopping wherever the text happens to stop — reads as a printing fault. */
+  .cm-editor {
+    border: 0;
+    background: none;
+  }
+  .cm-content { padding: 0; }
+
+  /* Chrome prints background colours only if "Background graphics" is ticked,
+     and it is off by default. Several constructs here carry their meaning in a
+     background: a highlight is nothing without its ground, and a code block or
+     callout loses its boundary. `print-color-adjust` overrides the checkbox,
+     and it inherits, so setting it on the content covers all of them. */
+  .cm-content {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Markers that are scaffolding rather than content. On screen every one of
+     these is dimmed rather than hidden, which is right while editing — the
+     document *is* the markdown, and its punctuation should stay visible. A
+     reader of the PDF is not editing it, and a `>` down the side of every
+     quoted line is the single thing that most makes printed markdown read as
+     a draft rather than as a document.
+
+     The fences go by the line, not the marker: hiding just the ``` would leave
+     the empty line it sat on, still carrying the code block's background, so
+     the block would print with a band of stray padding at each end. `:has()`
+     picks exactly the two lines that hold a fence, because no content line
+     does. */
+  .md-quotemark { display: none; }
+  .cm-line.md-codeblock:has(.md-fencemark) { display: none; }
+  /* A div's fences likewise: the alignment survives as the line class, and
+     the `:::` that carried it is scaffolding the reader never needed. */
+  .cm-line:has(.md-divmark) { display: none; }
+
+  /* A list marker is the exception: it is not scaffolding, it *is* the bullet.
+     Dimmed, it prints as a grey smudge beside black text. */
+  .md-listmark { opacity: 1; }
+
+  /* Editing furniture: the caret, the selection, and collaborators' cursors
+     and name tags. All of it is live-session state. A colleague's name tag
+     frozen onto a client's PDF is somebody's mouse position, printed. */
+  .cm-cursorLayer,
+  .cm-selectionLayer,
+  .cm-ySelection,
+  .cm-ySelectionCaret,
+  .cm-ySelectionInfo,
+  .cm-announced {
+    display: none !important;
+  }
+  .cm-focused { outline: none !important; }
+
+  /* Comment highlights are workflow rather than content. The threads are still
+     there after the PDF has been sent; the marker pen through the text is not
+     wanted on it. */
+  .cm-comment-range {
+    background: none;
+    border-bottom: 0;
+  }
+
+  /* Pagination. A heading is the one place a break reads as a mistake, because
+     it orphans a title from everything it introduces. A rendered table is a
+     single element, so it can be kept whole.
+
+     Deliberately absent: keeping a fenced code block or a callout together.
+     Each of their lines is its own `.cm-line`, with no element wrapping the
+     block, so there is nothing to hang `break-inside` on — and putting it on
+     the lines themselves would only stop a *wrapped* line from splitting,
+     which is not the same thing and is not wanted on long paragraphs. */
+  .cm-line.md-heading { break-after: avoid; }
+  .md-table { break-inside: avoid; }
+  .cm-content { orphans: 3; widows: 3; }
 }

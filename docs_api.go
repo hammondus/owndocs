@@ -10,9 +10,14 @@ import (
 )
 
 type document struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Title     string `json:"title"`
+	ID    string `json:"id"`
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
+	// Whether this document's appearance constructs are turned on. A property
+	// of the document, like its title, rather than content inside it — which is
+	// why it rides here and is written over HTTP, not through the Yjs log. See
+	// DESIGN-DECISIONS.md, *Rich documents*.
+	Rich      bool   `json:"rich"`
 	Role      string `json:"role"`
 	UpdatedAt int64  `json:"updated_at"`
 }
@@ -94,7 +99,7 @@ func handleListDocs(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
 		rows, err := db.Query(`
-			SELECT d.id, d.kind, d.title, p.role, d.updated_at
+			SELECT d.id, d.kind, d.title, d.rich, p.role, d.updated_at
 			FROM documents d JOIN permissions p ON p.doc_id = d.id
 			WHERE p.user_id = ? ORDER BY d.updated_at DESC`, u.ID)
 		if err != nil {
@@ -105,7 +110,7 @@ func handleListDocs(db *sql.DB) http.HandlerFunc {
 		docs := []document{}
 		for rows.Next() {
 			var d document
-			if err := rows.Scan(&d.ID, &d.Kind, &d.Title, &d.Role, &d.UpdatedAt); err != nil {
+			if err := rows.Scan(&d.ID, &d.Kind, &d.Title, &d.Rich, &d.Role, &d.UpdatedAt); err != nil {
 				jsonError(w, http.StatusInternalServerError, "db error")
 				return
 			}
@@ -115,20 +120,38 @@ func handleListDocs(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func handleRenameDoc(db *sql.DB) http.HandlerFunc {
+// PATCH /api/docs/{id} — the document's own properties, as opposed to its
+// content. Two of them so far, and both are here rather than in the Yjs log
+// for the same reason: they describe the document rather than living inside
+// it, so they are an ordinary HTTP write. See DESIGN-DECISIONS.md, *Renaming*
+// and *Rich documents*.
+//
+// Pointers, so "absent" and "empty" are different questions. A rename sends
+// only `title`; flipping the flag sends only `rich`; neither has to know the
+// other exists, and sending an empty title stays the error it always was
+// rather than silently becoming a no-op.
+func handleUpdateDoc(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
 		id := r.PathValue("id")
 		var in struct {
-			Title string `json:"title"`
+			Title *string `json:"title"`
+			Rich  *bool   `json:"rich"`
 		}
 		if !readJSON(w, r, &in) {
 			return
 		}
-		in.Title = strings.TrimSpace(in.Title)
-		if in.Title == "" {
-			jsonError(w, http.StatusBadRequest, "title required")
+		if in.Title == nil && in.Rich == nil {
+			jsonError(w, http.StatusBadRequest, "nothing to update")
 			return
+		}
+		if in.Title != nil {
+			t := strings.TrimSpace(*in.Title)
+			if t == "" {
+				jsonError(w, http.StatusBadRequest, "title required")
+				return
+			}
+			in.Title = &t
 		}
 		role, err := roleFor(db, id, u.ID)
 		if err != nil {
@@ -138,12 +161,29 @@ func handleRenameDoc(db *sql.DB) http.HandlerFunc {
 		// Rank-compared, not name-tested: a title is document content in every
 		// sense that matters, so the bar is "may edit". Adding `commenter`
 		// broke three equality tests written like this one — see roleRank.
+		//
+		// The rich flag sits at the same bar, and deliberately not at owner's.
+		// It changes what an editor may insert, and anyone who may write the
+		// document's text may already type the syntax by hand — the flag
+		// governs which buttons are offered, not what the format permits.
 		if roleRank[role] < roleRank["editor"] {
 			jsonError(w, http.StatusNotFound, "not found")
 			return
 		}
-		if _, err := db.Exec("UPDATE documents SET title = ?, updated_at = ? WHERE id = ?",
-			in.Title, time.Now().Unix(), id); err != nil {
+		// Built rather than branched, so adding a third property does not
+		// multiply the statements.
+		sets, args := []string{}, []any{}
+		if in.Title != nil {
+			sets = append(sets, "title = ?")
+			args = append(args, *in.Title)
+		}
+		if in.Rich != nil {
+			sets = append(sets, "rich = ?")
+			args = append(args, *in.Rich)
+		}
+		sets = append(sets, "updated_at = ?")
+		args = append(args, time.Now().Unix(), id)
+		if _, err := db.Exec("UPDATE documents SET "+strings.Join(sets, ", ")+" WHERE id = ?", args...); err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}

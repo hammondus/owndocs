@@ -257,8 +257,8 @@ func handleRedeemLink(db *sql.DB) http.HandlerFunc {
 			existing = linkRole
 		}
 		var d document
-		err = db.QueryRow("SELECT id, kind, title, updated_at FROM documents WHERE id = ?", docID).
-			Scan(&d.ID, &d.Kind, &d.Title, &d.UpdatedAt)
+		err = db.QueryRow("SELECT id, kind, title, rich, updated_at FROM documents WHERE id = ?", docID).
+			Scan(&d.ID, &d.Kind, &d.Title, &d.Rich, &d.UpdatedAt)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return

@@ -80,7 +80,8 @@ here has to survive a round trip through a `.md` file the git exporter writes,
 and be decoratable from the CodeMirror syntax tree. That second part was the
 real cost driver — `@codemirror/lang-markdown` parses CommonMark + GFM, and
 anything beyond it needs a Lezer parser extension before it can be styled at
-all. Three of those were written: highlight, definition lists, footnotes.
+all. Five of those were written: highlight, definition lists, footnotes, and —
+for rich documents — attribute spans and fenced divs.
 
 ### Already shipped
 
@@ -122,9 +123,18 @@ none of them has a text representation:
 - Line spacing, indentation, margins, columns, page breaks
 - Letter spacing, small caps
 
-**Decided: semantic constructs only.** No escape hatch, no arbitrary styling in
-the document. Markdown says what a thing *is*; how it looks is settled
-elsewhere — see *Reading preferences* below and *Formatting* in the design doc.
+**Decided: semantic constructs only, in the plain document.** No escape hatch,
+no arbitrary styling. Markdown says what a thing *is*; how it looks is settled
+elsewhere — see *Formatting* in the design doc.
+
+**Amended 2026-08-13, and shipped.** Colour, size, highlight colour and
+alignment are available in a document flagged *rich*, via Pandoc's bracketed
+span and fenced div. The plain type is unchanged, and the flag exists to keep
+it that way. Font family, line spacing, margins, columns and page breaks stay
+out of both — page layout is what would have forced a second renderer, and
+ruling it out is what made the browser's own print a real PDF export. See
+*Rich documents: what was asked for* and the six sections after it in the
+design doc; the open questions underneath it are in *Open questions*.
 
 ## Sheets — formatting
 

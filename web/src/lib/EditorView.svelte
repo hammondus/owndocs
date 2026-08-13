@@ -8,9 +8,12 @@
   import { Provider } from '../provider.js'
   import {
     mountEditor, toolbarCommands, setCommentRanges, revealRange,
-    documentHeadings, goToPos, insertEmoji,
+    documentHeadings, goToPos, insertEmoji, setDocIndex, insertDocLink, applyFormat,
   } from '../editor.js'
+  import { api } from './api.js'
   import EmojiPicker from './EmojiPicker.svelte'
+  import DocLinkPicker from './DocLinkPicker.svelte'
+  import FormatPanel from './FormatPanel.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
   import DocTitle from './DocTitle.svelte'
   import ReadingPrefs from './ReadingPrefs.svelte'
@@ -18,9 +21,9 @@
   import { load as loadPrefs } from '../prefs.js'
   import { listThreads, textAnchor, resolveTextAnchor } from '../comments.js'
   import { scheduleCompaction } from '../compaction.js'
-  import { canEdit, canComment } from '../roles.js'
+  import { canEdit, canComment, visibleToolbar } from '../roles.js'
 
-  let { me, doc, onBack, onShare, onHistory, onRenamed } = $props()
+  let { me, doc, onBack, onShare, onHistory, onRenamed, onOpenDoc, onRichChanged } = $props()
 
   let status = $state('connecting…')
   let peerCount = $state(1)
@@ -39,9 +42,41 @@
 
   // A viewer and a commenter get no editing controls, but they do get the
   // reading ones — the toolbar is where those live now, so it renders for
-  // everyone and drops what they may not use. Separators have no `display`,
-  // so they fall away with the commands they were dividing.
-  let bar = $derived(canEdit(doc.role) ? toolbarCommands : toolbarCommands.filter((c) => c.display))
+  // everyone and drops what they may not use. A plain document additionally
+  // drops the appearance commands. Both rules live in roles.js, where they can
+  // be tested without a browser; only one of them is a boundary.
+  let bar = $derived(visibleToolbar(toolbarCommands, { canEdit: canEdit(doc.role), rich: doc.rich }))
+
+  // ---- the rich flag --------------------------------------------------------
+  // A property of the document, so it is an ordinary HTTP write, exactly as
+  // renaming is — not a collaborative edit. Reported up to App rather than
+  // written here, by the rule DocTitle follows: a child does not set the
+  // parent's state directly.
+  //
+  // Known limit, and the reason the flag's home is still an open question:
+  // this reaches a collaborator only when they reopen the document. Their
+  // editor keeps the toolbar it mounted with. Nothing breaks meanwhile —
+  // rendering is not gated, only the buttons are, so they still *see*
+  // everything that gets written; they just cannot add any until they return.
+  let richBusy = $state(false)
+
+  async function toggleRich() {
+    if (richBusy) return
+    const next = !doc.rich
+    richBusy = true
+    try {
+      await api(`/api/docs/${doc.id}`, { method: 'PATCH', body: JSON.stringify({ rich: next }) })
+    } catch (e) {
+      // Left where it was rather than flipped optimistically and rolled back:
+      // the toolbar changes shape under this, and a bar that appears and then
+      // vanishes reads as a bug rather than as a failed write.
+      console.warn('docs: could not change the formatting mode', e)
+      return
+    } finally {
+      richBusy = false
+    }
+    onRichChanged?.(next)
+  }
   let threads = $state([])
   let selection = $state({ from: 0, to: 0 })
   let mayComment = $derived(canComment(doc.role))
@@ -108,6 +143,11 @@
       onSelectionChange: (from, to) => { selection = { from, to } },
       // Coalesced inside the editor; a collaborator's edit reaches this too.
       onHeadingsChange: refreshHeadings,
+      // Following a document link is a route change, which belongs to App.
+      // The editor hands over the id it read out of the link and nothing else;
+      // resolving it deliberately does not go through the list below, which is
+      // a snapshot from when this document was opened.
+      onOpenDoc: (id) => onOpenDoc?.(id),
     })
 
     // The first pass. The document arrives from the provider a moment after
@@ -116,11 +156,38 @@
     refreshHeadings()
 
     loadComments()
+    loadDocIndex()
     // Anchors resolve against the document, so re-resolve after remote edits
     // as well as local ones: a collaborator's insert moves every highlight
     // after it.
     ytext.observe(schedulePaint)
   })
+
+  // ---- document links -------------------------------------------------------
+  // The list serves two things: the picker's options, and whether a link
+  // already in the text still resolves. Fetched once on mount rather than kept
+  // live — a document created in another tab is not worth a subscription, and
+  // reopening this one refreshes it.
+  //
+  // It is deliberately *not* what a click resolves against. App re-fetches for
+  // that, so a stale list can leave a link looking wrong but never leave it
+  // inert. Being wrong on hover is recoverable; a control that does nothing is
+  // the failure this project keeps rediscovering.
+
+  let docs = $state([])
+
+  async function loadDocIndex() {
+    try {
+      docs = await api('/api/docs')
+    } catch (e) {
+      // Not fatal, and deliberately quiet. Every link still renders and still
+      // follows; what is lost is the target's current title on hover and the
+      // dimming of a dead one. Only the picker needs the list to be useful.
+      console.warn('docs: could not load the document index for links', e)
+      return
+    }
+    if (view) setDocIndex(view, docs)
+  }
 
   // ---- comments -------------------------------------------------------------
 
@@ -223,6 +290,24 @@
   >←</a>
   <DocTitle {doc} canRename={canEdit(doc.role)} {onRenamed} />
   <span class="label kind">{doc.role}</span>
+  <!-- Shown on every document, not only the rich ones. The toolbar changes
+       shape with this flag, and someone meeting two documents with different
+       toolbars needs the reason to be on screen rather than inferred. It reads
+       as state, which is exactly why it is here and not on the toolbar — that
+       bar is canned edits and deliberately reports nothing. -->
+  {#if canEdit(doc.role)}
+    <button
+      id="doc-rich"
+      class="linkish label kind"
+      title={doc.rich
+        ? 'Rich formatting: colour, size and alignment are available. Click for plain.'
+        : 'Plain markdown. Click to allow colour, size and alignment in this document.'}
+      disabled={richBusy}
+      onclick={toggleRich}
+    >{doc.rich ? 'rich' : 'plain'}</button>
+  {:else}
+    <span class="label kind">{doc.rich ? 'rich' : 'plain'}</span>
+  {/if}
 
   <span class="spacer"></span>
 
@@ -233,6 +318,12 @@
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}
   <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
+  <!-- A button, not a link with a fake href: printing is an action rather than
+       a place. Everything it needs happens in `beforeprint`, which the browser
+       fires for ⌘P and for print() alike, so this control carries no logic of
+       its own — and the title says "PDF" because that is what people are
+       actually after when they come looking for it. -->
+  <button class="linkish" title="Print, or save as PDF" onclick={() => window.print()}>print</button>
 
   <!-- A status light: the dot carries the state, the words explain it. Green
        only when the document is actually reconciled with the server. -->
@@ -263,7 +354,15 @@
       <select
         title={cmd.title}
         aria-label={cmd.title}
-        onchange={(e) => { cmd.run(view, e.currentTarget.value); e.currentTarget.value = '' }}
+        onchange={(e) => {
+          const value = e.currentTarget.value
+          // Reset first: an entry that opens a panel never "runs", so resetting
+          // afterwards would leave the menu showing a choice it did not make.
+          e.currentTarget.value = ''
+          const panel = cmd.panelFor?.(value)
+          if (panel) openPanel = panel
+          else cmd.run(view, value)
+        }}
       >
         <option value="" disabled selected>{cmd.label}</option>
         {#each cmd.options as opt (opt.value)}
@@ -290,6 +389,27 @@
 
 {#if openPanel === 'emoji'}
   <EmojiPicker onPick={(name) => insertEmoji(view, name)} onClose={() => (openPanel = '')} />
+{/if}
+
+{#if openPanel === 'format'}
+  <!-- Stays open, like the emoji picker: colour, highlight and size are three
+       choices about the same selection, and closing after one would mean
+       reopening it to make the next two. -->
+  <FormatPanel
+    onPick={(family, token) => applyFormat(view, family, token)}
+    onClose={() => (openPanel = '')}
+  />
+{/if}
+
+{#if openPanel === 'doclink'}
+  <!-- Closes on pick, unlike the emoji picker: one emoji is rarely the last
+       one wanted, one link almost always is. -->
+  <DocLinkPicker
+    {docs}
+    currentId={doc.id}
+    onPick={(d) => { insertDocLink(view, d.id, d.title); openPanel = '' }}
+    onClose={() => (openPanel = '')}
+  />
 {/if}
 
 {#if openPanel === 'reading'}
@@ -338,6 +458,7 @@
 
 
 <style>
+
   .doc-layout {
     display: flex;
     gap: 1rem;

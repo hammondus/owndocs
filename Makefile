@@ -29,7 +29,7 @@ test: runner-js
 	# The headless JS suites. They existed but nothing ran them, so a break in
 	# the model, the formula engine, the anchors or the reading prefs was only
 	# ever found by hand. None of them needs a server.
-	cd web && node scripts/sheet_test.mjs && node scripts/exact_test.mjs && node scripts/table_test.mjs && node scripts/mdtext_test.mjs && node scripts/mdext_test.mjs && node scripts/diff_test.mjs && node scripts/prefs_test.mjs
+	cd web && node scripts/sheet_test.mjs && node scripts/exact_test.mjs && node scripts/table_test.mjs && node scripts/mdtext_test.mjs && node scripts/mdext_test.mjs && node scripts/doclink_test.mjs && node scripts/palette_test.mjs && node scripts/roles_test.mjs && node scripts/diff_test.mjs && node scripts/prefs_test.mjs
 
 # Browser-level checks: the only tests that mount a component, and the only
 # ones that can see a thrown error inside an {#if} presenting as a dead

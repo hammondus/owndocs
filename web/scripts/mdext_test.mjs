@@ -5,7 +5,7 @@
 //
 // Run from web/: node scripts/mdext_test.mjs
 import { markdownLanguage } from '@codemirror/lang-markdown'
-import { markdownExtensions, indexFootnotes } from '../src/mdext.js'
+import { markdownExtensions, indexFootnotes, spanParts, divToken, isDivClose } from '../src/mdext.js'
 import { emojiFor } from '../src/emoji.js'
 
 // Exactly what editor.js builds. `markdownLanguage` is lang-markdown's
@@ -226,6 +226,109 @@ eq(emojiFor('thumbsup'), '👍', 'the alias for the shortcode that cannot parse 
 eq(emojiFor('not_a_real_emoji_name'), null, 'an unknown shortcode resolves to nothing, and stays literal text')
 eq(emojiFor(''), null, 'an empty shortcode resolves to nothing')
 eq(emojiFor('constructor'), null, 'a shortcode named after an Object property resolves to nothing')
+
+// ---- attribute spans -------------------------------------------------------
+// `[text]{.c-red}` — Pandoc's bracketed span. The grammar knows the shape only;
+// which tokens mean anything is palette.js's business, so everything here is
+// about *what is a span*, never about what a span does.
+
+eq(nodes('a [red]{.c-red} b', 'AttrSpan'), ['[red]{.c-red}'], 'a bracketed span parses')
+eq(nodes('[a]{.c-red .size-lg}', 'AttrSpan'), ['[a]{.c-red .size-lg}'], 'several classes parse')
+eq(nodes('[a]{ .c-red }', 'AttrSpan'), ['[a]{ .c-red }'], 'space inside the braces is allowed')
+
+// The token is not checked here on purpose: an unknown one still parses, and
+// the decoration layer is what leaves it as literal text. A grammar that knew
+// the colour list would have to change every time the list did.
+eq(nodes('[a]{.nonsense}', 'AttrSpan'), ['[a]{.nonsense}'], 'an unknown token still parses as a span')
+
+// What must NOT be one. The first is the important case: this rule runs before
+// Link, so it has to decline anything that is really a link.
+eq(nodes('[text](http://example.com)', 'AttrSpan'), [], 'a link is not a span')
+eq(nodes('[text](#doc=abc)', 'AttrSpan'), [], 'a document link is not a span')
+eq(nodes('[text]', 'AttrSpan'), [], 'brackets with no attributes are not a span')
+eq(nodes('[text] {.c-red}', 'AttrSpan'), [], 'the braces must follow immediately')
+eq(nodes('[text]{#id}', 'AttrSpan'), [], 'an id is not a class, and is not accepted')
+eq(nodes('[text]{key=value}', 'AttrSpan'), [], 'a key=value attribute is not accepted')
+eq(nodes('[text]{.2cold}', 'AttrSpan'), [], 'a class must start with a letter')
+eq(nodes('[text]{}', 'AttrSpan'), [], 'empty braces are not a span')
+
+// A link *and* a span in the same paragraph: the span rule running first must
+// not eat the link that follows it.
+eq(nodes('[a]{.c-red} then [b](http://x)', 'AttrSpan'), ['[a]{.c-red}'], 'a span does not swallow a later link')
+eq(nodes('[a]{.c-red} then [b](http://x)', 'Link'), ['[b](http://x)'], 'and the later link still parses')
+
+// Labels with brackets in them. The scan matches the *right* `]`, which a lazy
+// or greedy regex gets wrong in opposite directions.
+eq(nodes('[a [b] c]{.c-red}', 'AttrSpan'), ['[a [b] c]{.c-red}'], 'a nested bracket does not close the label early')
+eq(nodes('[a\\]b]{.c-red}', 'AttrSpan'), ['[a\\]b]{.c-red}'], 'an escaped bracket is text, not the closing one')
+
+// The label carries inline markup like any other text.
+eq(nodes('[**bold** red]{.c-red}', 'StrongEmphasis'), ['**bold**'], 'a label is parsed, not taken flat')
+
+// ---- spanParts -------------------------------------------------------------
+// Anchored, because it reads a node's own source, where the span is the whole
+// of it.
+
+eq(spanParts('[red]{.c-red}'), { text: 'red', tokens: ['c-red'] }, 'label and tokens come back out')
+eq(spanParts('[a]{.c-red .size-lg}').tokens, ['c-red', 'size-lg'], 'several tokens, in order')
+eq(spanParts('[a]{ .c-red }').tokens, ['c-red'], 'padding inside the braces is ignored')
+// The label comes back as *source*, escapes intact, so rewriting a span's
+// attributes cannot double-escape or lose them.
+eq(spanParts('[a\\]b]{.c-red}').text, 'a\\]b', 'the label is returned as source, escapes and all')
+eq(spanParts('[text](http://x)'), null, 'a link is not a span')
+eq(spanParts('[a]{.c-red} trailing'), null, 'anchored: trailing text means this is not one whole span')
+
+// ---- fenced divs -----------------------------------------------------------
+// The only composite block here, and the only construct that has to hold other
+// blocks. `nodes()` reports the source a node covers, so these assertions are
+// mostly about *where the div ends* — which is the whole difficulty.
+
+const DIV = '::: center\nCentred text.\n:::\n'
+eq(nodes(DIV, 'FencedDiv'), ['::: center\nCentred text.'], 'a div covers its content')
+eq(nodes(DIV, 'DivMark'), ['::: center', ':::'], 'both fences are marks, so both can be dimmed')
+eq(divToken('::: center'), 'center', 'the opening fence carries the word')
+eq(divToken(':::   right  '), 'right', 'padding around the word is ignored')
+eq(divToken(':::'), null, 'a closing fence carries no word')
+eq(divToken('not a fence'), null, 'nor does anything else')
+eq([isDivClose(':::'), isDivClose('::::')], [true, true], 'three or more colons close it')
+eq(isDivClose('::: center'), false, 'an opening fence does not also close one')
+
+// The trap, and the reason endLeaf exists. A paragraph swallows the lines that
+// follow it as *lazy continuation* before any block parser is consulted, so
+// without endLeaf the closing fence is absorbed into the last paragraph, the
+// div never closes, and every remaining block in the document is centred. The
+// failure is silent and looks like `:::` being ignored.
+const AFTER = '::: center\nCentred text.\n:::\n\nOrdinary text.\n'
+eq(nodes(AFTER, 'FencedDiv'), ['::: center\nCentred text.'], 'the div ends at its closing fence')
+eq(
+  nodes(AFTER, 'Paragraph'),
+  ['Centred text.', 'Ordinary text.'],
+  'the paragraph after it is outside the div, and did not eat the fence',
+)
+
+// Content is parsed as *blocks*, which is the whole reason this is a composite
+// rather than a leaf. "Centre this" must not mean "centre this and break every
+// construct inside it".
+const RICH = '::: center\n# A heading\n\n- an item\n:::\n'
+eq(nodes(RICH, 'ATXHeading1'), ['# A heading'], 'a heading inside a div is still a heading')
+eq(nodes(RICH, 'ListItem'), ['- an item'], 'a list inside a div is still a list')
+
+// Nested, which Pandoc allows and which falls out of composite blocks for free.
+const NESTED = '::: center\nouter\n\n::: right\ninner\n:::\n\nmore outer\n:::\n'
+eq(nodes(NESTED, 'FencedDiv').length, 2, 'divs nest')
+
+// Shapes that must NOT open one.
+eq(nodes(':: center\n', 'FencedDiv'), [], 'two colons are not a fence')
+eq(nodes('::: two words\n', 'FencedDiv'), [], 'an opening fence carries one word, not a sentence')
+eq(nodes('::: 2cold\n', 'FencedDiv'), [], 'the word must start with a letter')
+
+// The construct that shares its first character, checked rather than hoped.
+eq(has('Widget\n: A small thing\n', 'DefinitionList'), true, 'definition lists still parse')
+eq(nodes('Widget\n: A small thing\n', 'FencedDiv'), [], 'and are not mistaken for divs')
+
+// An unknown word still parses. Which words *mean* anything is palette.js's
+// business, exactly as it is for span tokens.
+eq(nodes('::: sideways\nx\n:::\n', 'FencedDiv'), ['::: sideways\nx'], 'an unknown alignment still parses')
 
 if (failures > 0) process.exit(1)
 console.log('\nALL PASS')

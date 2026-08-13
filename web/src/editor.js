@@ -12,7 +12,11 @@ import { defaultKeymap } from '@codemirror/commands'
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next'
 import * as Y from 'yjs'
 import { parseTableData } from './table.js'
-import { markdownExtensions, footnoteLabel, isFootnoteDef, indexFootnotes } from './mdext.js'
+import {
+  markdownExtensions, footnoteLabel, isFootnoteDef, indexFootnotes, spanParts, divToken, isDivClose,
+} from './mdext.js'
+import { docLinkIn, docLinkMarkdown, escapeBrackets, unescapeBrackets } from './doclink.js'
+import { classesFor, withToken, attrSpanSource, alignClass } from './palette.js'
 import { emojiFor } from './emoji.js'
 import {
   listMarker,
@@ -202,8 +206,25 @@ const markerParents = [
   'SuperscriptMark',
   'SubscriptMark',
   'DefinitionMark',
+  // Only ever reached for a span whose tokens resolved: the AttrSpan branch in
+  // buildDecorations returns false for one whose did not, so its children are
+  // never entered and its brackets stay on screen as the literal text they are.
+  'AttrMark',
 ]
 const markersEatingSpace = ['HeaderMark', 'DefinitionMark']
+
+// Markers that stay visible but quiet. Each carries a class of its own beside
+// `md-dim`, which on screen means nothing — all four are drawn identically —
+// but lets the print stylesheet tell them apart. On paper a `>` and a code
+// fence are scaffolding the reader did not ask for, while a list marker *is*
+// the bullet, and a dimmed bullet just reads as a printing fault.
+const dimMarks = {
+  QuoteMark: mark('md-dim md-quotemark'),
+  ListMark: mark('md-dim md-listmark'),
+  CodeInfo: mark('md-dim md-codeinfo'),
+}
+const fenceMark = mark('md-dim md-fencemark')
+const divMark = mark('md-dim md-divmark')
 
 // ---- callouts --------------------------------------------------------------
 // `> [!NOTE]` — Obsidian's and GitHub's syntax, and the reason it was chosen:
@@ -244,11 +265,120 @@ function calloutLabelAt(state, node) {
   return CALLOUTS[kind] || `📘 ${m[1][0].toUpperCase()}${m[1].slice(1).toLowerCase()}`
 }
 
+// ---- printing --------------------------------------------------------------
+// Printing is the PDF export, and what it has to produce is the document as a
+// *reader* sees it — not as its author sees it with a cursor in the middle of
+// it.
+//
+// Live preview reveals the markers of whatever the selection touches, which is
+// right on screen and wrong on paper: it would print `## Section` as literal
+// text in exactly one place, wherever the cursor happened to be sitting. No
+// print stylesheet can undo that, because by then the markers *are* text —
+// hiding them is a decoration decision, and it has to be unmade before the
+// page is drawn rather than styled away afterwards.
+//
+// So: a flag that makes selectionTouches answer "no" for the duration. Every
+// marker hides, every table renders, and where the cursor happens to be stops
+// mattering.
+const setPrintingEffect = StateEffect.define()
+
+const printing = StateField.define({
+  create: () => false,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setPrintingEffect)) return e.value
+    return value
+  },
+})
+
+// `beforeprint` fires for ⌘P and for `window.print()` alike, so the button
+// needs nothing of its own. CodeMirror listens to the same event for its own
+// reason — it sets `viewState.printing`, which disables viewport limiting, and
+// without it printing a long document would yield the visible screenful and
+// blank paper after it.
+//
+// A ViewPlugin rather than a bare listener so it is torn down with the editor.
+// This app destroys and recreates the editor on every navigation, and a leaked
+// listener holding a dead view would dispatch into it on the next print.
+const printListener = ViewPlugin.fromClass(
+  class {
+    constructor(view) {
+      this.before = () => view.dispatch({ effects: setPrintingEffect.of(true) })
+      this.after = () => view.dispatch({ effects: setPrintingEffect.of(false) })
+      window.addEventListener('beforeprint', this.before)
+      window.addEventListener('afterprint', this.after)
+    }
+    destroy() {
+      window.removeEventListener('beforeprint', this.before)
+      window.removeEventListener('afterprint', this.after)
+    }
+  },
+)
+
+// Undefined where the field was never installed, which is as good as false.
+const isPrinting = (state) => state.field(printing, false) === true
+
 function selectionTouches(state, from, to) {
+  // Nothing counts as touched while printing — see *printing* above. This one
+  // predicate is what every construct's rendered/revealed choice runs through,
+  // which is why the flag only has to be read here.
+  if (isPrinting(state)) return false
   for (const r of state.selection.ranges) {
     if (r.from <= to && r.to >= from) return true
   }
   return false
+}
+
+// ---- document links --------------------------------------------------------
+// Which documents exist, and what they are currently called. Like the comment
+// ranges, this is not something the editor can work out — it comes from
+// /api/docs over HTTP — so the component pushes it in and a field holds it.
+//
+// A plain Map field rather than a decoration field: it does not draw anything
+// itself, it only tells buildDecorations whether a link resolves and what its
+// target is called *now*. That title is shown on hover and never written into
+// the document — see doclink.js for why the label stays as authored.
+//
+// Absent in mountPreview, which has no list to give it. `state.field(…, false)`
+// then returns undefined, and an absent index means "cannot say", not "not
+// found" — a history preview must not paint every link as broken.
+const setDocIndexEffect = StateEffect.define()
+
+const docIndex = StateField.define({
+  create: () => null,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setDocIndexEffect)) return e.value
+    return value
+  },
+})
+
+// `docs` is /api/docs verbatim, so the caller never has to know the shape this
+// wants. Sheets are included deliberately: `#doc=<id>` routes to whatever kind
+// the document turns out to be, and linking a spreadsheet from a report is the
+// obvious first thing anyone will try.
+export function setDocIndex(view, docs) {
+  view.dispatch({
+    effects: setDocIndexEffect.of(new Map(docs.map((d) => [d.id, d.title]))),
+  })
+}
+
+// A document link that resolves gets its target's current title as a tooltip;
+// one that does not says so. That tooltip is the whole answer to label drift:
+// the text stays exactly as it was written, and the fresh title is a hover
+// away, so nothing changes under the author and nothing goes silently stale.
+function docLinkDecoration(id, index) {
+  if (index && !index.has(id)) {
+    return Decoration.mark({
+      class: 'md-link md-doclink md-doclink-missing',
+      attributes: {
+        title: 'That document is not in your list — it may have been deleted, or never shared with you.',
+      },
+    })
+  }
+  const title = index?.get(id)
+  return Decoration.mark({
+    class: 'md-link md-doclink',
+    attributes: { title: title ? `Open “${title}”` : 'Open this document' },
+  })
 }
 
 function buildDecorations(view, from, to) {
@@ -258,6 +388,10 @@ function buildDecorations(view, from, to) {
   // Absent in the standalone preview only if someone forgets to include the
   // field; `false` makes that a missing number rather than a thrown plugin.
   const footnotes = state.field(footnoteIndex, false)
+  // Undefined when the field is absent, null until /api/docs has answered.
+  // Both mean "cannot say whether this link resolves", which is why the
+  // unresolved styling keys off the index being *present* and lacking the id.
+  const docs = state.field(docIndex, false)
 
   const addLines = (from, to, cls) => {
     for (let pos = from; pos <= to; ) {
@@ -319,6 +453,33 @@ function buildDecorations(view, from, to) {
             decos.push(mark('md-callout-label').range(node.from, node.to))
             return false
           }
+          // A link to another document. Marked rather than replaced, so the
+          // label stays real text that can be selected, edited and commented
+          // on — and so `return` here descends into LinkMark and URL, which
+          // still have to be hidden by the general marker rule below. Only the
+          // class and the tooltip differ from an ordinary link.
+          const target = docLinkIn(state.sliceDoc(node.from, node.to))
+          if (target) {
+            decos.push(docLinkDecoration(target, docs).range(node.from, node.to))
+            return
+          }
+        }
+        if (name === 'AttrSpan') {
+          // `[text]{.c-red}` — Pandoc's bracketed span. The grammar reports
+          // the shape; which tokens mean anything is palette.js's allowlist,
+          // and it is an allowlist rather than a template because splicing the
+          // document's own text into a class name would let a document restyle
+          // the app around itself.
+          const parts = spanParts(state.sliceDoc(node.from, node.to))
+          const cls = parts && classesFor(parts.tokens)
+          // Not one token recognised, so this is not a construct — it is the
+          // text somebody typed, and it stays that. `return false` is what does
+          // it: the AttrMark children are never entered, so the marker rule
+          // never hides the brackets. Same failure an unknown `:shortcode:`
+          // gets, and for the same reason.
+          if (!cls) return false
+          decos.push(Decoration.mark({ class: cls }).range(node.from, node.to))
+          return
         }
         if (name === 'Emoji') {
           // The parser marks `:name:`; what it means is emoji.js's business,
@@ -398,7 +559,7 @@ function buildDecorations(view, from, to) {
           // backtick) leaves an empty line above and below the block: the
           // lines still exist, so the block reads as if it had stray padding.
           if (name === 'CodeMark' && parent && parent.name === 'FencedCode') {
-            decos.push(mark('md-dim').range(node.from, node.to))
+            decos.push(fenceMark.range(node.from, node.to))
             return
           }
           if (parent && !selectionTouches(state, parent.from, parent.to)) {
@@ -421,13 +582,30 @@ function buildDecorations(view, from, to) {
           decos.push(mark('md-dim').range(node.from, node.to))
           return
         }
+        if (name === 'FencedDiv') {
+          // The alignment word lives on the opening fence, which is this
+          // node's first line. An unrecognised word aligns nothing and the
+          // fence stays visible as the text it is — same rule as an unknown
+          // span token.
+          const cls = alignClass(divToken(state.doc.lineAt(node.from).text))
+          if (cls) addLines(node.from, node.to, cls)
+          return // descend: the fence marker inside still wants dimming
+        }
+        if (name === 'DivMark') {
+          // Dimmed, never hidden — the same call FencedCode's markers get, and
+          // for the same reason: hiding the marker leaves the blank line it sat
+          // on, and a div would print with a band of stray padding at each end.
+          // Print removes the whole line instead.
+          decos.push(divMark.range(node.from, node.to))
+          return false
+        }
         if (name === 'Blockquote') {
           const kind = calloutKind(state.doc.lineAt(node.from).text)
           addLines(node.from, node.to, kind ? `md-callout md-callout-${kind}` : 'md-blockquote')
           return
         }
-        if (name === 'QuoteMark' || name === 'ListMark' || name === 'CodeInfo') {
-          decos.push(mark('md-dim').range(node.from, node.to))
+        if (name in dimMarks) {
+          decos.push(dimMarks[name].range(node.from, node.to))
           return
         }
         if (name === 'FencedCode' || name === 'CodeBlock') {
@@ -473,7 +651,12 @@ function buildTableDecorations(state) {
 const tableDecorations = StateField.define({
   create: buildTableDecorations,
   update(value, tr) {
-    if (tr.docChanged || tr.selection) return buildTableDecorations(tr.state)
+    // The printing flag matters here for the same reason it does in the live
+    // preview: a table the cursor is inside shows its source, and on paper it
+    // has to be the rendered table instead.
+    if (tr.docChanged || tr.selection || tr.effects.some((e) => e.is(setPrintingEffect))) {
+      return buildTableDecorations(tr.state)
+    }
     return value
   },
   provide: (field) => EditorView.decorations.from(field),
@@ -531,9 +714,49 @@ function handleFootnoteClick(event, view) {
 }
 
 // One mousedown handler, because CodeMirror takes one per event name and both
-// of these are "a widget was clicked".
+// of these are "a widget was clicked". Document links are composed on in
+// mountEditor instead, since following one needs a callback out of the editor.
 function handleWidgetClick(event, view) {
   return handleCheckboxClick(event, view) || handleFootnoteClick(event, view)
+}
+
+// The Link node containing `pos`, or null. Resolved through the tree rather
+// than off the clicked element's classes: the mark decoration wraps a span
+// whose inner structure is the live preview's business, and a click can land
+// on any part of it.
+function linkNodeAt(state, pos) {
+  for (let n = syntaxTree(state).resolveInner(pos, 1); n; n = n.parent) {
+    if (n.name === 'Link') return n
+  }
+  return null
+}
+
+// Clicking a document link opens that document, rather than doing nothing —
+// which is what every link in this editor did until now.
+//
+// Two conditions keep it from stealing clicks that meant something else, and
+// between them they leave the link editable:
+//
+//   - **Any modifier, or any button but the left one, is left alone.** So
+//     ⌘-click still opens a new tab (the hash URL works cold, with no
+//     interception at all), and alt-click still places the cursor. That is the
+//     escape hatch for editing a link whose text you want to change.
+//   - **A link the selection already touches is left alone.** Its raw text is
+//     showing, which in this editor means "you are editing this", and a click
+//     inside it is a click into source. Same rule the rest of the live preview
+//     uses to decide whether a construct is rendered or revealed.
+function followDocLink(event, view, onOpenDoc) {
+  if (!onOpenDoc || event.button !== 0) return false
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false
+  const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+  if (pos == null) return false
+  const node = linkNodeAt(view.state, pos)
+  if (!node || selectionTouches(view.state, node.from, node.to)) return false
+  const target = docLinkIn(view.state.sliceDoc(node.from, node.to))
+  if (!target) return false
+  event.preventDefault()
+  onOpenDoc(target)
+  return true
 }
 
 // ---- comment highlights ---------------------------------------------------
@@ -644,7 +867,16 @@ const livePreview = ViewPlugin.fromClass(
       this.decorations = this.build(view)
     }
     update(u) {
-      if (u.docChanged || u.selectionSet || (u.viewportChanged && !this.covers(u.view))) {
+      // Two things arrive as effects rather than as edits, and both change what
+      // every construct on screen should look like. The document index arrives
+      // over HTTP well after mount; the printing flag arrives from
+      // `beforeprint`, and must be reflected in the DOM before the page is
+      // drawn. Without this, either one leaves the visible document painted the
+      // way it was until something unrelated triggers a rebuild.
+      const pushed = u.transactions.some((tr) =>
+        tr.effects.some((e) => e.is(setDocIndexEffect) || e.is(setPrintingEffect)),
+      )
+      if (u.docChanged || u.selectionSet || pushed || (u.viewportChanged && !this.covers(u.view))) {
         this.decorations = this.build(u.view)
       }
     }
@@ -844,6 +1076,179 @@ function insertLink(view) {
   })
   view.focus()
   return true
+}
+
+// A link to another document, from the picker. Selected text becomes the
+// label, so linking words already written keeps them; with nothing selected
+// the target's title is the only sensible label, and is what the picker was
+// showing when it was chosen.
+//
+// The cursor lands after the link rather than inside it. Inside would reveal
+// the raw `[…](#doc=…)` immediately, which reads as the insert having gone
+// wrong — and there is nothing to type there, since the label came from the
+// selection or the title.
+export function insertDocLink(view, id, title) {
+  const { state } = view
+  const { from, to } = state.selection.main
+  const selected = state.sliceDoc(from, to).trim()
+  const md = docLinkMarkdown(id, selected || title)
+  view.dispatch({
+    changes: { from, to, insert: md },
+    selection: { anchor: from + md.length },
+  })
+  view.focus()
+  return true
+}
+
+// The attribute span containing the whole selection, or null. Walked up the
+// tree rather than matched on text, because a span may sit inside emphasis or
+// hold a link, and only the tree knows which brackets belong to which.
+// Both sides, deliberately. After applying one token the selection sits on the
+// span's label, but a cursor can also be parked at either boundary — and
+// `resolveInner(pos, 1)` at the closing brace resolves to whatever *starts*
+// there, which is not this span. Asking from one side only meant a second
+// token silently did nothing, with no way to tell that from "declined".
+function attrSpanAround(state, sel) {
+  for (const side of [1, -1]) {
+    for (let n = syntaxTree(state).resolveInner(sel.from, side); n; n = n.parent) {
+      if (n.name === 'AttrSpan' && n.from <= sel.from && n.to >= sel.to) return n
+    }
+  }
+  return null
+}
+
+// Apply one appearance token from the Format drawer — a text colour, a
+// highlight ground or a size. A null token clears that family.
+//
+// Two paths, and the first is what makes this feel like a formatting control
+// rather than a text inserter:
+//
+//   - **Inside an existing span**, the span is rewritten. The new token
+//     replaces whatever its own family held and leaves the other families
+//     alone, so a span can go from red to blue, or become red *and* large,
+//     without stacking `[[x]{.c-red}]{.size-lg}`. Clearing the last family
+//     unwraps it back to bare text, which falls out of attrSpanSource
+//     returning null rather than needing a branch here.
+//   - **Otherwise**, the selection is wrapped. With nothing selected there is
+//     nothing to colour, so this declines — the alternative is emitting an
+//     empty span for the cursor to sit in, which is a construct nobody asked
+//     for and has to be deleted by hand.
+//
+// The rewrite keeps the label's *source*, escapes and all, so a label holding
+// `\]` survives being recoloured. Only the unwrap needs it back as plain text.
+export function applyAttr(view, family, token) {
+  const { state } = view
+  const sel = state.selection.main
+  const span = attrSpanAround(state, sel)
+  const parts = span && spanParts(state.sliceDoc(span.from, span.to))
+  if (parts) {
+    const next = withToken(parts.tokens, family, token)
+    const rewritten = attrSpanSource(parts.text, next)
+    const insert = rewritten ?? unescapeBrackets(parts.text)
+    view.dispatch({
+      changes: { from: span.from, to: span.to, insert },
+      // The label stays selected, which is what lets the drawer stay open and
+      // apply a colour and then a size to the same words. Collapsing the
+      // cursor to the end instead left it *on the boundary*, where the next
+      // click found no span and quietly wrapped a second one — or did nothing.
+      selection: rewritten
+        ? { anchor: span.from + 1, head: span.from + 1 + parts.text.length }
+        : { anchor: span.from, head: span.from + insert.length },
+    })
+    view.focus()
+    return true
+  }
+  if (sel.empty || !token) {
+    view.focus()
+    return false
+  }
+  // Escaped here rather than inside attrSpanMarkdown, because the label's
+  // length is what the new selection is measured from and the escaping can
+  // change it.
+  const label = escapeBrackets(state.sliceDoc(sel.from, sel.to))
+  const md = attrSpanSource(label, [token])
+  if (!md) {
+    view.focus()
+    return false
+  }
+  view.dispatch({
+    changes: { from: sel.from, to: sel.to, insert: md },
+    selection: { anchor: sel.from + 1, head: sel.from + 1 + label.length },
+  })
+  view.focus()
+  return true
+}
+
+// The fenced div containing `pos`, or null. Both sides, for the reason
+// attrSpanAround asks from both.
+function fencedDivAt(state, pos) {
+  for (const side of [1, -1]) {
+    for (let n = syntaxTree(state).resolveInner(pos, side); n; n = n.parent) {
+      if (n.name === 'FencedDiv') return n
+    }
+  }
+  return null
+}
+
+// Alignment, the one block-level property in the Format drawer. A null token
+// unwraps.
+//
+// Three paths, and the middle one is why this is not just "insert two lines":
+//
+//   - **Already in a div**, changing alignment rewrites the opening fence
+//     alone. The content never moves, so nothing anchored into it — a comment,
+//     a collaborator's cursor — is disturbed by a change of alignment.
+//   - **Already in a div**, clearing it deletes both fence lines and their
+//     newlines, leaving the content exactly where it was in the document.
+//   - **Not in one**, the selected lines are wrapped. Whole lines always: a
+//     fence is a line, so aligning half a paragraph is not a thing the syntax
+//     can say, and silently aligning the whole of it is what the writer meant.
+//
+// The closing fence is found by looking at the line after the node rather than
+// in the tree, because it is not *in* the node — the parser closes the div at
+// the end of its last content line and emits the fence as a sibling.
+export function applyAlign(view, token) {
+  const { state } = view
+  const sel = state.selection.main
+  const div = fencedDivAt(state, sel.from)
+  if (div) {
+    const open = state.doc.lineAt(div.from)
+    if (token) {
+      view.dispatch({ changes: { from: open.from, to: open.to, insert: `::: ${token}` } })
+      view.focus()
+      return true
+    }
+    const changes = [{ from: open.from, to: Math.min(open.to + 1, state.doc.length) }]
+    if (div.to + 1 <= state.doc.length) {
+      const close = state.doc.lineAt(div.to + 1)
+      // Take the newline before it too, or unwrapping leaves a blank line.
+      if (isDivClose(close.text)) changes.push({ from: close.from - 1, to: close.to })
+    }
+    view.dispatch({ changes })
+    view.focus()
+    return true
+  }
+  if (!token) {
+    view.focus()
+    return false
+  }
+  const first = state.doc.lineAt(sel.from)
+  const last = state.doc.lineAt(sel.to)
+  view.dispatch({
+    changes: [
+      { from: first.from, insert: `::: ${token}\n` },
+      { from: last.to, insert: '\n:::' },
+    ],
+  })
+  view.focus()
+  return true
+}
+
+// The Format drawer's one entry point. Alignment is a block construct and the
+// rest are inline spans, but that is the editor's problem rather than the
+// panel's — the panel names a family and a token and nothing else.
+export function applyFormat(view, family, token) {
+  return family === 'align' ? applyAlign(view, token) : applyAttr(view, family, token)
 }
 
 // Insert a 2x2 table skeleton on the line after the cursor, with the
@@ -1080,6 +1485,12 @@ function handleCheckboxClick(event, view) {
 // data so the menu and its dispatch cannot drift apart — adding an entry here
 // puts it in both.
 const INSERTS = {
+  // `panel` instead of `run`: choosing this one opens a picker rather than
+  // making an edit, and the edit happens when a document is chosen there. It
+  // lives in this menu rather than beside the 🔗 button because the toolbar has
+  // already been over its width budget once — see *Visual identity* — and
+  // because "Link to document" says what it does where a glyph could not.
+  doclink: { label: 'Link to document', panel: 'doclink' },
   image: { label: 'Image', run: insertImage },
   footnote: { label: 'Footnote', run: insertFootnote },
   definition: { label: 'Definition list', run: insertDefinition },
@@ -1107,6 +1518,13 @@ export const toolbarCommands = [
   { label: '😀', title: 'Emoji', panel: 'emoji' },
   { label: 'x²', title: 'Superscript', run: toggleInline('^') },
   { label: 'x₂', title: 'Subscript', run: toggleInline('~') },
+  // `rich: true` is the whole of the gating: roles.js drops this entry on a
+  // plain document, which is what keeps the plain type plain — see
+  // DESIGN-DECISIONS, *The rich flag*. A drawer rather than three menus,
+  // because a colour picked by name from a dropdown is a worse control than
+  // one picked by sight, and because three more always-visible controls is how
+  // this toolbar wrapped onto a second row the last time.
+  { label: 'Format', title: 'Colour, highlight and size', panel: 'format', rich: true },
   { sep: true },
   {
     // Google Docs' vocabulary, which maps one-to-one onto markdown's six
@@ -1156,7 +1574,12 @@ export const toolbarCommands = [
     label: 'Insert',
     title: 'Insert',
     options: Object.entries(INSERTS).map(([value, { label }]) => ({ label, value })),
-    run: (view, value) => INSERTS[value]?.run(view),
+    // An entry may open a panel instead of running a command. The menu only
+    // reports which one; EditorView renders it, exactly as it does for the
+    // top-level entries that carry `panel`. Keeps panels in one place rather
+    // than giving this menu a second way to do things.
+    panelFor: (value) => INSERTS[value]?.panel,
+    run: (view, value) => INSERTS[value]?.run?.(view),
   },
   // Everything to the left acts on the document. What follows is about how it
   // looks to you, so it sits at the other end of the bar.
@@ -1203,6 +1626,11 @@ const markdownSetup = () => [
   // Both editors, so the read-only history preview numbers footnotes the same
   // way the live one does.
   footnoteIndex,
+  // Likewise both: a preview has a cursor at position 0 even though nobody put
+  // it there, so without this, printing a historical version would reveal the
+  // markers of whatever construct happens to start the document.
+  printing,
+  printListener,
 ]
 
 // Read-only standalone editor for previewing a historical state: same
@@ -1252,7 +1680,9 @@ const readingTheme = EditorView.theme({
   },
 })
 
-export function mountEditor({ parent, ytext, awareness, readOnly, onSelectionChange, onHeadingsChange }) {
+export function mountEditor({
+  parent, ytext, awareness, readOnly, onSelectionChange, onHeadingsChange, onOpenDoc,
+}) {
   const undoManager = new Y.UndoManager(ytext)
   const extensions = [
     keymap.of([...yUndoManagerKeymap, ...formatKeymap, ...defaultKeymap]),
@@ -1261,7 +1691,14 @@ export function mountEditor({ parent, ytext, awareness, readOnly, onSelectionCha
     livePreview,
     tableDecorations,
     commentRanges,
-    EditorView.domEventHandlers({ mousedown: handleWidgetClick }),
+    // The index is only useful where something can fill it, so it is here
+    // rather than in markdownSetup: mountPreview has no document list, and an
+    // empty index there would paint every link as broken.
+    docIndex,
+    EditorView.domEventHandlers({
+      mousedown: (event, view) =>
+        handleWidgetClick(event, view) || followDocLink(event, view, onOpenDoc),
+    }),
     EditorView.lineWrapping,
     yCollab(ytext, awareness, { undoManager }),
   ]

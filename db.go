@@ -195,6 +195,21 @@ CREATE TABLE invites (
 );
 `
 
+// Schema v7: rich documents. A per-document flag turning on the appearance
+// constructs — colour, size, highlight colour, alignment — see
+// DESIGN-DECISIONS.md, *Rich documents*.
+//
+// A flag rather than a third `kind`, and this migration is the cheapest
+// evidence for why. A rich document renders in the same view, restores through
+// the same text patcher and serializes to the same markdown, so it differs in
+// none of the three things `kind` decides. Widening the `kind` CHECK would have
+// meant rebuilding the documents table through the create/copy/drop/rename
+// dance v5 needed — and every foreign key that points at it. This is one
+// ALTER, and an existing document is plain because 0 is the default.
+const schemaV7 = `
+ALTER TABLE documents ADD COLUMN rich INTEGER NOT NULL DEFAULT 0;
+`
+
 func openDB(path string) (*sql.DB, error) {
 	// _pragma values apply per-connection; busy_timeout is belt-and-braces
 	// since MaxOpenConns(1) already serializes everything through one
@@ -217,7 +232,7 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
-	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6} {
+	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7} {
 		if v > ver {
 			continue
 		}

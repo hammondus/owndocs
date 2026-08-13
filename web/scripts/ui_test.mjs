@@ -1076,6 +1076,353 @@ try {
     await clickText(page, 'button', 'close')
   })
 
+  // Document links. Another toolbar drawer, which is the shape that has
+  // presented as a dead control three times here — and this one is reached
+  // through the Insert menu, which had no way to open a panel until now.
+  //
+  // The last assertion is the whole feature: a click on rendered link text
+  // lands in the other document. It is also the only one that cannot be made
+  // anywhere but a browser, since following a link is a real mousedown at real
+  // coordinates — `el.click()` would dispatch a click with none, and the
+  // handler reads the position out of the event.
+  await step('a document link is picked, rendered and followed', async () => {
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI linking doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    await page.focus('.cm-content')
+    const fromId = docIdFromHash(page.url())
+
+    await page.select('.toolbar select[aria-label="Insert"]', 'doclink')
+    await page.waitForSelector('#doclink-search', { timeout: 3000 })
+    check(
+      await page.evaluate(
+        () =>
+          ![...document.querySelectorAll('.list-scroll .row .name')].some(
+            (e) => e.textContent.trim() === 'UI linking doc',
+          ),
+      ),
+      'the document being edited is not offered as a link target',
+    )
+
+    await page.type('#doclink-search', 'UI toolbar')
+    await page.waitForFunction(
+      () => document.querySelectorAll('.list-scroll .row').length === 1,
+      { timeout: 3000 },
+    )
+    // Enter takes the first match, as in the emoji picker.
+    await page.keyboard.press('Enter')
+    // Unlike the emoji picker, this one closes: one link is almost always the
+    // last one wanted.
+    await page.waitForFunction(() => !document.querySelector('#doclink-search'), { timeout: 3000 })
+
+    // The cursor lands at the end of the link, which *touches* it — so the
+    // source stays visible, exactly as every other construct here behaves. A
+    // space moves off it and the link renders.
+    await page.focus('.cm-content')
+    await page.keyboard.type(' ')
+    await page.waitForFunction(
+      () => {
+        const a = document.querySelector('.md-doclink')
+        // Not `missing`: the index resolved it, which is the half of this that
+        // depends on /api/docs having answered.
+        return a && !a.classList.contains('md-doclink-missing')
+      },
+      { timeout: 3000 },
+    )
+    check(
+      (await textOf(page, '.md-doclink')) === 'UI toolbar doc',
+      'the link is labelled with the title it was picked by',
+    )
+
+    // Back onto it to read the source. innerText is what the editor *shows*,
+    // and a rendered link hides its own URL, so this is the only place the
+    // markdown itself can be asserted.
+    await page.keyboard.press('ArrowLeft')
+    await waitForDoc(page, /\[UI toolbar doc\]\(#doc=[a-z2-7]+\)/)
+    await page.keyboard.press('End')
+    await page.waitForFunction(() => document.querySelector('.md-doclink'), { timeout: 3000 })
+
+    // A real mouse press, not a dispatched click: the handler is on mousedown
+    // and reads the document position out of the event's coordinates.
+    await (await page.$('.md-doclink')).click()
+    await page.waitForFunction(
+      () => document.querySelector('.viewbar .name')?.textContent.trim() === 'UI toolbar doc',
+      { timeout: 5000 },
+    )
+    check(
+      docIdFromHash(page.url()) !== fromId,
+      'following the link routed to the other document',
+    )
+  })
+
+  // Printing is the PDF export. The half that no stylesheet could fix is here:
+  // live preview reveals the markers of whatever the selection touches, so
+  // without the printing flag a document prints `## Section` as literal text in
+  // exactly one place — wherever the cursor was left. By print time those
+  // markers are real text, so this has to be asserted on the DOM before the
+  // page is drawn, not on the CSS.
+  await step('printing hides the markers the cursor was revealing', async () => {
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI print doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    await page.focus('.cm-content')
+
+    // A heading with the cursor left sitting in it — the state that prints
+    // wrong, and the state a document is always in when someone hits ⌘P.
+    await page.keyboard.type('## Section')
+    await waitForDoc(page, /## Section/)
+    check(await page.$('.md-h2'), 'the heading is styled while its source shows')
+
+    // beforeprint, exactly as the browser fires it for ⌘P and for print().
+    await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')))
+    await page.waitForFunction(
+      () => !document.querySelector('.cm-content').innerText.includes('## '),
+      { timeout: 3000 },
+    )
+    check(await page.$('.md-h2'), 'and is still a heading once the markers are hidden')
+
+    // And back: printing must not leave the document looking read-only.
+    await page.evaluate(() => window.dispatchEvent(new Event('afterprint')))
+    await waitForDoc(page, /## Section/)
+
+    // A quote and a fenced block, so the next step's assertions about the
+    // scaffolding markers have something real to assert on. Inserted from the
+    // toolbar rather than typed: Enter continues a blockquote, and typing a
+    // closing fence by hand is the flakiest way to reach either of them.
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('quoted line')
+    await clickText(page, 'button', '❝')
+    await page.waitForSelector('.md-quotemark', { timeout: 3000 })
+    await page.focus('.cm-content')
+    await clickText(page, 'button', '</>')
+    await page.waitForSelector('.md-fencemark', { timeout: 3000 })
+
+    await page.focus('.cm-content')
+    await page.keyboard.down('Meta')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.up('Meta')
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('a bullet')
+    await clickText(page, 'button', '•')
+    await page.waitForSelector('.md-listmark', { timeout: 3000 })
+  })
+
+  await step('the print stylesheet drops the chrome and the dark scheme', async () => {
+    await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }])
+    await page.emulateMediaType('print')
+
+    const hidden = (sel) =>
+      page.evaluate((s) => {
+        const el = document.querySelector(s)
+        return !el || getComputedStyle(el).display === 'none'
+      }, sel)
+    check(await hidden('.appbar'), 'the app bar does not print')
+    check(await hidden('.viewbar'), 'the view bar does not print')
+    check(await hidden('.toolbar'), 'the toolbar does not print')
+
+    const prop = (name) =>
+      page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim(), name)
+    // Browsers drop background colours when printing but keep foreground ones,
+    // so a dark scheme reaching paper is pale grey text on white.
+    check((await prop('--ink')) === '#000000', 'dark mode does not follow the document onto paper')
+    // prefs.js sets this one *inline* on the root element, so this is also the
+    // assertion that the !important in the print block is earning its keep.
+    check((await prop('--reading-size')) === '11pt', 'the screen reading size stays on the screen')
+
+    // Scaffolding markers. On screen these are dimmed rather than hidden,
+    // because while editing the document *is* its markdown; on paper a `>`
+    // down the side of every quoted line is what most makes printed markdown
+    // read as a draft. Asserted only because the previous step put a real
+    // quote and a real fence in the document — otherwise `hidden()` would pass
+    // on an element that was never there.
+    check(await hidden('.md-quotemark'), 'quote markers do not print')
+    check(
+      await page.evaluate(() => {
+        const fence = document.querySelector('.md-fencemark')
+        return !!fence && getComputedStyle(fence.closest('.cm-line')).display === 'none'
+      }),
+      'a code fence prints as neither a marker nor the blank line it sat on',
+    )
+    check(
+      await page.evaluate(() => {
+        const m = document.querySelector('.md-listmark')
+        return !!m && getComputedStyle(m).opacity === '1'
+      }),
+      'a list marker prints at full ink, being the bullet rather than scaffolding',
+    )
+
+    await page.emulateMediaType('screen')
+    await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }])
+  })
+
+  // The rich flag. A property of the document row written over HTTP, exactly
+  // as a rename is — so the assertion that matters is that it *persists*, not
+  // that the label changed. A local toggle that never reached the server would
+  // look identical until the document was reopened.
+  //
+  // The toolbar gating it feeds is unit-tested in roles_test.mjs; there is
+  // nothing to assert about it here yet, because no appearance command exists
+  // to be gated. That assertion arrives with the first one.
+  await step('the formatting mode flips, and survives reopening', async () => {
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI rich doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('#doc-rich', { timeout: 5000 })
+    check((await textOf(page, '#doc-rich')) === 'plain', 'a new document is plain')
+
+    await clickSel(page, '#doc-rich')
+    await page.waitForFunction(
+      () => document.querySelector('#doc-rich')?.textContent.trim() === 'rich',
+      { timeout: 3000 },
+    )
+
+    // Away and back, so the label is read from /api/docs rather than from the
+    // component that just set it.
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await clickText(page, 'a, button, .row', 'UI rich doc')
+    await page.waitForSelector('#doc-rich', { timeout: 5000 })
+    check((await textOf(page, '#doc-rich')) === 'rich', 'the flag came back from the server')
+
+    // And off again: un-flagging is a bit-flip, which is the property that
+    // made this a column rather than a third document kind.
+    await clickSel(page, '#doc-rich')
+    await page.waitForFunction(
+      () => document.querySelector('#doc-rich')?.textContent.trim() === 'plain',
+      { timeout: 3000 },
+    )
+  })
+
+  // The Format drawer, and the gating it hangs off. This is the first
+  // assertion that the rich flag actually withholds something: the same
+  // toolbar, on the same document, before and after the flag.
+  await step('the Format control appears only on a rich document', async () => {
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI format doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+
+    const hasFormat = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('.toolbar button')].some((b) => b.textContent.trim() === 'Format'),
+      )
+    check(!(await hasFormat()), 'a plain document does not offer it')
+
+    await clickSel(page, '#doc-rich')
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll('.toolbar button')].some((b) => b.textContent.trim() === 'Format'),
+      { timeout: 3000 },
+    )
+    ok('turning the flag on brings it back')
+  })
+
+  // The construct itself. The assertion that matters is the pair: the document
+  // holds `[text]{.c-red}` and the editor shows `text` wearing the class — the
+  // two halves of the same feature agreeing, exactly as the emoji picker's
+  // shortcode-versus-character check does.
+  await step('a colour wraps the selection and renders as a class', async () => {
+    await page.focus('.cm-content')
+    await page.keyboard.type('make this red')
+    // Select the last word.
+    await page.keyboard.down('Shift')
+    for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowLeft')
+    await page.keyboard.up('Shift')
+
+    await clickText(page, 'button', 'Format')
+    await page.waitForSelector('.panel .swatch', { timeout: 3000 })
+    await clickSel(page, '.panel .swatch[aria-label="Text colour: Red"]')
+    // The label stays *selected* after applying, which is what lets the drawer
+    // stay open and put a second property on the same words. Its source is
+    // therefore showing, so this is where the markdown gets asserted.
+    await waitForDoc(page, /\[red\]\{\.c-red\}/)
+
+    // A second family joins rather than replacing: red *and* extra large, one
+    // span. Collapsing the cursor to the span's end instead used to leave it on
+    // the boundary, where this click found no span and silently did nothing.
+    await clickSel(page, '.panel .size[aria-label="Size: Extra large"]')
+    await waitForDoc(page, /\[red\]\{\.c-red \.size-xl\}/)
+    ok('a size joins the colour instead of stacking a second span')
+
+    // Off the span, and it renders: one element carrying both classes, showing
+    // the label alone.
+    await page.focus('.cm-content')
+    await page.keyboard.press('End')
+    await page.keyboard.type(' ')
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('.md-c-red')
+        return el && el.classList.contains('md-size-xl') && el.textContent === 'red'
+      },
+      { timeout: 3000 },
+    )
+    ok('and away from it, the span renders as its classes')
+  })
+
+  await step('clearing every family unwraps the span', async () => {
+    // Back onto the span. One press is enough because the boundary resolves
+    // from either side now.
+    await page.keyboard.press('ArrowLeft')
+    await clickSel(page, '.panel .none[aria-label="Text colour: none"]')
+    await waitForDoc(page, /\[red\]\{\.size-xl\}/)
+    await clickSel(page, '.panel .none[aria-label="Size: normal"]')
+    // With no family left the brackets go entirely, rather than an empty `{}`
+    // being left in the document.
+    await waitForDoc(page, /make this red/)
+    check(!(await docText(page)).includes('{.'), 'no attribute braces are left behind')
+    await clickText(page, 'button', 'close')
+  })
+
+  // An unknown token is not a construct. It has to stay exactly the text
+  // somebody typed — which is what it looks like in the .md file read by
+  // anything else, so the document reads the same everywhere.
+  await step('an unrecognised token stays literal text', async () => {
+    await page.focus('.cm-content')
+    await page.keyboard.press('End')
+    await page.keyboard.type('\n[nope]{.c-taupe}')
+    await page.keyboard.down('Meta')
+    await page.keyboard.press('ArrowUp')
+    await page.keyboard.up('Meta')
+    await waitForDoc(page, /\[nope\]\{\.c-taupe\}/)
+    check(
+      await page.evaluate(() => !document.querySelector('[class*="md-c-"]')),
+      'and is given no class at all',
+    )
+  })
+
+  // Alignment: the one block-level property, so it takes whole lines rather
+  // than the selection. The assertions worth having are that changing it
+  // *rewrites* the fence rather than nesting a second div, and that clearing it
+  // takes both fences away — a construct that only half-unwraps leaves `:::`
+  // sitting in the document with nothing to say.
+  await step('alignment wraps whole lines, and unwraps cleanly', async () => {
+    await page.focus('.cm-content')
+    await clickText(page, 'button', 'Format')
+    await page.waitForSelector('.panel .size[aria-label="Alignment: Centred"]', { timeout: 3000 })
+
+    await clickSel(page, '.panel .size[aria-label="Alignment: Centred"]')
+    await page.waitForSelector('.md-align-center', { timeout: 3000 })
+    await waitForDoc(page, /::: center/)
+
+    await clickSel(page, '.panel .size[aria-label="Alignment: Right"]')
+    await page.waitForSelector('.md-align-right', { timeout: 3000 })
+    check(
+      !(await docText(page)).includes('::: center'),
+      'changing the alignment rewrites the fence rather than nesting a second div',
+    )
+
+    await clickSel(page, '.panel .none[aria-label="Alignment: normal"]')
+    await page.waitForFunction(() => !document.querySelector('.md-align-right'), { timeout: 3000 })
+    check(!(await docText(page)).includes(':::'), 'clearing it removes both fences')
+    await clickText(page, 'button', 'close')
+  })
+
 } finally {
   await browser.close()
   server.kill()

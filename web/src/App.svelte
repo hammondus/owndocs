@@ -50,8 +50,7 @@
         alert(err.message) // invalid or revoked link; fall through to the list
       }
     } else if (hash.get('doc')) {
-      const docs = await api('/api/docs')
-      const doc = docs.find((d) => d.id === hash.get('doc'))
+      const doc = await findDoc(hash.get('doc'))
       if (doc) {
         openDoc(doc)
         return
@@ -60,10 +59,42 @@
     showList()
   }
 
+  // A document by id, or null. Routing needs the whole row — kind picks the
+  // view, role decides what is editable — and the list is the only place that
+  // has it, since the server never hands out one document's metadata alone.
+  async function findDoc(id) {
+    try {
+      return (await api('/api/docs')).find((d) => d.id === id) || null
+    } catch {
+      return null
+    }
+  }
+
+  // Following a document link. Fetched fresh rather than resolved against the
+  // editor's cached list: that list is from when the document was opened, so a
+  // document shared since would be unreachable through a link to it — and if
+  // the fetch that built it failed, every link in the document would be a
+  // control that looks live and does nothing.
+  //
+  // Staying put on a dead id is deliberate. The link is already dimmed and
+  // says why on hover, and dropping someone to the document list because they
+  // clicked a link would lose their place to no purpose.
+  async function openDocById(id) {
+    const doc = await findDoc(id)
+    if (doc) openDoc(doc)
+  }
+
   // Children report a rename rather than writing to route themselves — the
   // same rule the auth view follows about not setting parent state directly.
   function renamed(title) {
     route.doc.title = title
+  }
+
+  // Likewise the formatting mode. Both are properties of the document row that
+  // the child has already persisted over HTTP; what lands here is the copy the
+  // rest of the app reads from.
+  function richChanged(rich) {
+    route.doc.rich = rich
   }
 
   function showList() {
@@ -71,9 +102,9 @@
     route = { view: 'list' }
   }
 
-  function openDoc(doc) {
+  function openDoc(doc, withComments = false) {
     location.hash = 'doc=' + doc.id
-    route = { view: 'editor', doc }
+    route = { view: 'editor', doc, withComments }
   }
 
   function openShare(doc) {
@@ -132,7 +163,10 @@
       {#if route.doc.kind === 'sheet'}
         <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} />
       {:else}
-        <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} />
+        <!-- onOpenDoc follows a document link, by id. It ends in openDoc like
+             any other navigation, so the hash updates and the #key above swaps
+             the editor rather than leaving a stale one on the old document. -->
+        <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} onOpenDoc={openDocById} onRichChanged={richChanged} />
       {/if}
     {/key}
   {:else if route.view === 'share'}

@@ -285,4 +285,189 @@ export function indexFootnotes(tree, slice) {
   return { numbers, defs, firstRef }
 }
 
-export const markdownExtensions = [Highlight, DefinitionList, Footnote]
+// ---- attribute spans -------------------------------------------------------
+//
+//   Some [important]{.c-red} text, and [bigger]{.size-lg}.
+//
+// Pandoc's bracketed span, and that is the whole point of the choice: it has a
+// published spec and a reference implementation to check against, so this is a
+// dialect with an owner elsewhere rather than a private syntax. *Formatting*
+// rejected inventing one; this is the answer to that objection. See
+// DESIGN-DECISIONS, *Pandoc's syntax, not one of ours*.
+//
+// This file knows the *shape* only. Which tokens mean anything is palette.js's
+// business, and the grammar deliberately does not consult it: a parser that
+// knew the app's colour list would have to change every time the list did, and
+// an unknown token has to survive as literal text anyway.
+
+// Classes only. Pandoc also allows `#id` and `key=value`, and neither has any
+// meaning here — accepting them would mean deciding what to do with them, and
+// the honest answer is nothing. A token starts with a letter, so `{.2}` is not
+// one.
+const ATTRS = /^\{((?:\s*\.[A-Za-z][\w-]*)+)\s*\}/
+
+// The `]` closing the `[` this text starts with. A scan rather than a regex
+// because the label may contain brackets of its own — a nested link, or an
+// escaped one — and a lazy or greedy match picks the wrong one in opposite
+// directions.
+function labelEnd(src) {
+  let depth = 0
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (c === '\\') {
+      i++ // an escaped bracket is text, not structure
+      continue
+    }
+    if (c === '[') depth++
+    else if (c === ']' && --depth === 0) return i
+  }
+  return -1
+}
+
+// Un-anchored: reads a span off the *front* of `src` and says how long it was,
+// which is what the inline parser needs. Returns null if the text does not
+// start with one.
+function scanSpan(src) {
+  const close = labelEnd(src)
+  if (close < 0) return null
+  const m = ATTRS.exec(src.slice(close + 1))
+  if (!m) return null
+  return {
+    // The label's *source*, escapes and all. Rewriting a span's attributes
+    // keeps this verbatim, so nothing has to be re-escaped and nothing can be
+    // lost in the round trip.
+    text: src.slice(1, close),
+    tokens: m[1].trim().split(/\s+/).map((c) => c.slice(1)),
+    length: close + 1 + m[0].length,
+  }
+}
+
+// Anchored: for reading a node's own source text, where the span is the whole
+// of it. Returns null for anything else, so a Link that merely begins the same
+// way is not mistaken for one.
+export function spanParts(src) {
+  const s = scanSpan(src)
+  return s && s.length === src.length ? { text: s.text, tokens: s.tokens } : null
+}
+
+export const AttrSpan = {
+  defineNodes: [
+    // No `style`: the decoration layer resolves the classes, and a highlight
+    // tag here would put a second rule on the same span.
+    { name: 'AttrSpan' },
+    { name: 'AttrMark' },
+  ],
+  parseInline: [
+    {
+      name: 'AttrSpan',
+      parse(cx, next, pos) {
+        if (next !== 91 /* [ */) return -1
+        const s = scanSpan(cx.slice(pos, cx.end))
+        if (!s) return -1
+        const end = pos + s.length
+        const textFrom = pos + 1
+        return cx.addElement(
+          cx.elt('AttrSpan', pos, end, [
+            cx.elt('AttrMark', pos, textFrom),
+            // The label carries inline markup like any other text, so it is
+            // parsed rather than taken flat — `[**bold** and red]{.c-red}`.
+            ...cx.parser.parseInline(s.text, textFrom),
+            cx.elt('AttrMark', textFrom + s.text.length, end),
+          ]),
+        )
+      },
+      // Before Link, for the reason Footnote is: `[` handling is shared, and a
+      // Link would claim `[text]` first and leave `{...}` as loose characters.
+      before: 'Link',
+    },
+  ],
+}
+
+// ---- fenced divs -----------------------------------------------------------
+//
+//   ::: center
+//   A centred paragraph, and anything else.
+//   :::
+//
+// Pandoc's fenced div, in its bare-word shorthand — `::: center` rather than
+// `::: {.center}`. The brace form buys nothing here, since the only attribute
+// worth carrying is the one word, and the shorthand is what anyone actually
+// types.
+//
+// The only *composite* block in this file: everything else here is a leaf, and
+// a leaf cannot hold a heading or a list. Alignment has to, or "centre this"
+// would silently mean "centre this paragraph and break everything else in it".
+//
+// No collision with definition lists, checked rather than hoped: `DEF_LINE` is
+// a colon followed by whitespace, and a fence's second character is a colon.
+const DIV_OPEN = /^:{3,}[ \t]*([A-Za-z][\w-]*)[ \t]*$/
+const DIV_CLOSE = /^:{3,}[ \t]*$/
+
+// The word an opening fence carries, or null. Which words *mean* anything is
+// palette.js's business, exactly as it is for attribute spans — the grammar
+// only reports the shape.
+export function divToken(text) {
+  const m = DIV_OPEN.exec(text)
+  return m ? m[1] : null
+}
+
+// Whether a line is a closing fence. Exported because unwrapping a div has to
+// find and delete that line, and the pattern should not be written twice.
+export const isDivClose = (text) => DIV_CLOSE.test(text)
+
+export const FencedDiv = {
+  defineNodes: [
+    {
+      name: 'FencedDiv',
+      block: true,
+      // Called per line to decide whether the block is still open. It cannot
+      // consume the closing fence — a skipping function may not advance the
+      // parser — so the fence falls through to the block parser below, which
+      // is why that one exists at all.
+      composite(cx, line) {
+        return !DIV_CLOSE.test(line.text.slice(line.pos))
+      },
+    },
+    { name: 'DivMark' },
+  ],
+  parseBlock: [
+    {
+      name: 'FencedDiv',
+      parse(cx, line) {
+        if (!DIV_OPEN.test(line.text.slice(line.pos))) return false
+        const from = cx.lineStart + line.pos
+        cx.startComposite('FencedDiv', line.pos)
+        cx.addElement(cx.elt('DivMark', from, cx.lineStart + line.text.length))
+        cx.nextLine()
+        return true
+      },
+      // Both fences have to be able to interrupt a paragraph, and this is the
+      // trap the footnote parser hit first. A paragraph swallows following
+      // lines as *lazy continuation* before any block parser is consulted, so
+      // without this the closing fence is absorbed into the last paragraph, the
+      // div never closes, and the whole rest of the document is centred. The
+      // failure is completely silent and looks like the parser ignoring `:::`.
+      endLeaf(_, line) {
+        return DIV_OPEN.test(line.text.slice(line.basePos))
+      },
+    },
+    {
+      // The closing fence, and any stray `:::`. Marked rather than left as a
+      // paragraph: a lone `:::` means nothing on its own, so reading it as a
+      // div marker is both harmless and what the writer meant.
+      name: 'FencedDivEnd',
+      parse(cx, line) {
+        if (!DIV_CLOSE.test(line.text.slice(line.pos))) return false
+        const from = cx.lineStart + line.pos
+        cx.addElement(cx.elt('DivMark', from, cx.lineStart + line.text.length))
+        cx.nextLine()
+        return true
+      },
+      endLeaf(_, line) {
+        return DIV_CLOSE.test(line.text.slice(line.basePos))
+      },
+    },
+  ],
+}
+
+export const markdownExtensions = [Highlight, DefinitionList, Footnote, AttrSpan, FencedDiv]

@@ -186,6 +186,13 @@ Implementation (`prefs.js`, `ReadingPrefs.svelte`):
   finds. Deliberately *not* in the sheet view: nothing there would change,
   and a control that does nothing is worse than an absent one.
 
+**Amended 2026-08-13, narrowly.** Appearance is still not part of the plain
+document, and everything above stands unchanged for it. What changed is that a
+document may now be *flagged* rich, turning on a small set of appearance
+constructs — colour, size, highlight colour, alignment. The flag exists
+precisely so that the paragraphs above keep being true of the default type.
+See *Rich documents*.
+
 ### The plain-markdown constructs, and the five traps in shipping them
 
 Shipped 2026-08-11: H4–H6, numbered and nested lists, fenced code blocks with
@@ -496,6 +503,477 @@ numbering is tested in node against a real parse. `editor.js` holds it in a
 walk per keystroke, accepted for the same reason `buildTableDecorations`
 accepts one, and it is the cheaper of the two: that field rebuilds on selection
 changes as well.
+
+### Rich documents: what was asked for, and what was ruled out
+
+Decided 2026-08-13, from a concrete request: font colour, font size, highlight
+colour, paragraph alignment, and links between documents. It amends
+*Formatting*, which refused all of this in a sentence — so the amendment is
+deliberately narrow, and the four sections that follow are mostly about keeping
+it narrow.
+
+**Inter-document links were not really part of it.** They arrived in the same
+request but belong in the plain document type: a link is the most semantic
+construct markdown has, and it needs no grammar extension and no flag. Shipped
+first, and separately.
+
+**Page layout is explicitly out, and that is what makes the rest affordable.**
+No page breaks, headers, footers, margins or columns — none of it was asked
+for. The consequence decides the whole build: everything remaining is
+expressible as CSS on a span or a line, so the browser's own print becomes a
+real PDF path rather than a compromise, and no second renderer is needed. See
+*Print is the PDF export*.
+
+Shipped in this order, each useful before the next existed: inter-document
+links, print, the flag, then the constructs.
+
+### Inter-document links
+
+Shipped 2026-08-13, in the **plain** document type. It came in with the
+appearance requests (see *Rich documents*) and does not belong with them: a
+link is the most semantic construct markdown has, so it needs no grammar
+extension, no flag, and nothing new in the file format at all. `doclink.js` is
+strings in and strings out, and the editor work is one field, one decoration
+and one mousedown handler.
+
+**The target is `#doc=<id>` — the app's own URL for that document.** The first
+draft of this decision said `/d/<id>`, which was simply wrong about this app:
+there are no paths, `App.svelte` routes on the location hash, and a `/d/…` link
+would have 404'd on any real navigation. Three things follow from using the
+real one, and together they are why it beats a scheme of our own:
+
+- It is exactly what sits in the address bar with that document open, so
+  copying the URL produces a working link with no special knowledge.
+- Opened in a new tab it needs **no interception at all** — the app boots,
+  reads the hash and opens the document. Only the same-tab click needs a
+  handler, and only to avoid a full reload.
+- It stays a plain markdown link in the exported `.md`. The exporter names
+  files `slug(title)-<6-char doc-id>.md`, so it can later rewrite these into
+  working relative links inside the export repo.
+
+**The label is written once and stays written.** This reverses what this
+document first said — that the label should re-resolve against the target's
+current title on every render — and the reason is the project's central
+property, not a difficulty. A label pulled from SQLite at render time is *not
+in the file*: the `.md` the exporter writes would no longer say what the
+document says, which is the one thing every other construct here has been
+built to preserve. A label that silently changed under its author is also the
+worse surprise of the two.
+
+So the picker writes the title as ordinary text, and **the current title is a
+tooltip instead** — hover a link and the editor says what that document is
+called now. Freshness without mutation, and the drift stays visible rather
+than being papered over. The id is treated as opaque: its format is
+`newDocID`'s business, and a frontend pattern pinning base32 would be a second
+place to edit when that changes.
+
+Three details that are easy to get wrong:
+
+- **The mark is applied to the `Link` node, and the children are still
+  visited.** Returning `false` there would leave `LinkMark` and `URL` unhidden,
+  so every document link would render with its `](#doc=…)` showing. A document
+  link is styled, never replaced — the label stays real text that can be
+  selected, edited and commented on.
+- **Following is a `mousedown` handler, and it declines more often than it
+  fires.** Any modifier, or any button but the left one, is left alone — so
+  ⌘-click still opens a new tab and alt-click still places the cursor, which is
+  the escape hatch for editing a link's text. A link the selection already
+  touches is also left alone: its source is showing, which in this editor means
+  "you are editing this". The position comes from `posAtCoords`, not from the
+  clicked element's classes, because the mark wraps a span whose inner shape is
+  the live preview's business.
+- **A click resolves the id by re-fetching, not against the cached index.**
+  The editor's list is a snapshot from when the document was opened, so
+  resolving clicks against it would make a document shared *since* unreachable
+  through a link to it — and, if the fetch that built the list had failed,
+  would leave every link in the document looking live and doing nothing. That
+  is the dead-control signature this project has three incidents for, so the id
+  goes up to `App` and is resolved there. Being stale on hover is recoverable;
+  being inert is not.
+- **An absent index means "cannot say", not "not found".** `mountPreview` has
+  no document list, and a history preview that painted every link as broken
+  would be worse than one that painted none. So the unresolved styling keys off
+  the index being *present* and lacking the id — dimmed and dashed rather than
+  struck through or red, because the usual cause is a document deleted or never
+  shared, which is a fact about access rather than an error in the text.
+
+The index arrives over HTTP well after mount, so `livePreview` rebuilds on the
+effect that delivers it. Without that, links already on screen keep whatever
+they were painted with until something unrelated happens to trigger a rebuild —
+the kind of staleness that looks like a caching bug and is not one.
+
+**Not done, and deliberately:** links to the outside world are still inert,
+exactly as they were before this. Making them followable is a separate question
+with a security surface of its own (`javascript:` targets, whether to open in a
+tab), and none of it was asked for.
+
+### Print is the PDF export
+
+Shipped 2026-08-13. There is no PDF renderer, no HTML export path and no second
+implementation of any construct — the browser's own print is the export, and a
+`print` button in the view bar that calls `window.print()` is the whole of the
+UI.
+
+**This is only affordable because documents have no page layout.** Every
+construct one can contain is a span or a line, so pagination is the browser's
+problem rather than this app's. Page breaks, headers, footers, columns and
+margins are the things that would have forced a renderer of our own — and a
+second renderer means implementing every construct twice, in two engines that
+disagree about what a page is. Ruling them out (see *Rich documents*) is what
+turned a fortnight into an afternoon.
+
+**CodeMirror does half the work already, and it is the half that looks
+impossible.** It virtualizes the viewport, so the naive expectation is that
+printing yields the visible screenful and blank paper after it. It does not:
+`@codemirror/view` listens for `beforeprint`, sets `viewState.printing`, and
+swaps `visiblePixelRange` for `fullPixelRange` for the duration. Confirmed
+rather than assumed — an eight-copy document prints as seven pages, with the
+last line present.
+
+**The half no stylesheet could do is the markers.** Live preview reveals the
+source of whatever the selection touches, so a document prints `## Section` as
+literal text in exactly one place: wherever the cursor was left. By print time
+those markers *are* text, and CSS cannot un-render them. So a `printing` flag,
+set from `beforeprint`, makes `selectionTouches` answer "no" for the duration —
+every marker hides and every table renders. That one predicate is what every
+construct's rendered/revealed choice runs through, which is why the flag is
+read in exactly one place.
+
+`beforeprint` fires for ⌘P, for `window.print()` and for a headless
+`page.pdf()` alike, so the button needs no logic and the test can drive the
+real path rather than a stand-in.
+
+Two things had to be *taken away* from the page:
+
+- **The dark scheme must not follow the document onto paper.** Browsers
+  routinely drop background colours when printing but keep foreground ones, so
+  a dark palette prints as pale grey text on white — present, and unreadable.
+  The light tokens are restated unconditionally, with blacker ink than the
+  screen uses: a display is backlit and paper is not.
+- **The reading preferences stay on the screen.** They are set as *inline*
+  custom properties by `prefs.js`, and an inline declaration beats any
+  stylesheet rule that is not `!important` — which is the only reason those
+  three carry it. They are overridden rather than inherited because a reading
+  preference is about the screen of the person who set it, while a PDF is an
+  artifact that goes to someone else: 24px body text chosen for one laptop is
+  not a statement about the document. Font *family* is left alone, being a
+  taste an author may reasonably want carried through.
+
+**Scaffolding markers needed classes of their own.** `md-dim` covered quote
+marks, list markers, code fences and info strings identically, which is right
+on screen — while editing, the document *is* its markdown and the punctuation
+should stay visible. On paper they part company: a `>` down the side of every
+quoted line is the single thing that most makes printed markdown read as a
+draft, while a list marker is not scaffolding at all, it *is* the bullet, and
+dimmed it prints as a grey smudge. So each carries a second class and the print
+block treats them separately.
+
+Fences are hidden **by the line**, via `:has(.md-fencemark)`. Hiding only the
+``` would leave the blank line it sat on, still carrying the code block's
+background, so every block would print with a band of stray padding at each
+end. No content line holds a fence mark, so the selector picks exactly the two
+that should go.
+
+**`print-color-adjust: exact` on the content**, because Chrome prints
+background colours only when "Background graphics" is ticked and it is off by
+default. A highlight is nothing without its ground; a code block and a callout
+lose their boundaries. The property inherits, so one declaration covers them.
+
+**Not done, and not cheaply fixable:** keeping a fenced code block or a callout
+whole across a page break. Each of their lines is its own `.cm-line` with no
+element wrapping the block, so there is nothing to hang `break-inside` on —
+putting it on the lines instead would only stop a *wrapped* line from
+splitting, which is a different thing and unwanted on long paragraphs. Headings
+do get `break-after: avoid`, and a rendered table is a single element so it is
+kept whole.
+
+### The rich flag: a column, not a kind
+
+Shipped 2026-08-13 as schema v7. Turns on the appearance constructs — colour,
+size, highlight colour, alignment — per document. Those constructs are not
+built yet; this is the switch they will hang off, and it ships first so that
+the first one of them lands on a document type that already exists.
+
+The instinct was a third `kind` beside `doc` and `sheet`, quarantining the
+extensions away from the plain format. The quarantine is right; `kind` is the
+wrong mechanism for it.
+
+**`kind` here means three specific things: a different view renders it, history
+preview and restore work differently, and the exporter serializes it
+differently.** A sheet differs on all three — `SheetPreview`,
+`Workbook.restoreFrom`, a directory of CSVs. A board will too. A rich document
+differs on **none** of them: same `EditorView`, same text patcher for restore,
+same markdown out of the exporter. Putting it in `kind` would overload a column
+that means something else.
+
+The migration is the cheapest evidence for the choice. Widening the `kind`
+CHECK means rebuilding the documents table through the create/copy/drop/rename
+dance v5 needed for `commenter`, plus every foreign key aimed at it. This is
+one `ALTER ... DEFAULT 0`, and every existing document is plain without a
+backfill.
+
+**Rich documents still export to git**, which a separate kind would have put at
+risk, since the exporter skips any kind it has no text serialization for. The
+text is still text; it merely carries attributes only some readers understand.
+That matters more than it sounds — the documents most likely to want colour are
+reports and client-facing letters, exactly the ones most worth having in
+version control.
+
+**What it gates is the toolbar, and only the toolbar.** `visibleToolbar` in
+`roles.js` applies two filters that are different in kind, and the difference
+is worth keeping straight:
+
+- **Role is a boundary.** `EditorState.readOnly` stops *user input*, and a
+  toolbar button is a programmatic dispatch that goes straight through it — a
+  commenter who kept the editing buttons could write to the document through
+  them, and the server would close the socket for the update.
+- **Rich is not.** The syntax is plain text and anyone who may edit can type it
+  by hand; hiding the buttons cannot stop that and is not meant to. What it
+  does is keep the plain document type plain, by keeping the controls that make
+  documents drift colourful off the ones that never asked for them. Rendering
+  is deliberately *not* gated — a plain document that somehow contains a
+  coloured span still shows it, because the alternative is text that silently
+  means nothing.
+
+It lives in `roles.js` rather than `editor.js` so it can be tested under node:
+`editor.js` imports CodeMirror, and the rule deciding what a commenter can
+reach should not need a browser to verify.
+
+**The write is HTTP, not a collaborative edit** — the precedent *Renaming* set,
+and for the same reason: this describes the document rather than living inside
+it. `PATCH /api/docs/{id}` now carries both, as pointers, so "absent" and
+"empty" stay different questions: a rename sends only `title`, a flip sends only
+`rich`, neither knows the other exists, and a present-but-empty title stays the
+error it always was. Editor is the bar for both, deliberately not owner's —
+the flag governs which buttons are offered, not what the format permits.
+
+**Converting is a bit-flip in both directions**, which is the property that
+made a column worth having: someone will start an ordinary document and hit the
+ceiling halfway through, and with a kind that would be a copy. Turning it *off*
+is currently free because no construct exists to strand; once one does, that
+becomes a real question — see *Open questions*.
+
+**Known limit:** the flag reaches a collaborator only when they reopen the
+document, since their editor keeps the toolbar it mounted with. Nothing breaks
+meanwhile — rendering is not gated, so they see everything that gets written
+and simply cannot add any until they return. This is the counter-argument the
+open question about the flag's home named, now observed rather than predicted.
+
+### Pandoc's syntax, not one of ours
+
+*Formatting* rejected "a directive syntax of our own" for weakening the "it is
+just a markdown file" property the exporter exists for. That objection
+survives, and is answered by not inventing one:
+
+    Some [important]{.c-red} text, and [bigger]{.size-lg}.
+
+    ::: center
+    A centred paragraph.
+    :::
+
+Bracketed spans and fenced divs are **Pandoc's**, with a published spec and a
+reference implementation to check against. This is a dialect with an owner
+elsewhere, not a private format — and if browser print ever proves
+insufficient, the documents are already written in the native dialect of the
+tool that would replace it.
+
+The **bracketed span shipped 2026-08-13**; the fenced div has not, and the
+notes below cover both.
+
+- The inline rule runs **`before: 'Link'`**, since `[` handling is shared —
+  footnotes hit this already. The consequence is that it must *decline* every
+  real link, so `[a](url)`, `[a][ref]` and a bare `[a]` are all asserted not to
+  parse as spans. It also has to leave a link that merely follows a span alone.
+- **The closing `]` is found by scanning, not by a regex.** A label may hold
+  brackets of its own — `[a [b] c]{.c-red}` — or an escaped one, and a lazy
+  match takes the wrong bracket while a greedy one takes a different wrong
+  bracket. The scan tracks depth and skips escapes.
+- **Classes only.** Pandoc also allows `#id` and `key=value`; both are rejected
+  rather than parsed and ignored, because accepting them would mean deciding
+  what they do and the honest answer is nothing.
+- **The grammar does not know the palette.** Any `{.token}` parses; whether a
+  token *means* anything is the decoration layer's question. A parser holding
+  the colour list would have to change every time the list did, and an unknown
+  token has to survive as literal text anyway.
+- **`:::` does not collide with definition lists.** `DEF_LINE` is `/^:[ \t]/` —
+  a colon then whitespace — so a fence's second character disqualifies it.
+  Checked rather than hoped, since the two constructs are otherwise
+  indistinguishable on their first character.
+
+**Applying a token is span arithmetic, not text insertion.** Each token belongs
+to one family — text colour, highlight ground, size — and applying one replaces
+whatever that family held while leaving the others alone, so a span goes from
+red to blue, or becomes red *and* large, rather than nesting
+`[[x]{.c-red}]{.size-lg}`. Clearing the last family unwraps back to bare text,
+which falls out of the markdown builder returning null rather than needing a
+branch. Two details that only appeared once it was working:
+
+- **The label stays selected after applying.** That is what lets the drawer
+  stay open while a colour and then a size go onto the same words. Collapsing
+  the cursor to the span's end instead put it exactly *on the boundary* —
+  where `resolveInner(pos, 1)` resolves to whatever starts there, which is not
+  this span, so the second click found nothing and silently did nothing. The
+  lookup now asks from both sides.
+- **A rewrite keeps the label's source verbatim**, escapes and all, so
+  recolouring text containing `\]` cannot double-escape or lose it. Only the
+  unwrap needs it back as plain text.
+
+### A palette of named tokens, not a colour picker
+
+**No arbitrary colour values.** The document names *which* red; the scheme
+decides what red means.
+
+The argument is the dark scheme, and this codebase has already lost it once:
+`.md-highlight` pins both its ground and its ink, with a comment explaining
+that inheriting the dark-mode foreground would make it unreadable. That is one
+construct. Arbitrary hex is that problem multiplied by every span anyone ever
+coloured, and it is **unfixable after the fact** — a hex code is a decision
+frozen against one theme, stored in a file meant to outlive the app, in
+documents that are not ours to edit.
+
+The shape, sixteen tokens:
+
+- **Eight hues, two roles.** A *text* colour must contrast with `--surface`; a
+  *highlight ground* must be light enough for dark ink to sit on it. Those are
+  different lightnesses, so one flat list of sixteen would be half unusable —
+  every entry wrong for the role it was not designed for.
+- **Generated in OKLCH at fixed lightness and chroma, varying only hue**, so no
+  colour carries more visual weight than its neighbours and the set reads as
+  one system rather than sixteen decisions. Native CSS, no dependency;
+  `color-mix(in srgb, …)` is already in `app.css`, so modern colour functions
+  are established here.
+- **Text colours vary by scheme; highlight grounds do not.** Following
+  `.md-highlight` exactly — a highlighter pen is a light ground by definition,
+  so the eight grounds are pinned ground/ink pairs, identical in both schemes.
+  That halves the contrast work.
+- **Eight hues, not more.** The ceiling is not code; adding one is two CSS lines
+  and a row in a table. It is that past roughly ten hues nobody can reliably
+  pick a swatch on purpose. Widen if someone actually hits it.
+
+**One table drives the CSS, the picker and the allowlist.** `EmojiPicker` sets
+this precedent already by importing `EMOJI_GROUPS` verbatim so that adding an
+entry in one place puts it everywhere; `palette.js` does the same here. Three
+copies of a colour list is three chances for them to disagree.
+
+Shipped 2026-08-13 at `L .50 / C .15` for text in light, `L .80 / C .13` in
+dark, and `L .90 / C .09` for the grounds, with hues at 25, 60, 95, 145, 195,
+255, 300 and 345. Adding one is a row in `palette.js` and a line in each block
+of `app.css`.
+
+**`yellow` reads amber as text**, and that is not a flaw to fix later. A text
+colour has to contrast with the page and there is no light yellow that does, so
+at a fixed lightness the yellow hue lands on amber. As a *highlight ground* the
+same hue is properly yellow. The name follows the hue rather than the
+appearance, deliberately, so that the two roles stay in step — a `yellow` text
+colour and a `yellow` highlight should be the same decision spelled twice.
+
+### The Format drawer: one control, not three
+
+Colour, highlight and size are three properties, and three toolbar controls is
+what pushed this bar onto a second row the last time — see *Visual identity*.
+One drawer holding all three costs the toolbar a single button, marked
+`rich: true` so `roles.js` withholds it from a plain document.
+
+A drawer rather than three `<select>` menus because **a colour picked by name
+from a dropdown is a worse control than one picked by sight**: the swatch is
+drawn in the colour it applies, so the name is a label rather than the whole
+interface. The menus would have been cheaper to build and would have made
+colour a list of words.
+
+It is **stateless** — it never reports what the cursor is already wearing —
+which follows the rule the `Style` and `Callout` menus set, and for the reason
+recorded there: a control that looked like state but was only sometimes right
+would be worse than one that never claims to be. Nothing depends on knowing,
+because each family carries an explicit "none".
+
+It also **stays open after a pick**, unlike the document-link picker: colour,
+highlight and size are three choices about the same selection, and closing
+after the first would mean reopening for the other two. That works because
+applying leaves the label selected — see *Pandoc's syntax*.
+
+### Sizes are relative, because reading preferences already won that argument
+
+A scale — `.size-sm`, `.size-lg` — resolving to `em`, never a point size.
+
+An absolute size **fights the reader's stylesheet**. Someone sets 20px body
+text in *Formatting*'s reading preferences; a document says 14pt. There is no
+good answer to which wins, and the absolute value silently overrides a
+preference that person deliberately set, span by span. A relative scale
+composes with it instead: the document says "larger than the text around it",
+which stays true at any base size. Same principle as the colour tokens — the
+document states intent, the viewer resolves it.
+
+### Alignment is a fenced div, and the only composite block here
+
+Shipped 2026-08-13, completing the request. `::: center` … `:::`, in Pandoc's
+bare-word shorthand rather than `::: {.center}` — the brace form buys nothing
+when the only attribute worth carrying is the one word, and the shorthand is
+what anyone actually types.
+
+**It has to be a composite block**, and that is the whole difficulty. Every
+other parser extension in this file is a leaf, and a leaf cannot contain a
+heading or a list — so a leaf-based div would have meant "centre this, and
+break every construct inside it". A report's centred title block is exactly a
+heading plus a paragraph, so that was never going to do.
+
+**The trap is lazy paragraph continuation, and the footnote parser hit it
+first.** A paragraph swallows the lines after it *before any block parser is
+consulted*, so the closing `:::` was absorbed into the last paragraph, the div
+never closed, and every remaining block in the document was centred. The
+failure is silent and reads as `:::` being ignored. `endLeaf` on both fences is
+the fix — the same predicate, for the same reason, as a footnote definition
+needing to interrupt the paragraph that cites it.
+
+**The closing fence is not inside the node.** The parser closes the div at the
+end of its last content line and emits the fence as a *sibling*, because a
+composite's skipping function may not advance the parser. So a second block
+parser matches a lone `:::` and marks it — which also means a stray one
+anywhere reads as a div marker rather than as a paragraph, and that is the
+right reading of a line that otherwise means nothing. Unwrapping therefore
+finds the closing fence by looking at the line after the node, not in the tree.
+
+Three consequences worth recording:
+
+- **Changing alignment rewrites the opening fence alone.** The content never
+  moves, so nothing anchored into it — a comment, a collaborator's cursor — is
+  disturbed by a change of alignment. Nesting a second div would have been the
+  easier implementation and the wrong one.
+- **Whole lines, always.** A fence *is* a line, so aligning half a paragraph is
+  not something the syntax can say. The drawer says "whole paragraphs" out
+  loud, because a control quietly doing something wider than the selection
+  reads as a bug.
+- **Divs nest**, which Pandoc allows and which falls out of composite blocks
+  for nothing.
+
+**No `left` token.** A paragraph is already left-aligned, and removing the div
+says so more honestly than a word claiming to set it.
+
+`justify` was added the day after, and cost exactly what was predicted: a row
+in `palette.js` and a rule in `app.css`. Nothing in the grammar, the drawer or
+the allowlist had to be touched, because all three derive from that table —
+which is the property the one-table rule was bought for. Worth knowing about
+it: it acts across the *visual* lines a soft-wrapped logical line produces, so
+justifying a paragraph short enough not to wrap correctly looks like nothing
+happened.
+
+On paper the fences go by the line, exactly as code fences do — the alignment
+survives as the line class, and the `:::` that carried it is scaffolding the
+reader never needed.
+
+### The attribute is allowlisted, never templated
+
+`{.c-red}` becomes the class `md-c-red` **only if `c-red` is in the palette
+table**. The user's string is never spliced into a class name. Asserted
+directly: `viewbar` is not a token, and neither is `md-c-red` itself.
+
+Two reasons, and the second is the one that bites quietly. It is an injection
+surface into the app's own stylesheet — a document could otherwise name app UI
+classes and restyle the interface around itself. And an unknown token must
+degrade to plain text rather than to a dead class, which is both the safe
+failure and the consistent one: an unrecognised `:shortcode:` already stays
+literal for exactly this reason. `prefs.js` learned the adjacent lesson the
+hard way, reducing font-family names to safe characters after one stray
+character silently invalidated a whole declaration.
 
 ### Table of contents: a reading preference, not a document feature
 
@@ -2349,3 +2827,34 @@ see *Open questions*.
   - **What a board serializes to for the git exporter** — markdown with a
     heading per column is the obvious shape, with each card either inlined or
     linked to its own exported file.
+- ~~Rich documents: a second `kind`, or a flag?~~ Answered — a flag, since a
+  rich document differs in no view, no restore path and no serialization. See
+  *Rich documents*. Still open underneath it:
+  - **Un-flagging a rich document.** Free today, and only because no construct
+    exists to strand. Once one does, turning the flag off with coloured spans
+    still in the text either strips them (lossy, and it destroys work silently)
+    or is refused until they are gone (which needs a readout saying how many
+    remain, and where). Refusing is the safer default; the readout is the part
+    that needs designing.
+  - ~~Where the flag lives — a `documents` column, or in the Yjs doc.~~
+    Answered — a column, written over HTTP, by the precedent *Renaming* set.
+    See *The rich flag: a column, not a kind*. The counter-argument was real
+    and is now a known limit rather than a prediction: the flag reaches a
+    collaborator only when they reopen the document. Whether that wants the
+    `msgComments`-style nudge the comments already use is the part still open,
+    and it is not worth answering until a construct exists that anyone is
+    waiting to use.
+  - **Pasting across the boundary.** Copying a coloured span out of a rich
+    document and into a plain one carries `{.c-red}` as literal text, which the
+    plain document will not style and will not hide. Stripping attributes on
+    paste into a plain document is probably right, but it is the first place
+    the two types have to know about each other at all.
+- **Is the location hash a real route?** It is written on every navigation and
+  read only at startup, so the browser's back and forward buttons change the
+  URL without changing the view — the two then disagree until a reload. That
+  predates *Inter-document links*, but links are what make anyone press Back:
+  following one now creates the expectation that going back returns. A
+  `hashchange` listener is most of the fix; what needs deciding is how it
+  interacts with `afterAuth`, which also reads the hash and which redeems a
+  share token when it finds one. Re-running that on every back press is not
+  what anyone wants.

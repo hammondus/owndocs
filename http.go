@@ -24,7 +24,7 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen, dev bool) http.Handl
 
 	mux.HandleFunc("GET /api/docs", requireAuth(db, handleListDocs(db)))
 	mux.HandleFunc("POST /api/docs", requireAuth(db, handleCreateDoc(db)))
-	mux.HandleFunc("PATCH /api/docs/{id}", requireAuth(db, handleRenameDoc(db)))
+	mux.HandleFunc("PATCH /api/docs/{id}", requireAuth(db, handleUpdateDoc(db)))
 	mux.HandleFunc("DELETE /api/docs/{id}", requireAuth(db, handleDeleteDoc(db, h)))
 
 	mux.HandleFunc("GET /api/docs/{id}/shares", requireAuth(db, handleListShares(db)))

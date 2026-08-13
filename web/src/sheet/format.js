@@ -13,12 +13,17 @@
 //   cur currency symbol '$' (only meaningful with n:'cur')
 
 import { formatDate, parseDate, isDateFormat } from './dates.js'
+import {
+  Dec, DEC_ZERO, isDec, decToString, decToNumber, decIsZero,
+  decAbs, decCmp, decMul, decDiv, decRound, fromNumber,
+} from './exact.js'
 
 export const NUMBER_FORMATS = [
   { id: 'auto', label: 'Automatic' },
   { id: 'int', label: 'Number (1,235)' },
   { id: 'dec2', label: 'Number (1,234.57)' },
   { id: 'plain', label: 'Plain (1234.57)' },
+  { id: 'sci', label: 'Scientific (1.23×10³)' },
   { id: 'pct', label: 'Percent (12.34%)' },
   { id: 'cur', label: 'Currency ($1,234.57)' },
   { id: 'date', label: 'Date (05/08/2026)' },
@@ -49,21 +54,75 @@ function formatter(min, max) {
   return f
 }
 
+// Scientific notation is written the way print maths writes it (1.23×10³)
+// rather than the way a calculator display has to (1.23E+03). These are
+// ordinary characters, so the canvas draws them with no font work, and the
+// same mapping run backwards lets a displayed cell be typed back in.
+const SUPERS = '⁰¹²³⁴⁵⁶⁷⁸⁹'
+const toSuper = (exp) => String(exp).replace(/-/g, '⁻').replace(/\d/g, (d) => SUPERS[d])
+
+function formatScientific(n) {
+  // ∞ and NaN have no mantissa; let Intl name them as it does elsewhere.
+  if (!Number.isFinite(n)) return formatter(0, 2).format(n)
+  // toExponential does the part that is easy to get wrong by hand: it
+  // rounds the mantissa and carries the overflow into the exponent, so
+  // 9999 reads 1.00×10⁴ and not 10.00×10³. The mantissa still goes
+  // through Intl, for the viewer's decimal separator.
+  const [mantissa, exp] = n.toExponential(2).split('e')
+  return formatter(2, 2).format(Number(mantissa)) + '×10' + toSuper(Number(exp))
+}
+
+const HUNDRED = fromNumber(100)
+const TEN = fromNumber(10)
+
+// Scientific notation for an exact value, without going through a double
+// — which would defeat the point for anything past 2^53, and is simply
+// impossible past ~1e308.
+//
+// Shifting the scale so exactly one digit sits before the point gives the
+// mantissa for free: the digits never move, only the point does.
+function decScientific(n) {
+  if (decIsZero(n)) return formatter(2, 2).format(0) + '×10⁰'
+  const neg = decCmp(n, DEC_ZERO) < 0
+  const a = decAbs(n)
+  const len = a.d.toString().length
+  let exp = len - 1 - a.s
+  let mant = decRound(new Dec(a.d, len - 1), 2)
+  // Rounding 9.999 gives 10.00, which is not a mantissa — carry it.
+  if (decCmp(mant, TEN) >= 0) { mant = decDiv(mant, TEN); exp++ }
+  return (neg ? '-' : '') + formatter(2, 2).format(decToString(mant)) + '×10' + toSuper(exp)
+}
+
 // How a number should read given a format. Non-numbers are never touched:
 // a number format on a text cell is inert, not an error.
+//
+// `n` is a double or an exact decimal. Intl.NumberFormat accepts a decimal
+// STRING and rounds it losslessly, so most formats need nothing more than
+// handing it the digits instead of a coerced Number — the display side of
+// exactness is very nearly free.
 export function formatNumber(n, fmt) {
   const spec = fmt?.n
-  // A date is a number with a date format on it — see dates.js.
-  if (isDateFormat(spec)) return formatDate(n, spec)
+  // A date is a number with a date format on it — see dates.js. Serials
+  // are small and never exact, so this is one place demotion costs nothing.
+  if (isDateFormat(spec)) return formatDate(isDec(n) ? decToNumber(n) : n, spec)
+  const v = isDec(n) ? decToString(n) : n
   switch (spec) {
-    case 'int': return formatter(0, 0).format(n)
-    case 'dec2': return formatter(2, 2).format(n)
-    case 'plain': return String(n)
-    case 'pct': return formatter(0, 2).format(n * 100) + '%'
+    case 'int': return formatter(0, 0).format(v)
+    case 'dec2': return formatter(2, 2).format(v)
+    case 'plain': return String(v)
+    case 'sci': return isDec(n) ? decScientific(n) : formatScientific(n)
+    case 'pct': {
+      // ×100 is a shift of the decimal point, so an exact percentage
+      // stays exact rather than picking up binary noise on the way.
+      const scaled = isDec(n) ? decToString(decMul(n, HUNDRED)) : n * 100
+      return formatter(0, 2).format(scaled) + '%'
+    }
     case 'cur': {
       const sym = fmt.cur || '$'
+      const negative = isDec(n) ? decCmp(n, DEC_ZERO) < 0 : n < 0
+      const abs = isDec(n) ? decToString(decAbs(n)) : Math.abs(n)
       // The sign goes outside the symbol: -$5.00, not $-5.00.
-      return (n < 0 ? '-' : '') + sym + formatter(2, 2).format(Math.abs(n))
+      return (negative ? '-' : '') + sym + formatter(2, 2).format(abs)
     }
     default: return null // 'auto': the caller's own default applies
   }
@@ -111,6 +170,15 @@ export function mergeFormat(current, patch) {
 const TRAILING_PCT = /^(.*?)\s*%$/
 const CURRENCY_SYMBOLS = ['$', '£', '€', '¥', 'A$', 'NZ$', 'R$', '₹']
 
+// Two ways an exponent arrives: 1.5e10 as anyone types it, and 1.23×10³ as
+// this app displays it. The second matters because otherwise the format is
+// a one-way door — copy a scientific cell out as text, type it back, and it
+// would land as a label instead of the number it just was.
+const EXPONENT = /^(\d*\.?\d+)[eE]([+-]?\d+)$/
+const fromSuper = (s) =>
+  s.replace(/×10([⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+)$/, (_, sup) =>
+    'e' + [...sup].map((c) => (c === '⁻' ? '-' : SUPERS.indexOf(c))).join(''))
+
 export function parseTypedNumber(text) {
   let s = String(text).trim()
   if (s === '') return null
@@ -138,13 +206,21 @@ export function parseTypedNumber(text) {
     }
   }
 
-  if (!/^\d{1,3}(,\d{3})*(\.\d+)?$|^\d*\.?\d+$/.test(s)) return null
-  const grouped = s.includes(',')
-  const n = Number(s.replace(/,/g, ''))
+  let n
+  const exp = EXPONENT.exec(fromSuper(s))
+  if (exp) {
+    n = Number(exp[1] + 'e' + exp[2])
+    // An exponent the user typed is a format request like any other
+    // punctuation here — but a currency or percent sign already said more.
+    if (!fmt) fmt = { n: 'sci' }
+  } else {
+    if (!/^\d{1,3}(,\d{3})*(\.\d+)?$|^\d*\.?\d+$/.test(s)) return null
+    n = Number(s.replace(/,/g, ''))
+    // Grouping separators the user typed are themselves a format request.
+    if (!fmt && s.includes(',')) fmt = { n: s.includes('.') ? 'dec2' : 'int' }
+  }
+  // Rejects 1e999, which overflows to Infinity: that is text, not a number.
   if (!Number.isFinite(n)) return null
-
-  // Grouping separators the user typed are themselves a format request.
-  if (!fmt && grouped) fmt = { n: s.includes('.') ? 'dec2' : 'int' }
 
   let value = negative ? -n : n
   if (fmt?.n === 'pct') value = value / 100

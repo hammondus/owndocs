@@ -10,6 +10,7 @@
 // produces one update on the wire and one undo step. The API shape pushes
 // scripts that way: writes take a block of values, not a cell at a time.
 import { colName, parseColName } from './engine.js'
+import { isDec, decToNumber } from './exact.js'
 
 // "A1", "A1:B10", "Sheet2!A1:B2" — the notation users already know from
 // formulas, so a script and a formula name a range the same way.
@@ -72,10 +73,17 @@ export const METHODS = {
 
   // Computed values — numbers as numbers — because that is what a script
   // wants to calculate with. getText gives the displayed strings instead.
+  //
+  // An exact value demotes to a double on the way out. Scripts compute in
+  // JavaScript numbers, so handing one an exact value would give it an
+  // object it cannot do arithmetic with — and the sandbox boundary is
+  // structured clone, which would strip the prototype anyway. A script
+  // that needs every digit reads getText instead.
   get(wb, args) {
     const { m, rect } = target(wb, args)
     return readRect(m, rect, (r, c) => {
       const v = m.getValue(r, c)
+      if (isDec(v)) return decToNumber(v) // see below
       return v !== null && typeof v === 'object' && 'error' in v ? v.error : v
     })
   },

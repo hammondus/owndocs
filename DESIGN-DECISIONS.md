@@ -1280,6 +1280,31 @@ entry, paste and fill is a discrete act. Cell writes invalidate only the
 value cache, not the id index (a cell write can't move an id), so a large
 paste doesn't rebuild the index once per cell.
 
+The corollary is that **anything driven by a drag must preview locally and
+write once**, because with no merge window every intermediate state would
+otherwise be its own undo step. Chart moves and column resizes were built
+that way; the colour pickers were not, and a native `<input type="color">`
+fires `input` on every mouse move inside the picker — so choosing a colour
+left a hundred-deep undo stack, and broadcast every shade passed through to
+collaborators and into the update log. They now follow the same shape:
+`input` sets a preview the draw loop honours for the selection rect,
+`change` writes once. The alternative — raising `captureTimeout` for the
+duration of a pick — was rejected: it would fix the undo stack but not the
+traffic, since every intermediate colour would still be written and synced.
+
+**Both ends read the selection captured when the picker opened, never the
+live one.** The colour panel is a separate window, and the ordinary way to
+dismiss it is to click back in the page — which moves the selection, and
+`change` arrives only after that. The first version captured a rect for the
+preview but let the commit call `applyFormat`, so dismissing the panel by
+clicking a cell painted *that* cell and left the intended ones alone. The
+selection is now captured on the input's `focus`, the one event that
+reliably precedes the panel opening, and `applyFormatTo` takes it
+explicitly. A grid mousedown still drops the *preview* — the panel is not
+modal, so `change` may never arrive and the canvas should not show a colour
+the document lacks — but deliberately keeps the target, so a `change` that
+does arrive afterwards still lands on the right cells.
+
 ### Multiple sheets: adopt the old containers, don't migrate
 
 Tabs were done early and deliberately, because a container restructure is
@@ -1363,11 +1388,140 @@ Other decisions here:
   hand-rolled digit juggling. Currency stores a *symbol* rather than an
   ISO code, so there is no locale guessing to get wrong; a proper currency
   picker can come later.
+- **Scientific notation is typographic** — `1.23×10³`, not the calculator
+  form `1.23E+03` that Excel and Sheets show. Those two carry the same
+  information and the superscript one is what a document would print;
+  since the grid draws its own text, the superscript digits cost nothing
+  but the characters. The mantissa comes from `toExponential(2)`, which
+  rounds *and* carries the overflow into the exponent (9999 is `1.00×10⁴`,
+  never `10.00×10³`) — the one part of this that hand-rolled `log10`
+  arithmetic reliably gets wrong. It is then re-formatted through Intl for
+  the viewer's decimal separator. `parseTypedNumber` accepts both `1.5e10`
+  and the displayed `1.23×10³`, so the format is not a one-way door: a
+  cell copied out as text can be typed back in and still be a number.
 - **Formatting travels with content** through copy, paste and fill. The
   clipboard's HTML flavour also carries inline CSS, so bold and colours
   survive a paste into Excel or Google Sheets.
 - Deleting a row or column removes its formats, so a later id occupying
   that position cannot inherit a ghost.
+
+### Exact arithmetic is opt-in, per cell, and spreads through formulas
+
+A double is exact for integers only to 2^53-1 (`9007199254740991`, about
+9×10¹⁵) and for no decimal fraction that is not a sum of powers of two.
+Google Sheets and Excel have the same limit. It is the right default —
+almost no spreadsheet needs more, and the alternatives all cost something.
+So cells compute in doubles until told otherwise, and a cell (or row, or
+column) can be marked **exact**, which switches it to a decimal type.
+
+The reason to keep it opt-in is *not* speed, which was the obvious guess
+and the wrong one: BigInt operations are perhaps 10-50× a double op, which
+at these cell counts is invisible. It is that exactness has semantics you
+would not want imposed everywhere — division must choose a precision, and
+functions without an exact implementation have to demote.
+
+- **The type is a scaled BigInt**, `d × 10⁻ˢ` (`exact.js`), not a
+  dependency. BigInt is stdlib and carries the genuinely hard part; what
+  is left is scale bookkeeping. `+`, `-` and `×` are then exact at any
+  size. Division is the only operation with a policy: it computes to 34
+  significant digits (IEEE decimal128) and rounds half-up, except that a
+  quotient which terminates is returned whole however long it is — so
+  `1/4` is exactly `0.25`, and a 40-digit integer divided by 1 keeps all
+  40 digits. Hand-rolled decimal division is where this kind of code goes
+  wrong, so `exact_test.mjs` pins every rule, and it was fuzzed against
+  BigInt and double oracles (145k comparisons) before being wired in.
+- **Exactness spreads through formulas**, so `=A1+1` over an exact `A1` is
+  exact without `A1+1` being marked. This is the same doctrine that
+  already carries number formats through a formula: precision is a
+  property of the value, closer to a unit than to decoration. The
+  alternative — exact only where explicitly marked — means the same source
+  cell contributes one value to a marked formula and a different value to
+  an unmarked one, which is the more confusing lie.
+- **`toNum` is the demoting conversion.** It always returns a double, so
+  every function without an exact path (`SQRT`, `MOD`, dates, text) keeps
+  working untouched and falls back rather than breaking on a value type it
+  has never seen. Exactness is opted into per site by inspecting the raw
+  value first. `+ - * / ^`, comparisons, `SUM`, `AVERAGE`, `MIN`, `MAX`,
+  `COUNT`, `ROUND` and `ABS` have exact paths; everything else demotes.
+- **A separate Y.Map, not a key in `fmt`.** Keyed identically (cell, then
+  `r.<rowId>` / `c.<colId>`), so "make this column exact" is one entry —
+  but its own map, because precision changes the *value* and formatting
+  never does. Folding it into `fmt` would put "clear formatting" in a
+  position to silently change what a column adds up to.
+- **The commit path keeps bare literals verbatim** (see above). This is a
+  prerequisite, not a nicety: `String(value)` at commit had already
+  destroyed the digits before any exact flag could read them, so marking a
+  cell exact afterwards could never have recovered them.
+- **Display needed almost nothing.** `Intl.NumberFormat` accepts a decimal
+  *string* and groups and rounds it losslessly, so the formats mostly just
+  stop coercing to `Number`. Scientific notation is computed from the
+  digits directly, since a value past ~1e308 has no double to go through.
+- **One visible divergence, and it is the point.** `ROUND(2326.95, 1)` is
+  `2327` in an exact cell and `2326.9` in a plain one — the double stored
+  for `2326.95` is `2326.9499…`, genuinely below the halfway point.
+  Around 4% of two-decimal values sit on the wrong side of a half like
+  this.
+- Values leaving the sheet demote to doubles: charts (a pixel cannot
+  express 34 digits, and treating exact cells as non-numeric would punch
+  holes in a series) and the script API (scripts compute in JS numbers,
+  and the sandbox boundary is structured clone). `getText` remains the way
+  a script reads every digit.
+- **Exact values are displayed at the same width as doubles.** `fmtNum`
+  cuts an exact fraction to 13 significant digits, the same trim the double
+  path uses, so switching a cell to exact never changes how an ordinary
+  number *looks*. An exact integer prints whole however long, because its
+  length is usually the reason the cell is exact at all — scale 0 is exactly
+  the integer test, on a `Dec`. Without this an exact `=1/3` rendered all 34
+  digits into the grid.
+
+### A cell that lost digits says so
+
+Opt-in exactness has one bad failure mode: you learn a cell needed it by
+noticing a wrong digit, so *not* noticing is the default. A precision that
+only protects the people who already suspected the problem is not protecting
+anyone. `model.lossyLiteral(r, c)` closes that, and closes it with an answer
+rather than a heuristic — the commit path stores a bare literal exactly as
+typed, so the digits are still there to compare against what a double made
+of them:
+
+```js
+const exact = parseDec(typed)              // what was written
+const asDouble = fromNumber(Number(typed)) // what the cell will show
+if (decCmp(exact, asDouble) !== 0) …       // it lost something
+```
+
+The grid paints a blue triangle in the **bottom-left** of such a cell —
+bottom-left so it can share a cell with a comment's amber top-right marker,
+blue because it is an offer (make this exact) rather than an annotation. The
+selection readout names both numbers and toggles exactness in one click, and
+the marker clears the moment it does, which is what makes the markers a
+to-do list instead of permanent decoration.
+
+- **Literals only, deliberately.** This catches lossy *storage*, not lossy
+  *arithmetic*: `0.1` stores perfectly and it is `0.1 + 0.2` that drifts.
+  Catching the second means evaluating the whole dependency graph a second
+  time with every input promoted — and *recursively*, since promoting a
+  neighbour's already-computed double would hide the very error being looked
+  for. That is a real second engine pass, so it belongs behind a viewport
+  scan or an explicit "check this sheet", not in the paint loop. Deferred.
+  The case that costs one comparison is also the case that bites in
+  practice: account numbers and long identifiers are wrong on arrival.
+- **The comparison threshold, when tier two is built, is the displayed
+  string**, not the value. Comparing values flags every non-terminating
+  division, because exact `1/3` has 34 digits and the double has 13.
+  Comparing what the cell *shows* also behaves correctly per format for
+  free: `0.1+0.2` stays quiet under `auto` (both read `0.3`) and fires
+  under `plain`, where the noise is actually visible.
+- **Detection does not auto-enable exactness.** It would change results
+  under the user — `ROUND(2326.95, 1)` above is a deliberate divergence, not
+  a bug fix — and because exactness spreads, one auto-promoted cell quietly
+  makes a whole downstream column exact. The marker keeps the opt-in
+  property intact while removing the only real failure mode it had. A
+  document-level policy ("literals that do not round-trip are created
+  exact") is the right shape if this is ever wanted for ledgers.
+- Memoized beside `valueCache` and invalidated with it, because the paint
+  loop asks per visible cell per frame; the comparison itself runs once per
+  edit.
 
 ### Dates are numbers, not a new type
 

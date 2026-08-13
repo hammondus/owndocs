@@ -19,6 +19,7 @@
 import * as Y from 'yjs'
 import { parseFormula, mapRefs, collectRefs, serialize, evaluate, isErr, ERR, fmtNum } from './engine.js'
 import { formatNumber, resolveFormat, mergeFormat, parseTypedNumber } from './format.js'
+import { isDec, parseDec, fromNumber, decToNumber, decToString, decAdd, decCmp, decDiv } from './exact.js'
 import { formatDate, isDateFormat } from './dates.js'
 
 // Functions whose result is a date or time, and the format it should wear.
@@ -37,6 +38,13 @@ const AGGREGATES = new Set(['SUM', 'AVERAGE', 'MIN', 'MAX', 'ROUND', 'ABS'])
 // runs on every formula commit and the answer is usually decided by the
 // first cell or two.
 const RANGE_FORMAT_SCAN_LIMIT = 400
+
+// Text that is already a plain number and so needs no normalising on the
+// way into storage. Deliberately narrower than what parseTypedNumber
+// accepts: anything with a currency symbol, a percent sign or thousands
+// separators has to be rewritten, because the stored cell holds the number
+// and the punctuation becomes format.
+const BARE_NUMBER = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
 
 // Only the number format (and its currency symbol) travels through a
 // formula; bold, colour and alignment stay with the cells they were
@@ -88,6 +96,10 @@ export class Workbook {
     // Caches live on the workbook, not the sheet: a formula may reach
     // across sheets, so one edit anywhere can change a value anywhere.
     this.valueCache = new Map() // "sheetId/rid.cid" -> computed value
+    // Keyed like valueCache and invalidated with it. Separate map rather
+    // than a field on the value because it is asked for by the paint loop
+    // on every frame and answered for far fewer cells than are evaluated.
+    this.lossyCache = new Map() // "sheetId/rid.cid" -> {typed, shown} | null
     this.astCache = new Map()   // formula text -> AST (content-addressed)
     this.evaluating = new Set() // cells mid-evaluation, for cycle detection
 
@@ -106,6 +118,7 @@ export class Workbook {
 
     const changed = () => {
       this.valueCache.clear()
+      this.lossyCache.clear()
       this.notify()
     }
     this.sheetIds.observe(changed)
@@ -282,12 +295,18 @@ export class Workbook {
         copyMap(src.cells, dst.cells)
         copyMap(src.dims, dst.dims)
         copyMap(src.fmt, dst.fmt)
+        // Exactness travels with the cells it applies to. Left out, a
+        // restore would silently return every marked cell to doubles and
+        // change what the document computes — the one failure this whole
+        // feature exists to prevent.
+        copyMap(src.exact, dst.exact)
         copyMap(src.objects, dst.objects)
         dst._invalidate()
       }
       copyArray(snapshot.sheetIds, this.sheetIds)
       copyMap(snapshot.sheetNames, this.sheetNames)
       this.valueCache.clear()
+      this.lossyCache.clear()
     })
   }
 
@@ -322,13 +341,20 @@ export class SheetModel {
     // different keys and both survive. Folding format into the cell value
     // would make last-writer-wins throw one of them away.
     this.fmt = this.ydoc.getMap(p + 'fmt')
+    // Which cells compute exactly. Keyed exactly like fmt (cell, then
+    // 'r.<rowId>' / 'c.<colId>' defaults), so "make this column exact" is
+    // one entry — but a map of its own rather than a key inside fmt,
+    // because precision changes the VALUE and formatting never does.
+    // Folding it in would put "clear formatting" in a position to silently
+    // change what a column adds up to.
+    this.exact = this.ydoc.getMap(p + 'exact')
     // Charts (and whatever floats over the grid later) keyed by object id.
     // A Map rather than an Array because concurrent inserts of different
     // ids never conflict, and nothing here needs an order.
     this.objects = this.ydoc.getMap(p + 'objects')
     this.indexesStale = true
 
-    workbook.undo.addToScope([this.rows, this.cols, this.cells, this.dims, this.fmt, this.objects])
+    workbook.undo.addToScope([this.rows, this.cols, this.cells, this.dims, this.fmt, this.exact, this.objects])
 
     const structural = () => { this._invalidate(); workbook.notify() }
     const contents = () => { this._invalidateValues(); workbook.notify() }
@@ -342,12 +368,17 @@ export class SheetModel {
     // Formatting changes appearance, never a computed value, so there is
     // nothing to recompute — just repaint.
     this.fmt.observe(() => workbook.notify())
+    // Unlike fmt, this one DOES change values: a cell that starts
+    // computing exactly has a different result to recompute, and so does
+    // everything downstream of it.
+    this.exact.observe(contents)
     this.objects.observe(() => workbook.notify())
   }
 
   get undo() { return this.wb.undo }
   get astCache() { return this.wb.astCache }
   get valueCache() { return this.wb.valueCache }
+  get lossyCache() { return this.wb.lossyCache }
   get evaluating() { return this.wb.evaluating }
 
   // Cache keys are workbook-wide, so a cross-sheet reference and its target
@@ -364,9 +395,11 @@ export class SheetModel {
   // fill) would otherwise rebuild the whole id index once per cell.
   _invalidateValues() {
     this.valueCache.clear()
+    this.lossyCache.clear()
   }
   _invalidate() {
     this.valueCache.clear()
+    this.lossyCache.clear()
     this.indexesStale = true
   }
 
@@ -455,6 +488,121 @@ export class SheetModel {
       rid ? this.fmt.get('r.' + rid) : null,
       this.fmt.get(rid + '.' + cid),
     )
+  }
+
+  // ---- exact arithmetic ---------------------------------------------------
+
+  // Cell over row over column, the same precedence formats use, so one
+  // cell can opt out of an otherwise exact column.
+  isExact(r, c) {
+    this._index()
+    const rid = this.rowIds[r], cid = this.colIds[c]
+    if (rid && cid) return this._isExactById(rid, cid)
+    // Past the materialised grid there is no cell record to consult, but a
+    // column default still describes what a cell created there will do —
+    // and the toolbar asks about the selection before anything is typed.
+    return cid ? !!this.exact.get('c.' + cid) : false
+  }
+
+  // An explicit false on the cell has to beat an inherited true, so this
+  // tests for presence rather than truthiness at each level.
+  _isExactById(rid, cid) {
+    const own = this.exact.get(rid + '.' + cid)
+    if (own !== undefined) return !!own
+    const row = this.exact.get('r.' + rid)
+    if (row !== undefined) return !!row
+    return !!this.exact.get('c.' + cid)
+  }
+
+  // `on` is true, false, or null to clear the entry entirely and fall back
+  // to whatever the row or column says. Stored as 1/0 rather than
+  // true/false to keep the wire payload small — every marked cell crosses
+  // it, and this map is written far less often than it is read.
+  _setExactKey(key, on) {
+    if (on === null || on === undefined) this.exact.delete(key)
+    else this.exact.set(key, on ? 1 : 0)
+  }
+
+  setExact(rect, on) {
+    this.tx(() => {
+      this.ensureSize(rect.r2, rect.c2)
+      this._index()
+      for (let r = rect.r1; r <= rect.r2; r++) {
+        for (let c = rect.c1; c <= rect.c2; c++) {
+          const rid = this.rowIds[r], cid = this.colIds[c]
+          if (rid && cid) this._setExactKey(rid + '.' + cid, on)
+        }
+      }
+    })
+  }
+
+  setColExact(c1, c2, on) {
+    this.tx(() => {
+      this.ensureSize(0, c2)
+      this._index()
+      for (let c = c1; c <= c2; c++) {
+        if (this.colIds[c]) this._setExactKey('c.' + this.colIds[c], on)
+      }
+    })
+  }
+
+  setRowExact(r1, r2, on) {
+    this.tx(() => {
+      this.ensureSize(r2, 0)
+      this._index()
+      for (let r = r1; r <= r2; r++) {
+        if (this.rowIds[r]) this._setExactKey('r.' + this.rowIds[r], on)
+      }
+    })
+  }
+
+  // ---- precision warnings -------------------------------------------------
+
+  // Opt-in exactness leaves one bad failure mode: you find out a cell needed
+  // it by noticing a wrong digit, which means not noticing is the default.
+  // This closes that, and closes it with an answer rather than a rule of
+  // thumb — commit stores a bare literal exactly as typed, so the digits are
+  // still here to compare against what a double made of them.
+  //
+  // Returns null, or {typed, shown}. The pair rather than a boolean because
+  // every caller that says anything useful wants to say both.
+  //
+  // Literals only, deliberately. A formula can drift too, but proving it
+  // takes a second evaluation of the whole dependency graph — see
+  // DESIGN-DECISIONS. This is the case that costs one comparison, and in
+  // practice it is the case that bites: long identifiers and account
+  // numbers, which arrive as typed values and are wrong on arrival.
+  lossyLiteral(r, c) {
+    this._index()
+    const rid = this.rowIds[r], cid = this.colIds[c]
+    if (!rid || !cid) return null
+    const key = this._key(rid, cid)
+    if (this.lossyCache.has(key)) return this.lossyCache.get(key)
+    const v = this._lossyById(rid, cid)
+    this.lossyCache.set(key, v)
+    return v
+  }
+
+  _lossyById(rid, cid) {
+    // An exact cell has nothing to warn about: it is already keeping the
+    // digits. That is what makes the marker a to-do list — it clears the
+    // moment the offer is taken up.
+    if (this._isExactById(rid, cid)) return null
+    const stored = this.cells.get(rid + '.' + cid)
+    const raw = typeof stored === 'string' ? stored : stored?.v
+    // Formulas are out of scope, and a leading apostrophe means the cell is
+    // text however numeric it looks.
+    if (raw === undefined || raw.startsWith('=') || raw.startsWith("'")) return null
+    const typed = raw.trim()
+    const exact = parseDec(typed)
+    // parseDec rejects what is not a plain decimal literal, which covers
+    // both text cells and the numbers commit rewrote (a currency or percent
+    // entry, where the stored form is already the double's own digits and
+    // the comparison would be vacuous).
+    if (!exact) return null
+    const asDouble = fromNumber(Number(typed))
+    if (!asDouble || decCmp(exact, asDouble) === 0) return null
+    return { typed, shown: decToString(asDouble) }
   }
 
   _patchKey(key, patch) {
@@ -677,7 +825,19 @@ export class SheetModel {
       if (!text.startsWith('=')) {
         const typed = parseTypedNumber(text)
         if (typed) {
-          stored = String(typed.value)
+          // Only text that carried punctuation is re-serialised from the
+          // parsed number — there the stored form has to *be* the number,
+          // since the punctuation has moved into the format. A bare
+          // literal is stored exactly as typed.
+          //
+          // Storing String(value) unconditionally rewrote input it had no
+          // reason to touch: 1234.50 came back as 1234.5, and any integer
+          // past 2^53 was replaced by the nearest double, so the document
+          // itself held digits the user never typed. Keeping the literal
+          // costs nothing today (the value is Number(raw) either way) and
+          // is what makes exact arithmetic possible to switch on later:
+          // the digits are still there to reinterpret.
+          stored = BARE_NUMBER.test(text.trim()) ? text.trim() : String(typed.value)
           if (typed.fmt) {
             this.ensureSize(r, c)
             this._index()
@@ -1069,7 +1229,7 @@ export class SheetModel {
         this.evaluating.delete(key)
       }
     } else {
-      value = literalValue(raw)
+      value = literalValue(raw, this._isExactById(rid, cid))
     }
     this.valueCache.set(key, value)
     return value
@@ -1125,7 +1285,7 @@ export class SheetModel {
     })
     if (v === null) return out('', 'left')
     if (isErr(v)) return out(v.error, 'center')
-    if (typeof v === 'number') return out(formatNumber(v, f) ?? fmtNum(v), 'right')
+    if (typeof v === 'number' || isDec(v)) return out(formatNumber(v, f) ?? fmtNum(v), 'right')
     if (typeof v === 'boolean') return out(v ? 'TRUE' : 'FALSE', 'center')
     return out(v, 'left')
   }
@@ -1151,18 +1311,21 @@ export class SheetModel {
     const r1 = Math.max(rect.r1, 0), c1 = Math.max(rect.c1, 0)
     const r2 = Math.min(rect.r2, this.rowCount() - 1)
     const c2 = Math.min(rect.c2, this.colCount() - 1)
-    let count = 0, errors = 0, numeric = 0, sum = 0, min = Infinity, max = -Infinity
+    // min/max start as null rather than ±Infinity because the winner is
+    // now returned as it was stored — an exact value must survive being
+    // the smallest, and comparing a Dec against Infinity has no meaning.
+    let count = 0, errors = 0, numeric = 0, sum = 0, min = null, max = null
     for (let r = r1; r <= r2; r++) {
       for (let c = c1; c <= c2; c++) {
         const v = this.getValue(r, c)
         if (v === null) continue
         count++
         if (isErr(v)) { errors++; continue }
-        if (typeof v !== 'number') continue
+        if (typeof v !== 'number' && !isDec(v)) continue
         numeric++
-        sum += v
-        if (v < min) min = v
-        if (v > max) max = v
+        sum = addValues(sum, v)
+        if (min === null || cmpValues(v, min) < 0) min = v
+        if (max === null || cmpValues(v, max) > 0) max = v
       }
     }
     return {
@@ -1172,7 +1335,7 @@ export class SheetModel {
       // (=SUM over a text-only range is 0; a readout showing "Sum 0" for a
       // column of names would be worse than showing nothing.)
       sum: numeric ? sum : null,
-      avg: numeric ? sum / numeric : null,
+      avg: numeric ? (isDec(sum) ? decDiv(sum, fromNumber(numeric)) : sum / numeric) : null,
       min: numeric ? min : null,
       max: numeric ? max : null,
     }
@@ -1295,11 +1458,47 @@ function numericLiteral(input) {
 
 // A literal cell: numbers and TRUE/FALSE become typed values; a leading
 // apostrophe forces text ('123 shows as 123 but stays a string).
-function literalValue(raw) {
+// The selection readout has to agree with =SUM over the same range — if it
+// didn't, one of the two would be a bug report waiting to happen — so it
+// follows the engine's promotion rule: one exact value makes the running
+// total exact. Folded as it goes rather than collected first, because a
+// selection can cover a great many cells.
+const asDec = (v) => (isDec(v) ? v : fromNumber(v))
+const asDouble = (v) => (isDec(v) ? decToNumber(v) : v)
+
+function addValues(a, b) {
+  if (isDec(a) || isDec(b)) {
+    const x = asDec(a), y = asDec(b)
+    if (x && y) return decAdd(x, y)
+  }
+  return asDouble(a) + asDouble(b)
+}
+
+function cmpValues(a, b) {
+  if (isDec(a) || isDec(b)) {
+    const x = asDec(a), y = asDec(b)
+    if (x && y) return decCmp(x, y)
+  }
+  const p = asDouble(a), q = asDouble(b)
+  return p < q ? -1 : p > q ? 1 : 0
+}
+
+function literalValue(raw, exact) {
   if (raw.startsWith("'")) return raw.slice(1)
   const t = raw.trim()
   if (t === 'TRUE') return true
   if (t === 'FALSE') return false
-  if (t !== '' && !Number.isNaN(Number(t))) return Number(t)
+  if (t !== '' && !Number.isNaN(Number(t))) {
+    // In an exact cell the stored text IS the value: parsed straight to a
+    // decimal, never through a double. This is the whole point of keeping
+    // the typed literal at commit — the digits are still here to read.
+    // parseDec is stricter than Number (no 0x10, no Infinity), so an
+    // oddity it rejects still falls through to the ordinary path.
+    if (exact) {
+      const d = parseDec(t)
+      if (d) return d
+    }
+    return Number(t)
+  }
   return raw
 }

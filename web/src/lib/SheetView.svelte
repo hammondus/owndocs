@@ -13,6 +13,7 @@
   import { Provider } from '../provider.js'
   import { Workbook, FIRST_SHEET } from '../sheet/model.js'
   import { colName, fmtNum } from '../sheet/engine.js'
+  import { isDec, decSigRound } from '../sheet/exact.js'
   import { toTSV, toCSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
   import { NUMBER_FORMATS, formatNumber } from '../sheet/format.js'
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
@@ -331,13 +332,21 @@
     const screenX = (c) => HEADER_W + colX[c] - sx
     const screenY = (r) => HEADER_H + rowY[r] - sy
 
+    // An open colour picker overrides the stored colour for the cells it
+    // would apply to. Hoisted out of both loops so the ordinary paint pays
+    // one null check rather than a test per cell.
+    const bgPreview = colourPreview?.key === 'bg' ? colourPreview : null
+    const fgPreview = colourPreview?.key === 'c' ? colourPreview : null
+
     // Cell backgrounds first, so the selection tint and gridlines sit on
     // top of them rather than being painted over.
     for (let r = r0; r <= r1 && r < R; r++) {
       for (let c = c0; c <= c1 && c < C; c++) {
-        const f = model.formatOf(r, c)
-        if (!f || !f.bg) continue
-        ctx.fillStyle = f.bg
+        const bg = bgPreview && inRect(bgPreview.rect, r, c)
+          ? bgPreview.value
+          : model.formatOf(r, c)?.bg
+        if (!bg) continue
+        ctx.fillStyle = bg
         ctx.fillRect(screenX(c), screenY(r), colX[c + 1] - colX[c], rowY[r + 1] - rowY[r])
       }
     }
@@ -365,9 +374,12 @@
         // re-parses the shorthand, and this loop runs per visible cell.
         const want = fontFor(fmt)
         if (want !== font) { ctx.font = want; font = want }
+        // An error cell keeps its red through a preview: the picker is
+        // offering a colour for text, and #REF! is not text.
+        const fg = fgPreview && inRect(fgPreview.rect, r, c) ? fgPreview.value : null
         ctx.fillStyle = text.startsWith('#') && align === 'center'
           ? '#c62828'
-          : (fmt && fmt.c) || '#202124'
+          : fg || (fmt && fmt.c) || '#202124'
         ctx.textAlign = align
         const tx = align === 'right' ? x + cw - 5 : align === 'center' ? x + cw / 2 : x + 5
         ctx.fillText(text, tx, y)
@@ -391,6 +403,29 @@
       ctx.lineTo(w, y)
     }
     ctx.stroke()
+
+    // Precision markers: this cell is showing digits nobody typed, because
+    // the number it holds does not fit a double. Bottom-LEFT so it can share
+    // a cell with a comment's top-right marker, and blue rather than amber
+    // because it is an offer (make this exact) and not an annotation.
+    //
+    // Walks the window and asks the model per cell; the answer is memoized
+    // beside the value cache, so a repaint costs a map lookup per cell and
+    // the comparison itself is done once per edit.
+    ctx.fillStyle = '#1565c0'
+    for (let r = r0; r <= r1 && r < R; r++) {
+      for (let c = c0; c <= c1 && c < C; c++) {
+        if (!model.lossyLiteral(r, c)) continue
+        const x = screenX(c)
+        const y = screenY(r) + (rowY[r + 1] - rowY[r])
+        ctx.beginPath()
+        ctx.moveTo(x, y - 7)
+        ctx.lineTo(x, y)
+        ctx.lineTo(x + 7, y)
+        ctx.closePath()
+        ctx.fill()
+      }
+    }
 
     // Comment markers: a small corner triangle, as in Sheets. Drawn after the
     // gridlines so it sits on top of them, and only for visible cells — this
@@ -691,13 +726,63 @@
   // column/row — one stored default that also covers cells nobody has
   // created yet. Anything else formats the selected cells.
   function applyFormat(patch) {
+    applyFormatTo({ kind: sel.kind, rect: selRect() }, patch)
+  }
+
+  // Split out so a format can be applied to a selection captured earlier
+  // rather than to the live one. Only the colour pickers need that, and they
+  // need it badly — see below.
+  function applyFormatTo(target, patch) {
     if (readOnly) return
-    const s = selRect()
-    if (sel.kind === 'col') model.setColFormat(s.c1, s.c2, patch)
-    else if (sel.kind === 'row') model.setRowFormat(s.r1, s.r2, patch)
+    const s = target.rect
+    if (target.kind === 'col') model.setColFormat(s.c1, s.c2, patch)
+    else if (target.kind === 'row') model.setRowFormat(s.r1, s.r2, patch)
     else model.setFormat(s, patch)
     scheduleDraw()
   }
+
+  // A native colour input fires `input` on every mouse move inside the
+  // picker, and each one used to be a document write. With captureTimeout 0
+  // (deliberate — see model.js) Yjs merges none of them, so choosing a
+  // colour built a hundred-deep undo stack and every intermediate shade was
+  // broadcast to collaborators and written into the update log.
+  //
+  // So a colour behaves like the other two drags in this file: `input`
+  // paints a preview the draw loop honours, and only `change` — the picker
+  // being dismissed or a swatch clicked — writes, as one undo step.
+  //
+  // Both ends must work from the selection as it was when the picker OPENED,
+  // not the live one. The macOS colour panel is a separate window, and the
+  // ordinary way to dismiss it is to click back in the page — which moves
+  // the selection, and `change` only arrives after that. Reading the live
+  // selection at commit therefore painted whichever cell had been clicked to
+  // close the panel and left the intended cells untouched. Captured on
+  // focus, which is the one event that reliably precedes the panel opening;
+  // `input` re-captures only if focus was somehow missed, so the fallback
+  // is the old behaviour rather than a crash.
+  let colourTarget = null // {key, kind, rect} for the pick in progress
+  let colourPreview = $state(null) // {key, value, rect} while it should paint
+
+  function startColourPick(key) {
+    if (readOnly) return
+    colourTarget = { key, kind: sel.kind, rect: selRect() }
+  }
+
+  function previewColour(key, value) {
+    if (readOnly) return
+    if (!colourTarget || colourTarget.key !== key) startColourPick(key)
+    colourPreview = { key, value, rect: colourTarget.rect }
+    scheduleDraw()
+  }
+
+  function commitColour(key, value) {
+    if (readOnly) return
+    if (!colourTarget || colourTarget.key !== key) startColourPick(key)
+    colourPreview = null
+    applyFormatTo(colourTarget, { [key]: value })
+  }
+
+  const inRect = (s, r, c) => r >= s.r1 && r <= s.r2 && c >= s.c1 && c <= s.c2
 
   // The active cell's look drives the toolbar's pressed states.
   let activeFormat = $derived.by(() => {
@@ -707,6 +792,34 @@
 
   function toggle(key) {
     applyFormat({ [key]: activeFormat[key] ? null : 1 })
+  }
+
+  // Exactness is not formatting — it changes what a cell computes, not how
+  // it looks — so it goes through its own model calls rather than
+  // applyFormat. Same selection rules, though: a column header selection
+  // marks the column, which is how a whole column of long identifiers gets
+  // marked in one action.
+  let activeExact = $derived.by(() => {
+    revision
+    return !!(model && model.isExact(sel.r, sel.c))
+  })
+
+  // The corner marker says a cell is wrong; this says how, and offers the
+  // fix in the same click. It sits where the selection totals go, which are
+  // null for a single cell, so in the common case the two never compete.
+  let lossyHere = $derived.by(() => {
+    revision
+    return model ? model.lossyLiteral(sel.r, sel.c) : null
+  })
+
+  function toggleExact() {
+    if (readOnly) return
+    const s = selRect()
+    const on = activeExact ? null : true
+    if (sel.kind === 'col') model.setColExact(s.c1, s.c2, on)
+    else if (sel.kind === 'row') model.setRowExact(s.r1, s.r2, on)
+    else model.setExact(s, on)
+    scheduleDraw()
   }
 
   function setAlign(a) {
@@ -872,6 +985,13 @@
   // the script box to the top. The user clicked what they could already
   // see, so there is nothing to scroll to.
   function onMouseDown(e) {
+    // The macOS colour panel is not modal, so the grid can be clicked while
+    // it is open and `change` may never arrive. Dropping the preview here
+    // keeps the canvas honest about what the document holds. Only the
+    // painting stops: colourTarget survives, so a `change` that does arrive
+    // afterwards still lands on the cells the pick was started against, and
+    // a further drag in the panel re-establishes the preview on them too.
+    if (colourPreview) { colourPreview = null; scheduleDraw() }
     containerEl.focus({ preventScroll: true })
     const { x, y } = gridPos(e)
     const sx = containerEl.scrollLeft, sy = containerEl.scrollTop
@@ -1146,7 +1266,14 @@
   // (which are printed exactly, as the grid prints them). An average is a
   // derived quantity read at a glance; 1/3 of a column is not improved by
   // thirteen digits of it.
-  const fmtAvg = (n) => (Number.isInteger(n) ? String(n) : String(parseFloat(n.toPrecision(6))))
+  //
+  // An average over an exact selection is itself exact, and a Dec has no
+  // toPrecision — it gets the same treatment through the arithmetic that
+  // does understand it.
+  const fmtAvg = (n) =>
+    isDec(n) ? fmtNum(decSigRound(n, 6))
+      : Number.isInteger(n) ? String(n)
+        : String(parseFloat(n.toPrecision(6)))
 
   let selStats = $derived.by(() => {
     revision // recompute when a collaborator (or a script) changes a value
@@ -1257,18 +1384,24 @@
         <option value={nf.id}>{nf.label}</option>
       {/each}
     </select>
+    <button class:on={activeExact} onclick={toggleExact}
+      title="Exact arithmetic — compute these cells as decimals rather than doubles, so digits past 9,007,199,254,740,991 and sums like 0.1+0.2 come out right. Slower, and it spreads to any formula that reads them.">±0</button>
     <span class="sep"></span>
     <!-- Native colour inputs: no custom picker to build or maintain. The
          × next to each clears the colour, which a colour input cannot
          express on its own. -->
     <label title="Text colour">
       A<input type="color" value={activeFormat.c || '#202124'}
-        oninput={(e) => applyFormat({ c: e.target.value })} />
+        onfocus={() => startColourPick('c')}
+        oninput={(e) => previewColour('c', e.target.value)}
+        onchange={(e) => commitColour('c', e.target.value)} />
     </label>
     <button onclick={() => applyFormat({ c: null })} title="Clear text colour">×</button>
     <label title="Background colour">
       ▉<input type="color" value={activeFormat.bg || '#ffffff'}
-        oninput={(e) => applyFormat({ bg: e.target.value })} />
+        onfocus={() => startColourPick('bg')}
+        oninput={(e) => previewColour('bg', e.target.value)}
+        onchange={(e) => commitColour('bg', e.target.value)} />
     </label>
     <button onclick={() => applyFormat({ bg: null })} title="Clear background">×</button>
     <span class="sep"></span>
@@ -1460,6 +1593,18 @@
     <button class="tab add" onclick={addSheet} title="Add sheet">+</button>
   {/if}
 
+  <!-- Shown to viewers as well as editors, as a plain statement rather than
+       a button: being unable to fix it is no reason to be told the number on
+       screen is not the number in the document. -->
+  {#if lossyHere}
+    <button
+      class="lossy"
+      onclick={toggleExact}
+      disabled={readOnly}
+      title={`Typed:  ${lossyHere.typed}\nShown:  ${lossyHere.shown}\n\nThis number carries more precision than a double can hold, so the cell shows the nearest one it can. Switching the cell to exact arithmetic keeps the digits.${readOnly ? '' : '\n\nClick to switch it on.'}`}
+    >⚠ shows {lossyHere.shown}{readOnly ? '' : ' — make exact'}</button>
+  {/if}
+
   <!-- Bottom right, where every spreadsheet puts it. It sits in the tab bar
        rather than in a bar of its own so it costs no vertical space, and it
        shows for viewers too: reading a total is not editing. -->
@@ -1591,6 +1736,37 @@
     /* Digits that don't jitter as the selection grows: without this the bar
        twitches sideways on every mousemove during a drag. */
     font-variant-numeric: tabular-nums;
+  }
+  /* Same corner and same weight as the totals — this is a readout, not an
+     alert, and a red banner would be out of proportion to "check this cell".
+     It carries the auto margin when it is present; the adjacent rule hands
+     that job back to the totals so the two stay flushed right together
+     rather than splitting the free space between them. */
+  .lossy {
+    margin-left: auto;
+    max-width: 22rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 4px 8px;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: 0.8rem;
+    color: #1565c0;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .lossy:disabled {
+    cursor: default;
+    color: #5f6368;
+  }
+  .lossy:not(:disabled):hover {
+    background: #e8f0fe;
+    border-radius: 4px;
+  }
+  .lossy + .sel-stats {
+    margin-left: 0;
   }
   .sel-stats b {
     font-weight: 600;

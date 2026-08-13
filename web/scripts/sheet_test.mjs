@@ -137,6 +137,24 @@ const val = (m, r, c) => {
 }
 
 {
+  // A bare literal is stored exactly as typed. Nothing here can be fixed
+  // later: whatever the commit path discards is gone from the document,
+  // which is why an oversized integer has to survive it intact even though
+  // today's double arithmetic still can't compute with it.
+  const m = newModel()
+  m.setCell(0, 0, '1234.50')
+  m.setCell(1, 0, '987654321098765432')
+  m.setCell(2, 0, '$1,234.50')
+  m.setCell(3, 0, '12%')
+  eq(m.getInput(0, 0), '1234.50', 'a trailing zero the user typed is kept')
+  eq(m.getInput(1, 0), '987654321098765432', 'digits past 2^53 survive storage')
+  eq(m.getInput(2, 0), '1234.5', 'punctuation still normalises: the format carries the $')
+  eq(m.getInput(3, 0), '0.12', 'percent still stores the fraction')
+  eq(val(m, 0, 0), 1234.5, 'the value is unchanged by keeping the literal')
+  eq(m.display(0, 0).text, '1234.5', 'display still follows the value, not the source text')
+}
+
+{
   const m = newModel()
   m.setCell(0, 0, '1')
   m.setCell(1, 0, '2')
@@ -638,6 +656,130 @@ for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A
   eq(wb.removeSheet(FIRST_SHEET), false, 'the last remaining sheet cannot be removed')
 }
 
+// ---- exact cells: the flag, and how far exactness travels ------------------
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '987654321098765432')
+  m.setCell(1, 0, '1')
+  m.setCell(2, 0, '=A1+A2')
+  eq(m.display(2, 0).text, '987654321098765400',
+    'as doubles, adding 1 does not even change the number: both round to ...400')
+
+  m.setExact({ r1: 0, c1: 0, r2: 1, c2: 0 }, true)
+  eq(m.isExact(0, 0), true, 'the cell is marked')
+  eq(m.display(0, 0).text, '987654321098765432', 'and now displays every digit that was typed')
+  eq(m.display(2, 0).text, '987654321098765433',
+    'the formula was never marked: exactness reached it through its inputs')
+
+  // Nothing was recomputed by hand — marking a cell invalidates the values
+  // downstream of it, which is why the total above changed on its own.
+  m.setExact({ r1: 0, c1: 0, r2: 1, c2: 0 }, null)
+  eq(m.display(2, 0).text, '987654321098765400', 'clearing the flag puts it back on doubles')
+}
+
+{
+  const m = newModel()
+  m.setColExact(0, 0, true)
+  m.setCell(0, 0, '0.1')
+  m.setCell(1, 0, '0.2')
+  m.setCell(2, 0, '=SUM(A1:A2)')
+  m.setCell(3, 0, '=A1+A2=0.3')
+  eq(m.display(2, 0).text, '0.3', 'a column marked exact covers cells created later')
+  eq(m.display(3, 0).text, 'TRUE', '0.1+0.2 really is 0.3, which doubles deny')
+  eq(m.isExact(5, 0), true, 'and rows that do not exist yet')
+  m.setExact({ r1: 1, c1: 0, r2: 1, c2: 0 }, false)
+  eq(m.isExact(1, 0), false, 'one cell can opt out of an exact column')
+  eq(m.isExact(0, 0), true, 'without disturbing its neighbours')
+}
+
+{
+  // Aggregates, and the readout that has to agree with them.
+  const m = newModel()
+  m.setColExact(0, 0, true)
+  m.setCell(0, 0, '999999999999999999')
+  m.setCell(1, 0, '1')
+  m.setCell(2, 0, '=SUM(A1:A2)')
+  m.setCell(3, 0, '=AVERAGE(A1:A2)')
+  m.setCell(4, 0, '=MIN(A1:A2)')
+  m.setCell(5, 0, '=COUNT(A1:A2)')
+  eq(m.display(2, 0).text, '1000000000000000000', 'SUM over an exact range stays exact')
+  eq(m.display(3, 0).text, '500000000000000000', 'AVERAGE divides exactly')
+  eq(m.display(4, 0).text, '1', 'MIN returns the value as stored')
+  eq(m.display(5, 0).text, '2', 'COUNT still sees exact cells as numbers')
+  const st = m.stats({ r1: 0, c1: 0, r2: 1, c2: 0 })
+  eq(fmtNum(st.sum), '1000000000000000000', 'the selection readout agrees with =SUM')
+  eq(fmtNum(st.min), '1', 'and on min')
+}
+
+{
+  // Formats apply to exact values without going through a double, and
+  // functions with no exact implementation demote instead of failing.
+  const m = newModel()
+  m.setColExact(0, 0, true)
+  m.setCell(0, 0, '12345678901234567890.5')
+  m.setCell(1, 0, '=SQRT(A1)')
+  m.setCell(2, 0, '=ROUND(2326.95,1)')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { n: 'dec2' })
+  eq(m.display(0, 0).text, '12,345,678,901,234,567,890.50', 'grouping and 2dp on a value no double holds')
+  m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { n: 'sci' })
+  eq(m.display(0, 0).text, '1.23×10¹⁹', 'scientific notation from the digits, not from a double')
+  eq(m.display(1, 0).text, '3513641828.82', 'SQRT has no exact answer, so it demotes to a double')
+  eq(m.display(2, 0).text, '2327', 'exact ROUND: 2326.95 is exactly half and rounds up')
+}
+
+{
+  // The display width rule: an exact integer prints whole however long,
+  // because its length is the reason it is exact; an exact fraction is cut
+  // to the same 13 digits the double path has always used, so switching a
+  // cell to exact never changes how an ordinary number looks.
+  const m = newModel()
+  m.setColExact(0, 0, true)
+  m.setCell(0, 0, '=1/3')
+  m.setCell(1, 0, '99999999999999999999999')
+  m.setCell(2, 0, '=1/8')
+  eq(m.display(0, 0).text, '0.3333333333333', 'an exact fraction is shown at readable width')
+  eq(m.display(1, 0).text, '99999999999999999999999', 'an exact integer is shown whole')
+  eq(m.display(2, 0).text, '0.125', 'and a short fraction is untouched')
+}
+
+// ---- the precision warning -------------------------------------------------
+
+{
+  // The point of the marker: these two cells look identical on screen, and
+  // without a warning the only way to learn the difference is to already
+  // suspect it.
+  const m = newModel()
+  m.setCell(0, 0, '9007199254740993')
+  m.setCell(1, 0, '9007199254740992')
+  eq(m.display(0, 0).text, '9007199254740992', 'the typed value is not the shown value')
+  eq(m.lossyLiteral(0, 0), { typed: '9007199254740993', shown: '9007199254740992' },
+    'so the cell is flagged, with both numbers for the readout to show')
+  eq(m.lossyLiteral(1, 0), null, 'the neighbour it collided with is fine')
+
+  // Taking up the offer clears the warning, which is what makes the markers
+  // a to-do list rather than permanent decoration.
+  m.setExact({ r1: 0, c1: 0, r2: 0, c2: 0 }, true)
+  eq(m.lossyLiteral(0, 0), null, 'marking the cell exact clears the flag')
+  eq(m.display(0, 0).text, '9007199254740993', 'and the cell now shows what was typed')
+}
+
+{
+  const m = newModel()
+  m.setCell(0, 0, '0.1')
+  m.setCell(1, 0, '=A1+0.2')
+  m.setCell(2, 0, 'hello')
+  m.setCell(3, 0, "'9007199254740993")
+  m.setCell(4, 0, '1234.5678901234567890123')
+  m.setCell(5, 0, '$1,234.50')
+  eq(m.lossyLiteral(0, 0), null, '0.1 stores exactly; it is the arithmetic on it that drifts, not the cell')
+  eq(m.lossyLiteral(1, 0), null, 'a formula is out of scope: proving drift needs a second evaluation')
+  eq(m.lossyLiteral(2, 0), null, 'text has no precision to lose')
+  eq(m.lossyLiteral(3, 0), null, 'a forced-text cell is text, however numeric it looks')
+  eq(m.lossyLiteral(4, 0).shown, '1234.567890123457', 'a long decimal literal is caught too')
+  eq(m.lossyLiteral(5, 0), null, 'a currency entry was rewritten at commit, so there is nothing to compare')
+}
+
 // ---- formatting ------------------------------------------------------------
 
 {
@@ -650,10 +792,18 @@ for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A
   eq(parseTypedNumber('$1,234.50'), { value: 1234.5, fmt: { n: 'cur', cur: '$' } }, 'currency stores the number')
   eq(parseTypedNumber('-$5'), { value: -5, fmt: { n: 'cur', cur: '$' } }, 'negative currency')
   eq(parseTypedNumber('€9.99'), { value: 9.99, fmt: { n: 'cur', cur: '€' } }, 'other currency symbols')
+  eq(parseTypedNumber('1.5e10'), { value: 1.5e10, fmt: { n: 'sci' } }, 'a typed exponent implies scientific')
+  eq(parseTypedNumber('-6.02E23'), { value: -6.02e23, fmt: { n: 'sci' } }, 'capital E and a negative mantissa')
+  eq(parseTypedNumber('4.2e-5'), { value: 4.2e-5, fmt: { n: 'sci' } }, 'a negative exponent')
+  eq(parseTypedNumber('1.23×10³'), { value: 1230, fmt: { n: 'sci' } }, 'the displayed form types back in as the same number')
+  eq(parseTypedNumber('4.20×10⁻⁵'), { value: 4.2e-5, fmt: { n: 'sci' } }, 'a superscript negative exponent')
+  eq(parseTypedNumber('$1.5e3'), { value: 1500, fmt: { n: 'cur', cur: '$' } }, 'a currency symbol outranks the exponent')
   eq(parseTypedNumber('hello'), null, 'text is not a number')
   eq(parseTypedNumber(''), null, 'empty is not a number')
   eq(parseTypedNumber('1,23'), null, 'malformed grouping is text, not a number')
   eq(parseTypedNumber('12%%'), null, 'nonsense is text')
+  eq(parseTypedNumber('1e'), null, 'a bare e is text')
+  eq(parseTypedNumber('1e999'), null, 'an exponent that overflows to Infinity is text')
 
   eq(formatNumber(1234.567, { n: 'int' }), '1,235', 'int format rounds and groups')
   eq(formatNumber(1234.567, { n: 'dec2' }), '1,234.57', 'dec2 rounds to 2dp')
@@ -662,6 +812,14 @@ for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A
   eq(formatNumber(1234.5, { n: 'cur', cur: '$' }), '$1,234.50', 'currency pads to 2dp')
   eq(formatNumber(-5, { n: 'cur', cur: '$' }), '-$5.00', 'the sign goes outside the currency symbol')
   eq(formatNumber(5, null), null, 'no format means the caller decides')
+
+  eq(formatNumber(1234.5, { n: 'sci' }), '1.23×10³', 'scientific uses superscript exponents')
+  eq(formatNumber(0.000042, { n: 'sci' }), '4.20×10⁻⁵', 'a negative exponent is superscript too')
+  eq(formatNumber(-6.02e23, { n: 'sci' }), '-6.02×10²³', 'the sign stays on the mantissa')
+  eq(formatNumber(0, { n: 'sci' }), '0.00×10⁰', 'zero has exponent zero, not a special case')
+  eq(formatNumber(7, { n: 'sci' }), '7.00×10⁰', 'a single digit still gets a mantissa and exponent')
+  // Rounding the mantissa must carry into the exponent, not produce 10.00×10³.
+  eq(formatNumber(9999, { n: 'sci' }), '1.00×10⁴', 'mantissa overflow carries into the exponent')
 
   eq(mergeFormat({ b: 1, i: 1 }, { b: null }), { i: 1 }, 'a null patch value removes the key')
   eq(mergeFormat({ b: 1 }, { b: null }), null, 'emptying a record yields null so it can be deleted')

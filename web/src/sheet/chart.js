@@ -5,6 +5,8 @@
 // formula reference — that was the whole point of the id-based grid, and it
 // means inserting a row inside a charted range simply extends the chart.
 
+import { isDec, decToNumber } from './exact.js'
+
 export const CHART_TYPES = [
   { id: 'column', label: 'Column' },
   { id: 'line', label: 'Line' },
@@ -87,7 +89,10 @@ export function extractChartData(model, rect, spec) {
     const values = []
     for (let r = r0; r <= rect.r2; r++) {
       const v = model.getValue(r, c)
-      values.push(typeof v === 'number' ? v : null)
+      // An exact value plots as a double: a chart pixel cannot express 34
+      // digits, and treating it as non-numeric would silently punch a hole
+      // in the series instead.
+      values.push(isDec(v) ? decToNumber(v) : typeof v === 'number' ? v : null)
     }
     series.push({
       name: headers ? (model.display(rect.r1, c).text || `Series ${series.length + 1}`)

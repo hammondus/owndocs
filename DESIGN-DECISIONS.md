@@ -3119,6 +3119,21 @@ a one-off operational task rather than standing code.
 The site has to say this out loud: *open a private window to be the second
 person*. It is not guessable, and the demo is pointless without it.
 
+**What fronts it only has to pass the wildcard through.** The supervisor routes
+on the `Host` header itself, so nothing upstream ever learns about an
+individual session — there is no per-session proxy configuration to write, and
+no reload when one starts or ends. That reduces the whole dependency to a
+single question asked once: can the proxy in front be given one wildcard host?
+
+Unverified as of 2026-08-14, and worth answering before anything is built,
+because it is the one assumption the subdomain design rests on. The wildcard
+certificate itself is settled — that part is routine. The open half is whether
+nginx proxy manager can express a wildcard *host*; it is a UI over nginx, so
+the fallbacks if it cannot are a custom configuration snippet, or exposing the
+demo container directly for that one name and leaving the proxy manager out of
+it. The demo has its own container either way, which makes the second fallback
+cheap rather than a compromise.
+
 ### The limits are smaller, and they say so
 
 A demo needs caps a real instance does not. The trap is somebody hitting one
@@ -3389,11 +3404,16 @@ multiple ownership, wanted and recorded — see `ROADMAP.md`, *Ownership*, and
 
 ## Open questions
 
-- **What the thing is called.** "Your Docs" and "Own Docs" are both hard to
-  search for, which matters for something people are meant to find, and the
-  first reads ambiguously — whose? A distinctive name with "your own docs" as
-  the tagline would serve better. The cost of deciding is small now and grows:
-  the repo is `docs` and the app bar renders the wordmark `DOCS`.
+- **What the thing is called.** Leaning **Own Docs** as of 2026-08-14, not
+  settled. Both candidates are hard to search for, which matters for something
+  people are meant to find, and "Your Docs" reads ambiguously — whose? A more
+  distinctive name with "your own docs" as the tagline would serve better, and
+  the counter-argument is that "Own Docs" says the one thing that actually
+  distinguishes this from every hosted alternative.
+
+  Worth settling before the site is written rather than after, since the name
+  is most of its first paragraph. The cost is small now and grows: the repo is
+  `docs` and the app bar renders the wordmark `DOCS`.
 
 - **Ownership: transfer, or more than one owner?** Wanted, not yet shaped —
   see `ROADMAP.md`. Today `owner` is the creator, is not grantable, is not

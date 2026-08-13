@@ -48,6 +48,15 @@ See *The site and the demo* in the design doc — the reasoning that matters is
 why the demo isolates instead of moderating, and why the caps are bytes rather
 than cells.
 
+**Next up** — nothing else is queued ahead of it.
+
+Answer first, because the subdomain design rests on it: **can nginx proxy
+manager be given one wildcard host?** The certificate half is settled. The
+supervisor routes on `Host` itself, so there is never per-session proxy
+configuration — this is one question asked once, not an ongoing burden. If the
+answer is no, the fallbacks are a custom nginx snippet or exposing the demo
+container directly for that name.
+
 Build order, and the first two are useful without the third:
 
 1. **`site/`** — what it is, how to host it, and the self-hosting instructions
@@ -71,7 +80,9 @@ Wanted with it, none of which exist:
 - Wildcard DNS and certificate for `*.demo.<domain>` — a one-off ops task, and
   the reason a subdomain beat a path prefix
 
-The name is still open — see *Open questions*.
+The name is leaning **Own Docs** but is not settled — see *Open questions*.
+Worth deciding before the site is written, since it is most of its first
+paragraph.
 
 ## Sheet protection
 

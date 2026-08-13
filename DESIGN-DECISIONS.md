@@ -2543,6 +2543,58 @@ steps later, so the symptom did not resemble the cause at all. The repaint is
 now queued on a microtask, coalesced, so it runs once the update has unwound.
 
 ### Notifications: in-app always, email only if configured
+**The in-app half shipped 2026-08-13** (schema v8): a mention inbox in the app
+bar, replies to threads you are in, and the unresolved count on each row of the
+document list. Email is still unbuilt, and the feature is whole without it —
+which was the point of building this half first.
+
+Three things the build settled that the plan above did not:
+
+- **A mention resolves against the document's own collaborators, never against
+  all users.** That is what makes it work with no handle column on `users`:
+  names are neither unique nor space-free, so `@Craig` has no answer in
+  general — but the people who can open one document are a short known list,
+  and matching against it is exact. It also means a mention can only ever name
+  somebody who could already read the comment, so nothing here can be used to
+  discover that an account exists.
+
+  The match is **longest-first**, which is the only rule that makes a name with
+  spaces parseable at all: with "Craig" and "Craig Hammond" both on a document,
+  `@Craig Hammond` has to reach the second, and nothing but preferring the
+  longer candidate gets there. A match must also end at a non-name character,
+  or `@Craigson` resolves to Craig; and an `@` *preceded* by one is not a
+  mention at all, which is what stops an email address in a comment from
+  naming somebody.
+
+- **Mention beats reply for the same person.** Somebody both named and already
+  in the thread gets one row, and it is the mention — that is the one saying
+  they are being waited on.
+
+- **The inbox query joins `permissions`, and that is a boundary rather than
+  tidiness.** A notification quotes a comment body, so revoking access has to
+  stop the inbox showing it — old rows included. Joining makes revocation take
+  effect for free with nothing to clean up. Every foreign key cascades for the
+  same class of reason: deleting a comment, a thread or a document takes its
+  notifications with it, so the inbox never offers to open something that is
+  gone.
+
+**One departure from the rules above, made deliberately.** "Skip anyone
+connected to that document right now" is applied to **email only**, not to the
+inbox. An inbox is a record: dropping a mention because the recipient happened
+to have the tab open is a mention they may never learn about, whereas an unread
+badge they dismiss in a second costs nothing. The presence test still belongs
+in the email path, where the reasoning it was written for holds.
+
+The **debounce per (user, document)** is likewise an email rule. Two mentions
+in-app are two rows; two emails in five minutes are a nuisance.
+
+**The affordance is chips, not a typeahead.** A dropdown anchored to a caret in
+a textarea is caret arithmetic, positioning and a keyboard model; the list of
+people on a document is a handful of names. Clicking one appends `@Name `,
+which also sidesteps the thing a typed `@` cannot do — delimit a name with a
+space in it.
+
+
 
 The filter is **"did this happen while you were not looking?"** Anything you
 would notice on your next visit belongs in-app, where it costs nothing and

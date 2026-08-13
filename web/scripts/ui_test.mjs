@@ -1423,6 +1423,113 @@ try {
     await clickText(page, 'button', 'close')
   })
 
+  // Mentions and the inbox. The only test here that needs two people, so it
+  // gets a second browser context — an isolated cookie jar in the same Chrome,
+  // rather than a second browser.
+  //
+  // Setup goes through the API rather than the UI, for a reason recorded in
+  // ROADMAP: composing a comment on a text selection does not work under
+  // automation and the cause is unfound. Building this test on that path would
+  // make a known-flaky step the gate on a feature that has nothing to do with
+  // it. What *is* driven through the real UI is the part under test — the
+  // chips, the inbox, and following a notification.
+  let mentionDocID
+  await step('a document shared with Bob, and a comment naming him', async () => {
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI mention doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    mentionDocID = docIdFromHash(page.url())
+
+    const out = await page.evaluate(async (id) => {
+      const post = (path, body) =>
+        fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).then((r) => r.json())
+      await post(`/api/docs/${id}/shares`, { email: 'bob@dev.local', role: 'commenter' })
+      // btoa, because the anchor is bytes on the wire and opaque to the server.
+      return post(`/api/docs/${id}/comments`, {
+        anchor: btoa('ui-test-anchor'),
+        body: '@Bob does this look right to you?',
+      })
+    }, mentionDocID)
+    check(out && out.id > 0, 'the thread was created')
+  })
+
+  // The chips are the mention affordance: names contain spaces, which a typed
+  // `@` cannot delimit but a click can. They come from the share list, so this
+  // also asserts a commenter-visible endpoint is reachable from the panel.
+  await step('the comments panel offers the people who can be mentioned', async () => {
+    await clickText(page, 'button', 'comments')
+    await page.waitForSelector('.mentions .chip', { timeout: 5000 })
+    const names = await page.evaluate(() =>
+      [...document.querySelectorAll('.mentions .chip')].map((b) => b.textContent.trim()),
+    )
+    check(names.includes('Bob'), `Bob is offered as a mention (got ${JSON.stringify(names)})`)
+    check(!names.includes('Alice'), 'and you are not offered to yourself')
+    await clickText(page, 'button', 'close')
+  })
+
+  await step('Bob finds the mention in his inbox and follows it', async () => {
+    // A separate context, so Bob's session does not evict Alice's.
+    const ctx = await browser.createBrowserContext()
+    const bob = await ctx.newPage()
+    const bobConsole = watchConsole(bob)
+    try {
+      await bob.goto(BASE, { waitUntil: 'networkidle0' })
+      await clickText(bob, 'button', 'Bob')
+      await bob.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+
+      // The unread count is the whole notification surface — no toast, no dot.
+      await bob.waitForFunction(
+        () => document.querySelector('.appbar button.has-unread')?.textContent.includes('(1)'),
+        { timeout: 5000 },
+      )
+      ok('the app bar shows one unread')
+
+      await clickSel(bob, '.appbar button.has-unread')
+      await bob.waitForSelector('.panel .row', { timeout: 3000 })
+      const row = await bob.evaluate(() => document.querySelector('.panel .row').innerText)
+      check(row.includes('Alice'), 'the row names who mentioned him')
+      check(row.includes('does this look right'), 'and quotes the comment')
+
+      // Following it lands in the document *with the comments drawer open* —
+      // landing in a long document with no idea which comment was meant is the
+      // failure this avoids.
+      await clickSel(bob, '.panel .row')
+      await bob.waitForSelector('.cm-content', { timeout: 5000 })
+      check(
+        docIdFromHash(bob.url()) === mentionDocID,
+        'following the notification routed to the right document',
+      )
+      await bob.waitForFunction(
+        () => [...document.querySelectorAll('.panel strong')].some((e) => e.textContent === 'Comments'),
+        { timeout: 5000 },
+      ).then(() => ok('and opened the comments drawer'), () => fail('the comments drawer did not open'))
+
+      // Reading it marks it read, so the bar goes quiet.
+      await bob.waitForFunction(() => !document.querySelector('.appbar button.has-unread'), { timeout: 5000 })
+      ok('and the unread count cleared')
+
+      const errs = bobConsole.drain()
+      check(errs.length === 0, `Bob's page logged nothing${errs.length ? ': ' + errs.join('; ') : ''}`)
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  await step('the document list shows the unresolved count', async () => {
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('.open')].some((e) => e.textContent.trim() === '1 unresolved'),
+      { timeout: 5000 },
+    )
+  })
+
 } finally {
   await browser.close()
   server.kill()

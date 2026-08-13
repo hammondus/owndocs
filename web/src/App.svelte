@@ -10,6 +10,7 @@
   import SheetView from './lib/SheetView.svelte'
   import ShareView from './lib/ShareView.svelte'
   import HistoryView from './lib/HistoryView.svelte'
+  import NotificationsPanel from './lib/NotificationsPanel.svelte'
 
   // $state makes a variable reactive: assigning to it re-renders whatever
   // reads it. `me` is the signed-in user (null = signed out).
@@ -19,6 +20,46 @@
   // share views also carry the document they operate on.
   let route = $state({ view: 'loading' })
 
+  // ---- the inbox ----------------------------------------------------------
+  // Mentions and thread replies. Fetched rather than pushed: a notification is
+  // not urgent by definition — the whole filter is "did this happen while you
+  // were not looking?" — so it is refreshed when signing in, when returning to
+  // the list, and when the drawer is opened. A socket for this would be a
+  // subscription to something nobody is waiting on.
+  let notes = $state([])
+  let showNotes = $state(false)
+  let unread = $derived(notes.filter((n) => !n.read_at).length)
+
+  async function loadNotes() {
+    try {
+      notes = await api('/api/notifications')
+    } catch (e) {
+      // Quiet: the app is whole without an inbox, and a failed poll must not
+      // put an error in front of somebody who was doing something else.
+      console.warn('docs: could not load notifications', e)
+    }
+  }
+
+  async function markRead(ids) {
+    try {
+      await api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids: ids || [] }) })
+    } catch (e) {
+      console.warn('docs: could not mark notifications read', e)
+      return
+    }
+    loadNotes()
+  }
+
+  // Following one opens its document *with the comments drawer already up*.
+  // Landing in a long document with no idea which comment was meant is the
+  // failure this avoids, and it costs one flag on the route.
+  async function openNote(n) {
+    showNotes = false
+    markRead([n.id])
+    const doc = await findDoc(n.doc_id)
+    if (doc) openDoc(doc, true)
+  }
+
   // An invite token from #invite=<token>. Read once at load, because signing
   // up clears the hash and the token must outlive that.
   const inviteToken = new URLSearchParams(location.hash.slice(1)).get('invite') || ''
@@ -27,6 +68,7 @@
     try {
       me = await api('/api/me')
       await afterAuth()
+      loadNotes()
     } catch {
       route = { view: 'auth' }
     }
@@ -100,6 +142,7 @@
   function showList() {
     location.hash = ''
     route = { view: 'list' }
+    loadNotes()
   }
 
   function openDoc(doc, withComments = false) {
@@ -118,6 +161,7 @@
   async function signedIn(user) {
     me = user
     await afterAuth()
+    loadNotes()
   }
 
   // A sheet, and a sheet's history preview, both show grids and want the
@@ -142,6 +186,14 @@
   <span class="wordmark">docs</span>
   <span class="spacer"></span>
   {#if me}
+    <!-- The unread count is the whole notification surface: no badge dot, no
+         toast, nothing that interrupts. Somebody who is working stays working. -->
+    <button
+      class="linkish"
+      class:has-unread={unread > 0}
+      title="Mentions and replies"
+      onclick={() => { showNotes = !showNotes; if (showNotes) loadNotes() }}
+    >inbox{unread ? ` (${unread})` : ''}</button>
     <span class="who readout">{me.name}</span>
     <button class="linkish" onclick={signOut}>sign out</button>
   {/if}
@@ -150,6 +202,14 @@
 <!-- Prose views keep a comfortable reading width; a grid gets the whole
      window, since a spreadsheet's usefulness is columns you can see. -->
 <div class="page" class:wide={wideView} class:fill={fillView}>
+  {#if me && showNotes}
+    <NotificationsPanel
+      items={notes}
+      onOpen={openNote}
+      onMarkAll={() => markRead()}
+      onClose={() => (showNotes = false)}
+    />
+  {/if}
   {#if route.view === 'auth'}
     <!-- An #invite=<token> link lands here signed out; the token is handed to
          the sign-up form, which is the only thing that can spend it. -->
@@ -166,7 +226,8 @@
         <!-- onOpenDoc follows a document link, by id. It ends in openDoc like
              any other navigation, so the hash updates and the #key above swaps
              the editor rather than leaving a stale one on the old document. -->
-        <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} onOpenDoc={openDocById} onRichChanged={richChanged} />
+        <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} onOpenDoc={openDocById} onRichChanged={richChanged}
+          startWithComments={route.withComments} />
       {/if}
     {/key}
   {:else if route.view === 'share'}
@@ -179,6 +240,9 @@
 <style>
   /* Truncated rather than wrapped: the bar is a fixed height, and a long name
      must not be what decides it. */
+  /* The signal colour means "live / yours / here". An inbox with something in
+     it is the one bar item that qualifies, so it is the one that gets it. */
+  .has-unread { color: var(--signal); font-weight: 600; }
   .who {
     max-width: 16rem;
     overflow: hidden;

@@ -17,9 +17,13 @@ type document struct {
 	// of the document, like its title, rather than content inside it — which is
 	// why it rides here and is written over HTTP, not through the Yjs log. See
 	// DESIGN-DECISIONS.md, *Rich documents*.
-	Rich      bool   `json:"rich"`
-	Role      string `json:"role"`
-	UpdatedAt int64  `json:"updated_at"`
+	Rich bool   `json:"rich"`
+	Role string `json:"role"`
+	// Unresolved comment threads. Counted per row in the list query rather
+	// than fetched per document by the client, which would be one request per
+	// row — see DESIGN-DECISIONS.md, *Notifications*.
+	OpenComments int   `json:"open_comments"`
+	UpdatedAt    int64 `json:"updated_at"`
 }
 
 var docIDEnc = base32.StdEncoding.WithPadding(base32.NoPadding)
@@ -99,7 +103,10 @@ func handleListDocs(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
 		rows, err := db.Query(`
-			SELECT d.id, d.kind, d.title, d.rich, p.role, d.updated_at
+			SELECT d.id, d.kind, d.title, d.rich, p.role,
+			       (SELECT COUNT(*) FROM comment_threads t
+			         WHERE t.doc_id = d.id AND t.resolved_at IS NULL) AS open_comments,
+			       d.updated_at
 			FROM documents d JOIN permissions p ON p.doc_id = d.id
 			WHERE p.user_id = ? ORDER BY d.updated_at DESC`, u.ID)
 		if err != nil {
@@ -110,7 +117,7 @@ func handleListDocs(db *sql.DB) http.HandlerFunc {
 		docs := []document{}
 		for rows.Next() {
 			var d document
-			if err := rows.Scan(&d.ID, &d.Kind, &d.Title, &d.Rich, &d.Role, &d.UpdatedAt); err != nil {
+			if err := rows.Scan(&d.ID, &d.Kind, &d.Title, &d.Rich, &d.Role, &d.OpenComments, &d.UpdatedAt); err != nil {
 				jsonError(w, http.StatusInternalServerError, "db error")
 				return
 			}

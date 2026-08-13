@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -163,10 +164,19 @@ func handleCreateThread(db *sql.DB, h *hub) http.HandlerFunc {
 			return
 		}
 		tid, _ := res.LastInsertId()
-		if _, err := tx.Exec("INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?,?,?,?)",
-			tid, uid, in.Body, now); err != nil {
+		res, err = tx.Exec("INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?,?,?,?)",
+			tid, uid, in.Body, now)
+		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
+		}
+		cid, _ := res.LastInsertId()
+		// Inside the transaction: a thread and the notifications it produced
+		// commit together or not at all. Best-effort on failure — losing a
+		// notification must never cost somebody the comment they just wrote —
+		// but there is no reason to make it likely.
+		if err := recordNotifications(tx, r.PathValue("id"), tid, cid, uid, in.Body); err != nil {
+			log.Printf("notifications: thread %d: %v", tid, err)
 		}
 		if err := tx.Commit(); err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
@@ -207,6 +217,9 @@ func handleReply(db *sql.DB, h *hub) http.HandlerFunc {
 			return
 		}
 		id, _ := res.LastInsertId()
+		if err := recordNotifications(db, r.PathValue("id"), tid, id, u.ID, in.Body); err != nil {
+			log.Printf("notifications: reply %d: %v", id, err)
+		}
 		h.notifyComments(r.PathValue("id"))
 		writeJSON(w, http.StatusOK, comment{
 			ID: id, ThreadID: tid, AuthorID: u.ID, AuthorName: u.Name, Body: in.Body, CreatedAt: now,

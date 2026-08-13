@@ -23,7 +23,7 @@
   import { scheduleCompaction } from '../compaction.js'
   import { canEdit, canComment, visibleToolbar } from '../roles.js'
 
-  let { me, doc, onBack, onShare, onHistory, onRenamed, onOpenDoc, onRichChanged } = $props()
+  let { me, doc, onBack, onShare, onHistory, onRenamed, onOpenDoc, onRichChanged, startWithComments } = $props()
 
   let status = $state('connecting…')
   let peerCount = $state(1)
@@ -35,6 +35,13 @@
   let ydoc, provider, view
 
   let showComments = $state(false)
+  // Arriving from the inbox opens the drawer, so the comment somebody was
+  // pointed at is on screen rather than hidden behind a button. An effect
+  // rather than an initialiser because following a notification for the
+  // document already open changes the prop without remounting anything.
+  $effect(() => {
+    if (startWithComments) showComments = true
+  })
   // Which toolbar drawer is open, by the `panel` id its entry carries. A
   // single value rather than one flag per panel: two open at once would push
   // the editor off the screen, and only one can be wanted at a time.

@@ -15,6 +15,7 @@
     deleteThread,
     openThread,
   } from '../comments.js'
+  import { api } from './api.js'
 
   let {
     docId,
@@ -32,6 +33,35 @@
     onGoTo,
     onClose,
   } = $props()
+
+  // ---- mentions -------------------------------------------------------------
+  // Who this document can name. `/api/docs/{id}/shares` is viewer-level, so
+  // every collaborator may read it — which is also the rule the server applies
+  // when it resolves a mention: a mention can only ever name someone who could
+  // already read the comment.
+  //
+  // Chips rather than a typeahead. A dropdown anchored to a caret in a textarea
+  // is caret arithmetic, positioning and a keyboard model, and the list here is
+  // a handful of names — so the cheaper control is also the clearer one. Names
+  // contain spaces, which a typed `@` cannot delimit but a click can.
+  let people = $state([])
+
+  $effect(() => {
+    let live = true
+    api(`/api/docs/${docId}/shares`)
+      .then((rows) => { if (live) people = rows })
+      // Not fatal: mentions still work typed by hand, and the panel is whole
+      // without the chips.
+      .catch((e) => console.warn('docs: could not load who can be mentioned', e))
+    return () => { live = false }
+  })
+
+  // Appended rather than inserted at the caret, for the same reason: no caret
+  // arithmetic. A trailing space so the next word does not join the name.
+  function mention(name) {
+    draft = `${draft.trimEnd()} @${name} `.trimStart()
+    document.querySelector('.compose textarea')?.focus()
+  }
 
   let draft = $state('')
   let replyDraft = $state({}) // thread id -> text
@@ -133,6 +163,16 @@
         {canAnchor ? `Comment on ${newLabel}` : 'Comment'}
       </button>
     </div>
+    <!-- Only the people this document is shared with, and only when there is
+         somebody other than you to name. -->
+    {#if people.length > 1}
+      <div class="mentions">
+        <span class="label">mention</span>
+        {#each people.filter((p) => p.user_id !== me.id) as p (p.user_id)}
+          <button class="chip" onclick={() => mention(p.name)}>{p.name}</button>
+        {/each}
+      </div>
+    {/if}
   {/if}
 
   {#each [...open, ...(showResolved ? closed : [])] as t (t.id)}
@@ -238,6 +278,24 @@
     align-items: flex-start;
     margin-bottom: 0.5rem;
   }
+  .mentions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.3rem;
+    margin: 0.3rem 0 0.6rem;
+  }
+  .chip {
+    border: 1px solid #8884;
+    border-radius: 999px;
+    background: none;
+    cursor: pointer;
+    padding: 0.05rem 0.5rem;
+    font: inherit;
+    font-size: 0.78rem;
+  }
+  .chip:hover { background: #8882; }
+
   .compose textarea {
     flex: 1;
   }

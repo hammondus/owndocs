@@ -17,11 +17,14 @@ Decided: bodies, identity and resolved-state in SQLite; anchors as opaque
 blobs. See *Comments* for why, and for the two traps. Build order — each step
 is useful on its own:
 
-1. Mentions, and in-app notifications: mention inbox, unresolved count in the
-   document list
-2. Email, optional: unset SMTP config means none, and the app is whole
-   without it. Two events only — mentioned, and shared-with-you
-3. Share UI: offer the `commenter` role (the API takes it already)
+1. Email, optional: unset SMTP config means none, and the app is whole
+   without it. Two events only — mentioned, and shared-with-you. The presence
+   skip and the per-(user, document) debounce belong here rather than in the
+   inbox — see *Notifications* for why.
+2. Share UI: offer the `commenter` role (the API takes it already)
+
+Shipped: mentions and the in-app inbox (schema v8), and the unresolved count on
+each row of the document list.
 
 Not yet covered by `make test-ui`: composing a comment on a text selection.
 The selection drives fine; the compose click does not produce a thread under

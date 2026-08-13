@@ -190,6 +190,12 @@
           <!-- Kind and role are what the machine knows about this row, so they
                are a readout, under the name rather than beside it. -->
           <span class="meta label">{doc.kind} · {doc.role}</span>
+          <!-- Unresolved threads, counted by the list query rather than one
+               request per row. Shown only when there are some: a "0" beside
+               every document is noise that trains people to stop reading it. -->
+          {#if doc.open_comments}
+            <span class="meta label open">{doc.open_comments} unresolved</span>
+          {/if}
         </div>
       {/if}
       {#if doc.role === 'owner'}
@@ -267,4 +273,7 @@
     font-size: var(--t-base);
     padding: 18px 12px;
   }
+  /* The caret rule again: an unresolved thread is something live on that
+     document, which is exactly what the signal colour means. */
+  .open { color: var(--signal); }
 </style>

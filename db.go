@@ -210,6 +210,34 @@ const schemaV7 = `
 ALTER TABLE documents ADD COLUMN rich INTEGER NOT NULL DEFAULT 0;
 `
 
+// Schema v8: in-app notifications. One row per person per event, which is what
+// makes an inbox a *record* rather than a computation — "have I seen this" is
+// per person and cannot be derived from the comment itself.
+//
+// Every foreign key cascades, and that is load-bearing rather than tidy:
+// deleting a comment, a thread or a whole document must take its notifications
+// with it, or the inbox keeps offering to open things that are gone. The
+// alternative — filtering dead rows at read time — is a join that has to be
+// remembered in every query, and it would be forgotten exactly once.
+//
+// No `read_all` flag or per-user cursor: `read_at` per row is what lets one
+// item be dismissed without dismissing the rest, and a cursor cannot express
+// that. See DESIGN-DECISIONS.md, *Notifications*.
+const schemaV8 = `
+CREATE TABLE notifications (
+	id         INTEGER PRIMARY KEY,
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	kind       TEXT NOT NULL CHECK (kind IN ('mention','reply')),
+	doc_id     TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+	thread_id  INTEGER NOT NULL REFERENCES comment_threads(id) ON DELETE CASCADE,
+	comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+	actor_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_at INTEGER NOT NULL,
+	read_at    INTEGER
+);
+CREATE INDEX notifications_user ON notifications(user_id, id);
+`
+
 func openDB(path string) (*sql.DB, error) {
 	// _pragma values apply per-connection; busy_timeout is belt-and-braces
 	// since MaxOpenConns(1) already serializes everything through one
@@ -232,7 +260,7 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
-	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7} {
+	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8} {
 		if v > ver {
 			continue
 		}

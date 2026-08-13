@@ -22,6 +22,9 @@ func routes(db *sql.DB, h *hub, staticFS fs.FS, signupOpen, dev bool) http.Handl
 	mux.HandleFunc("POST /api/logout", handleLogout(db))
 	mux.HandleFunc("GET /api/me", requireAuth(db, handleMe()))
 
+	mux.HandleFunc("GET /api/notifications", requireAuth(db, handleListNotifications(db)))
+	mux.HandleFunc("POST /api/notifications/read", requireAuth(db, handleMarkNotificationsRead(db)))
+
 	mux.HandleFunc("GET /api/docs", requireAuth(db, handleListDocs(db)))
 	mux.HandleFunc("POST /api/docs", requireAuth(db, handleCreateDoc(db)))
 	mux.HandleFunc("PATCH /api/docs/{id}", requireAuth(db, handleUpdateDoc(db)))

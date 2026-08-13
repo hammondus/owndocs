@@ -189,11 +189,10 @@ Shipped: the selection readout now prints in the selection's own number format
 
 ## Sheets — formulas
 
-Shipped: writing a formula by pointing at cells, and outlining what a formula
-refers to — see *Writing a formula by pointing* in the design doc.
+Shipped: writing a formula by pointing at cells, outlining what a formula
+refers to, F4 to cycle absolute forms, and arrow keys in point mode — see
+*Writing a formula by pointing* in the design doc.
 
-- F4 to cycle a reference through `$` absolute forms
-- Arrow keys in point mode, to pick a reference without the mouse
 - Colouring the reference *text* to match its outline, which needs an input
   that can carry markup rather than a plain `<input>`
 

@@ -17,7 +17,9 @@
   import { toTSV, toCSV, parseTSV, toHTML, readHTMLPayload } from '../sheet/clipboard.js'
   import { NUMBER_FORMATS, formatNumber, isDateFormat } from '../sheet/format.js'
   import { CHART_TYPES, extractChartData, drawChart, chartDragPatch } from '../sheet/chart.js'
-  import { acceptsRef, insertRef, formulaRefs, refColor } from '../sheet/refs.js'
+  import {
+    acceptsRef, insertRef, formulaRefs, refColor, cycleAbsolute, nextPoint, pointRect,
+  } from '../sheet/refs.js'
   import { scheduleCompaction } from '../compaction.js'
   import ScriptsPanel from './ScriptsPanel.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
@@ -66,8 +68,12 @@
   // Cleared by any keystroke, because once somebody types the reference is
   // theirs and no longer ours to rewrite.
   let pointSpan = null
-  // Live only while the button is down, so a drag grows one reference.
-  let pointing = null
+  // Where a *fresh* reference would be written, and which cells are being
+  // pointed at. Kept apart from pointSpan because the mouse and the arrow keys
+  // both drive them and only the mouse has a button to be down.
+  let pointCaret = 0
+  let pointAt = null // { anchor: {r,c}, head: {r,c} }
+  let pointing = false // true only while the button is down, so a drag grows one
   let formulaInputEl
   let totalW = $state(0)
   let totalH = $state(0)
@@ -637,20 +643,19 @@
     const replacing = pointSpan && caret === pointSpan.end ? pointSpan : null
     if (!replacing && !acceptsRef(edit.value, caret)) return false
     pointSpan = replacing
-    pointing = { anchor: { r, c }, caret }
-    applyPoint(r, c)
+    pointCaret = caret
+    pointAt = { anchor: { r, c }, head: { r, c } }
+    pointing = true
+    writePoint()
     // Keeps the grid from stealing focus back off the input being typed into.
     e.preventDefault()
     return true
   }
 
-  async function applyPoint(r, c) {
-    const a = pointing.anchor
-    const rect = {
-      r1: Math.min(a.r, r), c1: Math.min(a.c, c),
-      r2: Math.max(a.r, r), c2: Math.max(a.c, c),
-    }
-    const res = insertRef(edit.value, pointing.caret, rect, pointSpan)
+  // Write whatever is currently being pointed at into the formula, replacing
+  // what the last point wrote. One path for the mouse and the arrow keys.
+  async function writePoint() {
+    const res = insertRef(edit.value, pointCaret, pointRect(pointAt.anchor, pointAt.head), pointSpan)
     edit.value = res.text
     pointSpan = res.span
     scheduleDraw()
@@ -659,6 +664,51 @@
     await tick()
     focusedInput?.focus({ preventScroll: true })
     focusedInput?.setSelectionRange(res.caret, res.caret)
+  }
+
+  // Arrow keys point, but only where a click would have. Anywhere else they
+  // stay what they have always been — caret movement inside the formula being
+  // typed, which is not something to take away.
+  function pointArrow(dr, dc, extend) {
+    if (!edit || readOnly) return false
+    const input = caretInput()
+    if (!input) return false
+    const caret = input.selectionStart ?? edit.value.length
+    const live = pointSpan && pointAt && caret === pointSpan.end
+    if (!live && !acceptsRef(edit.value, caret)) return false
+    if (live) {
+      pointAt = nextPoint(pointAt.anchor, pointAt.head, dr, dc, extend)
+    } else {
+      // The first arrow starts beside the cell being edited, which is where
+      // the reference would be if you had reached for it.
+      const start = { r: Math.max(0, edit.r + dr), c: Math.max(0, edit.c + dc) }
+      pointSpan = null
+      pointCaret = caret
+      pointAt = { anchor: start, head: start }
+    }
+    writePoint()
+    return true
+  }
+
+  // F4 cycles the reference at the caret through its absolute forms.
+  function cycleRef() {
+    const input = caretInput()
+    if (!input) return false
+    const caret = input.selectionStart ?? edit.value.length
+    const res = cycleAbsolute(edit.value, caret)
+    if (!res) return false
+    // Only if it was the pointed reference that got cycled: anything else
+    // moves the offsets pointSpan holds, so keeping it would corrupt the next
+    // point.
+    const wasPointed = pointSpan && caret === pointSpan.end
+    edit.value = res.text
+    pointSpan = wasPointed ? res.span : null
+    scheduleDraw()
+    tick().then(() => {
+      focusedInput?.focus({ preventScroll: true })
+      focusedInput?.setSelectionRange(res.caret, res.caret)
+    })
+    return true
   }
 
   async function startEdit(initial) {
@@ -673,7 +723,8 @@
   }
 
   function commitEdit(dr, dc) {
-    pointSpan = pointing = focusedInput = null
+    pointSpan = pointAt = focusedInput = null
+    pointing = false
     if (!edit) return
     model.setCell(edit.r, edit.c, edit.value)
     edit = null
@@ -683,7 +734,8 @@
   }
 
   function cancelEdit() {
-    pointSpan = pointing = focusedInput = null
+    pointSpan = pointAt = focusedInput = null
+    pointing = false
     edit = null
     containerEl.focus({ preventScroll: true })
     scheduleDraw()
@@ -1183,10 +1235,14 @@
     // Dragging while pointing grows the one reference rather than selecting.
     if (pointing) {
       const { x, y } = gridPos(e)
-      applyPoint(
-        rowAt(containerEl.scrollTop + Math.max(y, HEADER_H) - HEADER_H),
-        colAt(containerEl.scrollLeft + Math.max(x, HEADER_W) - HEADER_W),
-      )
+      pointAt = {
+        anchor: pointAt.anchor,
+        head: {
+          r: rowAt(containerEl.scrollTop + Math.max(y, HEADER_H) - HEADER_H),
+          c: colAt(containerEl.scrollLeft + Math.max(x, HEADER_W) - HEADER_W),
+        },
+      }
+      writePoint()
       return
     }
     if (!dragging) {
@@ -1221,9 +1277,9 @@
   }
 
   function onMouseUp() {
-    // `pointSpan` deliberately survives: the reference stays replaceable until
-    // somebody types.
-    pointing = null
+    // `pointSpan` and `pointAt` deliberately survive: the reference stays
+    // replaceable, by a later click or by an arrow key, until somebody types.
+    pointing = false
     if (chartDrag) {
       if (chartDrag.patch) model.updateChart(chartDrag.id, chartDrag.patch)
       chartDrag = null
@@ -1314,7 +1370,20 @@
     }
   }
 
+  const ARROWS = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }
+
   function onInputKeyDown(e) {
+    if (e.key === 'F4' && cycleRef()) {
+      e.preventDefault()
+      return
+    }
+    if (ARROWS[e.key] && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const [dr, dc] = ARROWS[e.key]
+      if (pointArrow(dr, dc, e.shiftKey)) {
+        e.preventDefault()
+        return
+      }
+    }
     if (e.key === 'Enter') {
       e.preventDefault()
       commitEdit(e.shiftKey ? -1 : 1, 0)

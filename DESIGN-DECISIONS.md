@@ -2239,6 +2239,27 @@ both edit the same value, so either can be the one.
 Only this sheet's own references are outlined. A formula may reach into another
 tab, and an outline drawn on the wrong grid is worse than none.
 
+**F4 and the arrow keys, added the same day.** Both go through the same rule as
+the mouse, which is the point of having put it in one place:
+
+- **F4 cycles the reference at the caret** — relative, both absolute, row, column,
+  back to relative. Excel's order exactly, because it is muscle memory rather
+  than a preference. A *range* cycles as a unit: `A1:A3` becomes `$A$1:$A$3`,
+  since somebody who just pointed at a range and reached for F4 never meant one
+  end of it. It returns null when the caret is not on a reference, so the key
+  falls through — and `LOG10(` is not a reference, which the token pattern has
+  to know: a match followed by `(` is a function name.
+- **Arrow keys point only where a click would have.** Everywhere else they stay
+  what they always were, caret movement inside the formula being typed. Taking
+  that away would be a worse bug than the one this feature fixes, so the
+  browser test asserts it directly: after `=A1+B2`, two left arrows and a `9`
+  must produce `=A1+9B2`.
+
+Shift extends from the anchor, as it does everywhere else in the grid; a bare
+arrow moves both ends, so the reference walks rather than grows. Clamped at the
+top and left edges only — a sheet grows down and right on demand, so there is
+no far edge to stop at.
+
 **A latent bug this surfaced:** `layout` maps pixels to cells and was built
 only inside `draw`, so a click landing before the first frame threw on
 destructuring null. It is derived state and is now built on demand. The browser

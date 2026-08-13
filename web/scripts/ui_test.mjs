@@ -1757,6 +1757,60 @@ try {
     )
   })
 
+  // Pointing without the mouse, and F4. The rules are unit-tested; what needs
+  // a browser is that the keys reach them — and, for the arrows, that they
+  // still do the ordinary thing when the formula is not expecting a reference.
+  await step('arrow keys point, and F4 cycles the absolute forms', async () => {
+    const cellAt = async (r, c) => {
+      const b = await page.$eval('.grid', (el) => {
+        const x = el.getBoundingClientRect()
+        return { x: x.x, y: x.y }
+      })
+      return { x: b.x + 48 + c * 100 + 50, y: b.y + 24 + r * 24 + 12 }
+    }
+    const bar = () => page.$eval('.formula-bar input', (e) => e.value)
+    const barIs = (want, what) =>
+      page.waitForFunction(
+        (w) => document.querySelector('.formula-bar input').value === w,
+        { timeout: 3000 }, want,
+      ).then(() => ok(what), async () => fail(what, `bar reads ${JSON.stringify(await bar())}`))
+
+    // C5, so there is room above it to point at.
+    const c5 = await cellAt(4, 2)
+    await page.mouse.click(c5.x, c5.y)
+    await page.focus('.formula-bar input')
+    await page.keyboard.type('=')
+
+    await page.keyboard.press('ArrowUp')
+    await barIs('=C4', 'an arrow points at the cell above')
+
+    await page.keyboard.down('Shift')
+    await page.keyboard.press('ArrowUp')
+    await page.keyboard.up('Shift')
+    await barIs('=C3:C4', 'and shift grows it into a range')
+
+    // F4 walks the range through its forms, as a unit.
+    await page.keyboard.press('F4')
+    await barIs('=$C$3:$C$4', 'F4 makes it absolute')
+    await page.keyboard.press('F4')
+    await barIs('=C$3:C$4', 'and keeps cycling')
+    await page.keyboard.press('Escape')
+
+    // The arrows must still move the caret when the formula is not expecting a
+    // reference — taking that away would be a worse bug than the one this
+    // whole feature fixes.
+    await page.mouse.click(c5.x, c5.y)
+    await page.focus('.formula-bar input')
+    await page.keyboard.type('=A1+B2')
+    await page.keyboard.press('ArrowLeft')
+    await page.keyboard.press('ArrowLeft')
+    check((await bar()) === '=A1+B2', `the formula is untouched (got ${JSON.stringify(await bar())})`)
+    // And the caret really did move, so the next character lands mid-formula.
+    await page.keyboard.type('9')
+    check((await bar()) === '=A1+9B2', `the caret moved rather than the reference (got ${JSON.stringify(await bar())})`)
+    await page.keyboard.press('Escape')
+  })
+
 } finally {
   await browser.close()
   server.kill()

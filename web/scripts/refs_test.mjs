@@ -3,7 +3,10 @@
 // somebody's formula instead of selecting a cell, which is the one way this
 // feature can be actively annoying.
 // Run from web/: node scripts/refs_test.mjs
-import { acceptsRef, refText, insertRef, formulaRefs, refColor, REF_COLORS } from '../src/sheet/refs.js'
+import {
+  acceptsRef, refText, insertRef, formulaRefs, refColor, REF_COLORS,
+  cycleAbsolute, nextPoint, pointRect,
+} from '../src/sheet/refs.js'
 
 let failures = 0
 const ok = (what) => console.log('ok:', what)
@@ -116,6 +119,57 @@ eq(formulaRefs(null), [], 'nor does a missing value')
 // is worse than no outline.
 eq(formulaRefs("=Sheet2!A1"), [], 'a reference to another sheet is not outlined here')
 eq(formulaRefs("=A1+Sheet2!B2"), [{ r1: 0, c1: 0, r2: 0, c2: 0 }], 'but its local neighbour still is')
+
+// ---- F4: absolute forms ----------------------------------------------------
+
+// Excel's order, and worth matching exactly because it is muscle memory.
+{
+  let t = '=A1', c = 3
+  const steps = []
+  for (let i = 0; i < 5; i++) {
+    const r = cycleAbsolute(t, c)
+    t = r.text; c = r.caret
+    steps.push(t)
+  }
+  eq(steps, ['=$A$1', '=A$1', '=$A1', '=A1', '=$A$1'], 'F4 cycles relative, both, row, column, and back')
+}
+
+// A range moves as a unit: cycling one end of a range somebody just pointed at
+// is never what they meant.
+eq(cycleAbsolute('=SUM(A1:A3)', 8).text, '=SUM($A$1:$A$3)', 'a range cycles as one')
+eq(cycleAbsolute('=SUM(A1:A3)', 6).text, '=SUM($A$1:$A$3)', 'from either end of it')
+eq(cycleAbsolute('=SUM($A$1:$A$3)', 8).text, '=SUM(A$1:A$3)', 'and keeps cycling as one')
+
+// The caret has to count as "on" a reference when it sits at the end of one,
+// because that is exactly where it lands after typing or pointing.
+eq(cycleAbsolute('=A1', 1).text, '=$A$1', 'at the start of the reference')
+eq(cycleAbsolute('=A1', 2).text, '=$A$1', 'inside it')
+eq(cycleAbsolute('=A1', 3).text, '=$A$1', 'and at its end')
+
+// Not a reference, so the key falls through to whatever it would otherwise do.
+eq(cycleAbsolute('=LOG10(2)', 6), null, 'a function name is not a reference')
+eq(cycleAbsolute('=SUM(A1)', 3), null, 'nor is the caret inside SUM')
+eq(cycleAbsolute('=1+2', 3), null, 'nor a number')
+eq(cycleAbsolute('hello', 3), null, 'nor anything in a plain value')
+
+// Sheet-qualified references cycle their cell and leave the sheet name alone.
+eq(cycleAbsolute('=Sheet2!A1', 10).text, '=Sheet2!$A$1', 'a sheet-qualified reference cycles its cell')
+
+// The span comes back so the caller can keep tracking a pointed reference
+// across an F4.
+eq(cycleAbsolute('=SUM(A1', 7).span, { start: 5, end: 9 }, 'the new span is reported')
+
+// ---- pointing with the keyboard --------------------------------------------
+
+{
+  const a = { r: 4, c: 4 }
+  eq(nextPoint(a, a, -1, 0, false), { anchor: { r: 3, c: 4 }, head: { r: 3, c: 4 } }, 'a bare arrow walks the reference')
+  eq(nextPoint(a, a, 1, 0, true), { anchor: { r: 4, c: 4 }, head: { r: 5, c: 4 } }, 'shift extends from the anchor')
+  // A sheet grows down and right on demand, so only the top and left edges
+  // are walls.
+  eq(nextPoint({ r: 0, c: 0 }, { r: 0, c: 0 }, -1, -1, false).head, { r: 0, c: 0 }, 'it stops at the top left')
+  eq(pointRect({ r: 5, c: 1 }, { r: 2, c: 3 }), { r1: 2, c1: 1, r2: 5, c2: 3 }, 'and the rect is normalised either way')
+}
 
 // ---- colours ---------------------------------------------------------------
 

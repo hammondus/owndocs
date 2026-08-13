@@ -129,3 +129,95 @@ export function formulaRefs(text) {
 export const REF_COLORS = ['#8e44ad', '#0b8043', '#d9730d', '#c2185b', '#00838f']
 
 export const refColor = (i) => REF_COLORS[i % REF_COLORS.length]
+
+// ---- absolute forms --------------------------------------------------------
+
+// One A1 reference in a formula. The lookarounds are what keep `LOG10(` from
+// reading as a reference to row 10 of column LOG: a token followed by `(` is a
+// function name, and one preceded by a letter is the tail of a longer word.
+// `Sheet2!A1` matches the `A1` and leaves the sheet name alone, which is what
+// F4 should cycle there too.
+const A1_TOKEN = /(?<![A-Za-z0-9_$])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_(])/g
+
+// Excel's order, and worth matching exactly because it is muscle memory:
+// relative, both absolute, row absolute, column absolute, back to relative.
+function nextForm(absCol, absRow) {
+  if (!absCol && !absRow) return [true, true]
+  if (absCol && absRow) return [false, true]
+  if (!absCol && absRow) return [true, false]
+  return [false, false]
+}
+
+function tokensIn(text) {
+  const out = []
+  A1_TOKEN.lastIndex = 0
+  for (let m; (m = A1_TOKEN.exec(text)); ) {
+    out.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      absCol: m[1] === '$',
+      col: m[2],
+      absRow: m[3] === '$',
+      row: m[4],
+    })
+  }
+  return out
+}
+
+const written = (t, absCol, absRow) =>
+  (absCol ? '$' : '') + t.col + (absRow ? '$' : '') + t.row
+
+// F4: cycle the reference at the caret through its absolute forms. Returns
+// null when the caret is not on one, so the key can fall through to whatever
+// it would otherwise do.
+//
+// A range cycles as a unit — `A1:A3` becomes `$A$1:$A$3` — because that is
+// what somebody who just pointed at a range and reached for F4 means, and
+// cycling one end of it is never what they wanted.
+export function cycleAbsolute(text, caret) {
+  if (typeof text !== 'string' || !text.startsWith('=')) return null
+  const tokens = tokensIn(text)
+  // The caret counts as being on a token when it is inside it or sits at its
+  // end — which is exactly where it lands after typing or pointing one.
+  const i = tokens.findIndex((t) => caret >= t.start && caret <= t.end)
+  if (i < 0) return null
+
+  // A range is two tokens with a colon between them, and both move together.
+  let group = [i]
+  if (text[tokens[i].end] === ':' && tokens[i + 1] && tokens[i + 1].start === tokens[i].end + 1) {
+    group = [i, i + 1]
+  } else if (text[tokens[i].start - 1] === ':' && tokens[i - 1] && tokens[i - 1].end === tokens[i].start - 1) {
+    group = [i - 1, i]
+  }
+
+  const [absCol, absRow] = nextForm(tokens[i].absCol, tokens[i].absRow)
+  let out = text
+  // Right to left, so an earlier token's offsets are still valid.
+  for (const k of [...group].reverse()) {
+    const t = tokens[k]
+    out = out.slice(0, t.start) + written(t, absCol, absRow) + out.slice(t.end)
+  }
+  const first = tokens[group[0]]
+  const last = tokens[group[group.length - 1]]
+  const grew = out.length - text.length
+  const span = { start: first.start, end: last.end + grew }
+  return { text: out, caret: span.end, span }
+}
+
+// ---- pointing with the keyboard --------------------------------------------
+
+// Where the pointed reference goes next. Shift extends from the anchor, as it
+// does everywhere else in the grid; a bare arrow moves both, so the reference
+// walks rather than grows.
+//
+// Clamped at the top and left edges only: a sheet grows downward and rightward
+// on demand, so there is no far edge to stop at.
+export function nextPoint(anchor, head, dr, dc, extend) {
+  const h = { r: Math.max(0, head.r + dr), c: Math.max(0, head.c + dc) }
+  return { anchor: extend ? anchor : h, head: h }
+}
+
+export const pointRect = (anchor, head) => ({
+  r1: Math.min(anchor.r, head.r), c1: Math.min(anchor.c, head.c),
+  r2: Math.max(anchor.r, head.r), c2: Math.max(anchor.c, head.c),
+})

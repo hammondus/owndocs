@@ -27,7 +27,68 @@ Explicitly out of scope (each is a project-killer for a solo clone):
   stand.)
 - **docx import/export** — fidelity is endless, and `unioffice` went
   commercial. Export is Markdown/HTML/CSV/xlsx instead.
-- Offline editing, mobile apps.
+- **Offline editing** — the merge was never the missing piece. See *Offline
+  editing* below for what blocks it and what already works.
+- **Mobile apps** — a native client is its own project.
+
+### Offline editing: the merge was never the missing piece
+
+Recorded 2026-08-14. The decision itself is older; its reasoning had never been
+written down, and had to be reconstructed from the code when somebody asked why.
+This entry exists because the bare bullet cost more to re-derive than it would
+ever have cost to write.
+
+**The CRDT reading that prompts the question is correct.** Yjs does give offline
+merge essentially free, and this document says so itself in *Comments*: the
+rejected in-doc design is credited with getting "live sync, offline merge,
+version history, git export and sharing entirely for free from machinery that
+already exists". Nothing about that is wrong. It is just not what the scope
+bullet is refusing.
+
+**Most of the benefit is already banked.** `provider.js` reconnects with
+exponential backoff, and on reconnect diffs against the server's actual state
+vector rather than pushing full state — an earlier full-state version combined
+with the message size limit turned one oversized document into an infinite
+reconnect loop, which is why it works this way. The comment on `_send` states
+the resulting property: while disconnected an ordinary update is dropped and the
+reconnect diff carries it. Shut the lid for an hour with the tab open and it
+reconciles on wake. That *is* the CRDT property, working today, and it is worth
+knowing it is there before reaching for anything more.
+
+What separates that from *offline editing* as a feature is three things, and the
+largest is structural rather than technical:
+
+- **Half the product is not in the CRDT.** Comments, mentions, notifications,
+  sharing and invites live in SQLite behind HTTP, by the decision in *Comments* —
+  taken for reasons that have nothing to do with offline. So offline the text
+  merges perfectly and the comments do not exist. A feature that silently covers
+  half the app is worse than one that is absent, because the half that is missing
+  is invisible until somebody relies on it.
+- **Permission revocation has no CRDT answer.** `ws.go` drops document writes by
+  role at the socket. Come back after a day offline having been downgraded to
+  viewer and the server refuses the update — but a CRDT has no concept of a
+  *rejected* change. The edits are internally valid, mergeable, and unwanted, and
+  there is no honest UI for losing them. This is the one that has no cheap fix:
+  it is a conflict between "the merge always succeeds" and "the server decides
+  who may write", and offline is where those two meet.
+- **There is no local persistence.** No `y-indexeddb`; the document is
+  memory-only, so today "offline" means the tab stayed open. This is the one
+  genuinely mechanical gap and the smallest of the three — a dependency and a
+  provider change, not a design problem.
+
+**Not a reason, recorded so it is not mistaken for one later.** The 15 MiB
+single-message ceiling in `provider.js` looks like it blocks long offline
+sessions: there is no chunking, and an oversized reconnect diff is as unsendable
+as an oversized live update. But at roughly 48 bytes per cell that ceiling is
+about 300,000 cells, and a day of prose is tens of kilobytes. It bounds a
+pathological sheet case, not ordinary offline use. Filing it as a reason would be
+overstating it.
+
+**The path, if it is ever wanted**, is those three in order and not in
+isolation: `y-indexeddb` for persistence, then a decided answer for what happens
+to edits the server refuses on reconnect — which is a product question about what
+the person is told, not a sync question — and comments staying explicitly
+online-only, said out loud in the UI rather than left to be discovered.
 
 ### Invite links: how an account exists once signup is closed
 

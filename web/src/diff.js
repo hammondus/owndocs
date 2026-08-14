@@ -120,16 +120,20 @@ function lcsEdits(a, b) {
       L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1])
     }
   }
+  // Every edit carries its text, including deletions and keeps. `splices`
+  // needs it only on inserts — it takes what to remove from the original — but
+  // a diff being *read* has to show the line that went away, and carrying it
+  // here keeps one edit script serving both callers.
   const edits = []
   let i = 0
   let j = 0
   while (i < n && j < m) {
     if (a[i] === b[j]) {
-      edits.push({ op: 'keep' })
+      edits.push({ op: 'keep', line: a[i] })
       i++
       j++
     } else if (L[i + 1][j] >= L[i][j + 1]) {
-      edits.push({ op: 'del' })
+      edits.push({ op: 'del', line: a[i] })
       i++
     } else {
       edits.push({ op: 'ins', line: b[j] })
@@ -137,7 +141,7 @@ function lcsEdits(a, b) {
     }
   }
   while (i < n) {
-    edits.push({ op: 'del' })
+    edits.push({ op: 'del', line: a[i] })
     i++
   }
   while (j < m) {
@@ -174,6 +178,133 @@ function fromEdits(edits, head, one) {
       i++
     }
     out.push(...one(start, removed, inserted))
+  }
+  return out
+}
+
+// ---- the same diff, for reading ---------------------------------------------
+//
+// `splices` answers "what edits turn A into B" for a machine to apply. This
+// answers "what changed" for a person to read, off the same LCS: line numbers
+// on both sides, unchanged runs collapsed to a little context, and the whole
+// thing grouped into hunks.
+//
+// Deliberately a second entry point rather than a flag on the first. A splice
+// is a character range with no notion of a line number, and a hunk is a list of
+// lines with no notion of a character offset; folding them together would mean
+// one caller always carrying the other's bookkeeping.
+
+// How many unchanged lines sit either side of a change. Three is the
+// convention every diff tool settled on, and the reason is legibility rather
+// than arbitrary: it is enough to recognise where you are in a document, and
+// little enough that two nearby edits still read as one region.
+const CONTEXT = 3
+
+// hunks(from, to) -> {identical, coarse, added, removed, hunks: [{skipped, rows}]}
+//
+// A row is {op: 'keep'|'del'|'ins', text, a, b} where `a` and `b` are 1-based
+// line numbers in the old and new text, null on the side where the line does
+// not exist. `skipped` is how many unchanged lines were collapsed before that
+// hunk, so the view can say what it is not showing rather than silently
+// dropping it.
+export function hunks(from, to, context = CONTEXT) {
+  const A = from.split('\n')
+  const B = to.split('\n')
+  if (from === to) return { identical: true, coarse: false, added: 0, removed: 0, hunks: [] }
+
+  // Same head/tail trim as splices, and for the same reason: one edited
+  // paragraph in a long document should cost an LCS over the paragraph, not
+  // over the document.
+  let head = 0
+  while (head < A.length && head < B.length && A[head] === B[head]) head++
+  let tail = 0
+  while (
+    tail < A.length - head &&
+    tail < B.length - head &&
+    A[A.length - 1 - tail] === B[B.length - 1 - tail]
+  ) {
+    tail++
+  }
+
+  const midA = A.slice(head, A.length - tail)
+  const midB = B.slice(head, B.length - tail)
+
+  // Over budget means the two versions share too little for an alignment to
+  // tell anyone anything — the same call splices makes, and the view is told
+  // so it can say "shown as a wholesale replacement" instead of implying the
+  // line pairing below means something.
+  const coarse = midA.length * midB.length > LCS_BUDGET
+  const midEdits =
+    coarse || !midA.length || !midB.length
+      ? [
+          ...midA.map((line) => ({ op: 'del', line })),
+          ...midB.map((line) => ({ op: 'ins', line })),
+        ]
+      : lcsEdits(midA, midB)
+
+  const rows = []
+  for (let k = 0; k < head; k++) rows.push({ op: 'keep', text: A[k], a: k + 1, b: k + 1 })
+  let a = head
+  let b = head
+  for (const e of midEdits) {
+    if (e.op === 'keep') {
+      rows.push({ op: 'keep', text: e.line, a: a + 1, b: b + 1 })
+      a++
+      b++
+    } else if (e.op === 'del') {
+      rows.push({ op: 'del', text: e.line, a: a + 1, b: null })
+      a++
+    } else {
+      rows.push({ op: 'ins', text: e.line, a: null, b: b + 1 })
+      b++
+    }
+  }
+  for (let k = 0; k < tail; k++) {
+    rows.push({
+      op: 'keep',
+      text: A[A.length - tail + k],
+      a: A.length - tail + k + 1,
+      b: B.length - tail + k + 1,
+    })
+  }
+
+  return {
+    identical: false,
+    coarse,
+    added: rows.reduce((n, r) => n + (r.op === 'ins' ? 1 : 0), 0),
+    removed: rows.reduce((n, r) => n + (r.op === 'del' ? 1 : 0), 0),
+    hunks: group(rows, context),
+  }
+}
+
+// Keep every changed row and the `context` rows either side of it, then cut
+// what survives into contiguous runs. Two changes closer together than twice
+// the context merge into one hunk for free, because their context windows
+// overlap — no special case needed for "are these near enough to join".
+function group(rows, context) {
+  const shown = new Array(rows.length).fill(false)
+  rows.forEach((r, i) => {
+    if (r.op === 'keep') return
+    const lo = Math.max(0, i - context)
+    const hi = Math.min(rows.length - 1, i + context)
+    for (let j = lo; j <= hi; j++) shown[j] = true
+  })
+
+  const out = []
+  let current = null
+  let skipped = 0
+  for (let i = 0; i < rows.length; i++) {
+    if (!shown[i]) {
+      skipped++
+      current = null
+      continue
+    }
+    if (!current) {
+      current = { skipped, rows: [] }
+      skipped = 0
+      out.push(current)
+    }
+    current.rows.push(rows[i])
   }
   return out
 }

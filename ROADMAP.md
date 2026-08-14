@@ -181,7 +181,9 @@ is one more `kind` and everything that branches on it:
 - Columns and cards in Yjs: fractional-index order, exactly as sheet rows and
   columns already do, so concurrent inserts merge without coordination
 - History: a board preview renderer, and a `restoreFrom` like `Workbook`'s
-  rather than the text patcher
+  rather than the text patcher — plus a third answer for the Changes view,
+  since a board is neither a sequence nor a cell map (see *Comparing two
+  points*)
 - Git exporter: it skips any kind it has no text serialization for
 
 A card **is** a document, and inherits the board's access — decided, see

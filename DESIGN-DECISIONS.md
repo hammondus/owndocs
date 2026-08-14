@@ -1881,6 +1881,71 @@ Implementation (phase: version history):
   itself appears in history. Pinning a name flushes the room first so the
   label lands on the very latest edit.
 
+### Comparing two points: one LCS for both audiences, and sheets by id
+
+Recorded 2026-08-15. History could show what a document *was* at a point but
+never what *changed* to get there, which is the question people actually bring
+to a timeline.
+
+**Half of it was already written.** `diff.js` computes a line-level LCS, and
+has since restore stopped being a wholesale replace — the reason it exists is
+comment anchors, not display (see *Restore is an ordinary collaborative edit*).
+So the work was a second entry point on the same algorithm, not a new one.
+
+- **`hunks()` beside `splices()`, not a flag on it.** A splice is a character
+  range with no notion of a line number; a hunk is a list of lines with no
+  notion of a character offset. Folding them together would mean each caller
+  carrying the other's bookkeeping. They share the LCS and the head/tail trim,
+  which is the part worth sharing.
+- **The edit script now carries text on every edit**, including deletions.
+  `splices` never needed it — it takes what to remove from the original — but a
+  diff being *read* has to show the line that went away.
+- **A random-pair test asserts the two agree** about whether anything changed
+  at all. They are the same question answered for two audiences, and a
+  disagreement would mean the history view and the restore button describing
+  different documents.
+- **Three lines of context, and the count of what was skipped.** Collapsing
+  unchanged text without saying how much was collapsed reads as a diff that
+  lost something. Two changes closer than twice the context merge into one hunk
+  for free, because their context windows overlap — no rule decides "are these
+  near enough to join".
+
+**Sheets needed a different answer, and the obvious one is wrong.** A document
+is a sequence, so alignment is the question. A sheet is a sparse map, so the
+question is per cell — and running a line diff over a rendered grid answers
+something nobody asked. Worse, it answers it badly: insert one row and every
+line below it reads as changed.
+
+`sheetdiff.js` compares the two cell maps **by stable id**, which is already
+correct about inserted and deleted rows — inserting a row above everything
+changes exactly one key and leaves every other cell's key untouched. This is
+the property the id-based grid was built for (*Grid identity*), collected here.
+Positions are still shown, because A1 is how people talk about a sheet, but
+they are computed at the end for labelling and never compared.
+
+Two consequences worth stating, both tested:
+
+- **The stored form is compared; the rendered form is displayed.** A formula is
+  stored with row and column ids in it, and `getInput` renders those back to
+  current A1. Insert a row above `=SUM(A1:A2)` and it renders as `=SUM(A2:A3)`
+  while the formula itself was never touched — so comparing rendered text would
+  invent an edit. Comparing stored text is the same reasoning as keying cells
+  by id in the first place.
+- **A cell is named by where it is now, or where it was if it is gone.** A
+  deleted row's cells have no current position, and the only useful label is
+  the one somebody could go and look at in the old version.
+
+**The default comparison is the point before**, which answers "what did this
+session do" — the question the timeline itself invites. Comparing against the
+newest point answers "what has happened since" and is one selection away. The
+comparison list spans sessions and named versions together, because a version
+pinned mid-session sits between two sessions and should be reachable.
+
+**Colours come from the document palette**, not a fresh green and red: those
+are already a matched pair at one lightness per scheme, mixed into the ground
+at low percentage so the text on them stays `--ink` and never needs a contrast
+decision of its own.
+
 ### Git exporter: a headless client, not a server feature
 
 `web/scripts/exporter.mjs` mirrors named versions into a git repo — one

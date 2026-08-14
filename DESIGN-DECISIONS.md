@@ -1300,6 +1300,14 @@ was seriously considered; rejected because it trades away the single static
 binary and an auditable dependency tree — the properties this project is
 optimising for. Rust (yrs + axum) rejected on solo dev velocity.
 
+**Amended 2026-08-14.** "Off the table" was overstated, and `exporter.mjs`
+falsified the export half before the sentence was ever revised: a headless
+client logs in, rebuilds each `Y.Doc` locally and writes markdown, with no
+server change at all. The constraint binds the **server**, not the system —
+anything the server cannot do, a client holding the document can. See *Search*
+for what that costs when the feature is search rather than export, which is a
+different answer because search needs an index that outlives the client.
+
 ### Compaction: snapshot is a cache, log is the source of truth
 
 ~~Original design: a client posts its merged state covering revision N; the
@@ -3043,6 +3051,99 @@ commenting on an untouched cell had to materialise it first. Editors now do
 that on submit exactly as typing would; commenters cannot, since it is a
 document write, and the composer says so instead of sitting inexplicably
 disabled.
+
+## Search
+
+Decided 2026-08-14. Built in stages deliberately, and the later stages are not
+promised — each one is meant to be lived with before the next is justified,
+because the last of them costs something the others do not.
+
+### Why this is not simply blocked
+
+*Server treats Yjs updates as opaque binary blobs* names search as an accepted
+cost, and that framing is what needs correcting first: the opacity is there for
+**simplicity and auditability** — no Go CRDT implementation — not for privacy
+from the operator. This is self-hosted. The person running the server is the
+person the documents belong to, so "the server must not read content" was never
+a confidentiality guarantee, and treating it as one would be reasoning about a
+threat model this project does not have.
+
+That matters because it decides what search is allowed to cost. It cannot cost
+a Go CRDT implementation. It can cost the server holding derived text, provided
+something else does the deriving.
+
+**FTS5 is available in `modernc.org/sqlite`** — verified against the version
+already in `go.mod`, including `snippet()` and `rank`. So the index is a virtual
+table and a query, with no new dependency and no cgo. Whatever else search
+costs, it does not cost the single static binary.
+
+### The index is content-keyed; permissions are applied at query time
+
+The instinctive design is to index per user, so that everyone sees only what
+they may see. That is N×M work for the same answer.
+
+Index each document **once**, keyed by `doc_id`, and filter at query time by
+joining `permissions` — which `handleListDocs` already does for the document
+list, and which `roleFor()` already expresses. Access is then enforced by the
+same table that enforces it everywhere else, so a change to somebody's role
+takes effect on their next search with no reindexing at all. An index that
+embedded permissions would have to be rebuilt every time a share changed.
+
+### Stage 1: comments, which are already readable
+
+Comment bodies are plain `TEXT` in SQLite today. That came out of *Comments* —
+so viewers could comment and authorship could be stamped server-side — and had
+nothing to do with search, but it means comment search is an FTS5 table and a
+`MATCH` clause against data the server already holds in the clear. No new
+principal, no client involvement, and nothing about the opacity property
+changes, because comments were never inside the opaque blob.
+
+Worth doing first for a reason beyond cheapness: "where did I see that" is often
+a memory of a *conversation* rather than of prose, and this may cover more of
+the real need than its size suggests. Stage 2 should be justified by stage 1
+being insufficient, not assumed.
+
+### Stage 2: the client indexes what it has already decoded
+
+A browser with a document open holds the full text in memory. It extracts and
+`POST`s it, and the server stores it against the `doc_id` — authorised by the
+**same `roleFor` check that gates every other read of that document**. Nothing
+new is granted to anybody: a client can only index what it was already allowed
+to read.
+
+Extraction exists. `exporter.mjs` already turns a rebuilt `Y.Doc` into markdown
+for documents and uses `Workbook` plus `toCSV` for sheets; stage 2 is that logic
+running in the browser instead of in a node script.
+
+Costs, recorded rather than discovered:
+
+- **Coverage is what people open.** A document shared with somebody but never
+  opened is not in the index. This is the honest limit of the design and the
+  main thing stage 1 and 2 are being trialled to measure.
+- **The entry goes stale until reopened.** Re-indexing on save bounds it, but
+  nothing makes it exact.
+- **The text is client-supplied.** An editor could post text that does not match
+  the document. The marginal harm is small — anyone who can poison the index can
+  also just edit the document — but it is a real difference from the server
+  deriving the text itself, and it is why this is not simply the final design.
+
+### Stage 3: a headless indexer, and why it is last
+
+The obvious completion is a headless client on the server that reads every
+document and indexes it, in the shape `exporter.mjs` already proves works. The
+code would be small. **The cost is not code.**
+
+It has to read every document, and this system deliberately has no principal
+that can. From *Invite links*: "There is no global admin in this app — roles are
+per-document — and inventing one for this is out of proportion." An indexer
+account either needs a share on every document, which appears in every share
+list and is visibly odd, or a new privileged read path — and then one
+credential reads everything, in an application whose entire authorisation story
+is that access is per document.
+
+That is a change to the threat model, not a feature. It may still be the right
+call once stages 1 and 2 have shown what they miss; it should not be reached for
+before, and it should not be reached for because it is tidier.
 
 ## Kanban (decided, not built)
 

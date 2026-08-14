@@ -238,6 +238,73 @@ CREATE TABLE notifications (
 CREATE INDEX notifications_user ON notifications(user_id, id);
 `
 
+// Schema v9: search over comment bodies. FTS5 is available in
+// modernc.org/sqlite, so this needs no new dependency and no cgo — see
+// DESIGN-DECISIONS.md, *Search*.
+//
+// Comments are searchable and document content is not, and that asymmetry is
+// not an oversight: comment bodies have always been plain TEXT here, because
+// *Comments* put them in SQLite so viewers could comment and authorship could
+// be stamped server-side. Document content is inside an opaque blob the server
+// never parses. So this stage costs nothing in content-blindness — it indexes
+// data the server already held in the clear.
+//
+// `content=comments` makes this an EXTERNAL CONTENT table: FTS5 stores only the
+// index and reads the text back from `comments` by rowid, so a body is not
+// duplicated. The price is that FTS5 cannot see writes by itself, which is what
+// the three triggers are for. They are the whole correctness story — without
+// them the index silently drifts from the table, which is the failure mode that
+// makes people distrust search and stop using it.
+//
+// The delete/update triggers use the 'delete' command with the OLD text, which
+// is how an external-content table is told to retract a row. Getting that wrong
+// leaves tombstones that match queries and then resolve to nothing.
+const schemaV9 = `
+CREATE VIRTUAL TABLE comment_search USING fts5(
+	body,
+	content=comments,
+	content_rowid=id,
+	tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER comments_ai AFTER INSERT ON comments BEGIN
+	INSERT INTO comment_search(rowid, body) VALUES (new.id, new.body);
+END;
+CREATE TRIGGER comments_ad AFTER DELETE ON comments BEGIN
+	INSERT INTO comment_search(comment_search, rowid, body) VALUES ('delete', old.id, old.body);
+END;
+CREATE TRIGGER comments_au AFTER UPDATE ON comments BEGIN
+	INSERT INTO comment_search(comment_search, rowid, body) VALUES ('delete', old.id, old.body);
+	INSERT INTO comment_search(rowid, body) VALUES (new.id, new.body);
+END;
+
+INSERT INTO comment_search(rowid, body) SELECT id, body FROM comments;
+`
+
+// Schema v10: search over document bodies, supplied by the client.
+//
+// Unlike comment_search this is NOT an external-content table, because there is
+// no source table to point at — the extracted text *is* the stored thing. The
+// server still never parses a Yjs update; a client that already decoded the
+// document posts what it read, authorised by the same role check that let it
+// read. See DESIGN-DECISIONS.md, *Search*, stage 2.
+//
+// One row per document, replaced wholesale on each index. FTS5 has no usable
+// UPSERT, so `doc_search.go` deletes then inserts inside a transaction — which
+// is also why doc_id must be queryable rather than UNINDEXED.
+//
+// indexed_at is UNINDEXED and is not decoration: the whole point of shipping
+// stages 1 and 2 before a headless indexer is to find out how stale a
+// client-driven index actually gets, and that cannot be measured without it.
+const schemaV10 = `
+CREATE VIRTUAL TABLE doc_search USING fts5(
+	doc_id,
+	body,
+	indexed_at UNINDEXED,
+	tokenize='unicode61 remove_diacritics 2'
+);
+`
+
 func openDB(path string) (*sql.DB, error) {
 	// _pragma values apply per-connection; busy_timeout is belt-and-braces
 	// since MaxOpenConns(1) already serializes everything through one
@@ -260,7 +327,7 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
-	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8} {
+	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10} {
 		if v > ver {
 			continue
 		}

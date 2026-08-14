@@ -113,6 +113,28 @@ The name is settled: **Own Docs**, `owndocs` as one word wherever a name has to
 be machine-readable. Decided 2026-08-14, so the site can be written against it —
 see *The name* in the design doc for why the searchability objection lost.
 
+## Search
+
+Decided and built in stages 2026-08-14 — see *Search* in the design doc for why
+the opacity was never the blocker, and for what each stage costs.
+
+Shipped: **stage 1**, comment search (schema v9, FTS5 over `comments` kept in
+step by triggers), and **stage 2**, document search from text the client posts
+after decoding it (schema v10, `POST /api/docs/{id}/index`). `GET /api/search`
+joins `permissions`, so a role change takes effect on the next query with no
+reindexing.
+
+**Stage 3 is deliberately not queued.** A headless indexer would need to read
+every document, which is the first global-read principal in an app whose whole
+authorisation story is per-document. Live with stages 1 and 2 first; `indexed_at`
+on each row is there to make the staleness measurable rather than argued about.
+
+Known and accepted, to be judged in use:
+
+- A document nobody has opened since search shipped is not indexed
+- Indexing happens on open and 15s after the last edit, so an entry can lag
+- Text over 400,000 characters is indexed truncated rather than rejected
+
 ## Sheet protection
 
 Decided 2026-08-13. Accident prevention, not authorisation — see *Sheet

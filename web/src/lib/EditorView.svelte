@@ -21,6 +21,7 @@
   import { load as loadPrefs } from '../prefs.js'
   import { listThreads, textAnchor, resolveTextAnchor } from '../comments.js'
   import { scheduleCompaction } from '../compaction.js'
+  import { makeIndexer } from '../searchindex.js'
   import { canEdit, canComment, visibleToolbar } from '../roles.js'
 
   let { me, doc, onBack, onShare, onHistory, onRenamed, onOpenDoc, onRichChanged, startWithComments } = $props()
@@ -34,7 +35,7 @@
   // exists — the escape hatch for handing DOM to non-Svelte code.
   let editorEl
 
-  let ydoc, provider, view
+  let ydoc, provider, view, indexer
 
   let showComments = $state(false)
   // Arriving from the inbox opens the drawer, so the comment somebody was
@@ -124,12 +125,15 @@
   onMount(() => {
     ydoc = new Y.Doc()
     const ytext = ydoc.getText('text')
+    indexer = makeIndexer(doc.id, doc.kind, ydoc)
 
     provider = new Provider(ydoc, doc.id, {
       onStatus: (s) => { status = s },
       onSynced: (synced) => {
         if (provider.corrupted) return // never snapshot/verify after a bad frame
         scheduleCompaction({ docId: doc.id, doc: ydoc, role: doc.role, synced })
+        // Index the whole document, not whatever had arrived before sync.
+        indexer?.onSynced()
       },
       onComments: loadComments,
       onProblem: (msg) => { problem = msg },
@@ -279,6 +283,9 @@
   }
 
   onDestroy(() => {
+    // Before the doc is destroyed: the indexer holds an update listener on it,
+    // and a pending post for a document you have navigated away from is noise.
+    indexer?.stop()
     view?.destroy()
     provider?.destroy()
     ydoc?.destroy()

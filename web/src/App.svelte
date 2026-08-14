@@ -11,6 +11,7 @@
   import ShareView from './lib/ShareView.svelte'
   import HistoryView from './lib/HistoryView.svelte'
   import NotificationsPanel from './lib/NotificationsPanel.svelte'
+  import SearchPanel from './lib/SearchPanel.svelte'
 
   // $state makes a variable reactive: assigning to it re-renders whatever
   // reads it. `me` is the signed-in user (null = signed out).
@@ -28,6 +29,59 @@
   // subscription to something nobody is waiting on.
   let notes = $state([])
   let showNotes = $state(false)
+
+  // Search. `seq` is what makes an out-of-order response harmless: typing is
+  // faster than the network, so a slow early query can land after a fast later
+  // one and overwrite the results for what is currently in the box.
+  let showSearch = $state(false)
+  let searchQ = $state('')
+  let searchResults = $state({ documents: [], comments: [] })
+  let searching = $state(false)
+  let searchSeq = 0
+  let searchTimer = null
+
+  function onSearchQuery(v) {
+    searchQ = v
+    clearTimeout(searchTimer)
+    if (v.trim() === '') {
+      searchResults = { documents: [], comments: [] }
+      searching = false
+      return
+    }
+    searching = true
+    // Debounced: a search box that fires per keystroke is a query per
+    // keystroke, and FTS5 prefix matching makes the early ones useless anyway.
+    searchTimer = setTimeout(runSearch, 200)
+  }
+
+  async function runSearch() {
+    const mine = ++searchSeq
+    try {
+      const r = await api('/api/search?q=' + encodeURIComponent(searchQ))
+      if (mine !== searchSeq) return // a later query already answered
+      searchResults = r
+    } catch (e) {
+      if (mine !== searchSeq) return
+      console.warn('owndocs: search failed', e)
+      searchResults = { documents: [], comments: [] }
+    } finally {
+      if (mine === searchSeq) searching = false
+    }
+  }
+
+  async function openSearchDoc(h) {
+    showSearch = false
+    const doc = await findDoc(h.doc_id)
+    if (doc) openDoc(doc)
+  }
+
+  // A comment hit opens the document with the comments panel showing, which is
+  // the same landing an inbox item gets — the thread is what was searched for.
+  async function openSearchComment(h) {
+    showSearch = false
+    const doc = await findDoc(h.doc_id)
+    if (doc) openDoc(doc, true)
+  }
   let unread = $derived(notes.filter((n) => !n.read_at).length)
 
   async function loadNotes() {
@@ -190,9 +244,14 @@
          toast, nothing that interrupts. Somebody who is working stays working. -->
     <button
       class="linkish"
+      title="Search documents and comments"
+      onclick={() => { showSearch = !showSearch; if (showSearch) showNotes = false }}
+    >search</button>
+    <button
+      class="linkish"
       class:has-unread={unread > 0}
       title="Mentions and replies"
-      onclick={() => { showNotes = !showNotes; if (showNotes) loadNotes() }}
+      onclick={() => { showNotes = !showNotes; if (showNotes) { loadNotes(); showSearch = false } }}
     >inbox{unread ? ` (${unread})` : ''}</button>
     <span class="who readout">{me.name}</span>
     <button class="linkish" onclick={signOut}>sign out</button>
@@ -202,6 +261,17 @@
 <!-- Prose views keep a comfortable reading width; a grid gets the whole
      window, since a spreadsheet's usefulness is columns you can see. -->
 <div class="page" class:wide={wideView} class:fill={fillView}>
+  {#if me && showSearch}
+    <SearchPanel
+      q={searchQ}
+      results={searchResults}
+      {searching}
+      onQuery={onSearchQuery}
+      onOpenDoc={openSearchDoc}
+      onOpenComment={openSearchComment}
+      onClose={() => (showSearch = false)}
+    />
+  {/if}
   {#if me && showNotes}
     <NotificationsPanel
       items={notes}

@@ -21,6 +21,7 @@
     acceptsRef, insertRef, formulaRefs, refColor, cycleAbsolute, nextPoint, pointRect,
   } from '../sheet/refs.js'
   import { scheduleCompaction } from '../compaction.js'
+  import { makeIndexer } from '../searchindex.js'
   import ScriptsPanel from './ScriptsPanel.svelte'
   import FunctionsPanel from './FunctionsPanel.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
@@ -107,7 +108,7 @@
   // $state because the overlay input mounts and unmounts with {#if edit}:
   // bind:this writes to it each time, and reads must see the fresh element.
   let cellInputEl = $state(null)
-  let ydoc, provider, model, unobserve, unwatchEdits
+  let ydoc, provider, model, unobserve, unwatchEdits, indexer
   // $state because the template reads it: it is created in onMount, and a
   // plain let would leave the scripts panel unable to ever render.
   let workbook = $state(null)
@@ -130,6 +131,7 @@
 
   onMount(() => {
     ydoc = new Y.Doc()
+    indexer = makeIndexer(doc.id, doc.kind, ydoc)
     workbook = new Workbook(ydoc)
     model = workbook.sheet(activeId)
     tabs = workbook.list()
@@ -139,6 +141,7 @@
       onSynced: (synced) => {
         if (provider.corrupted) return
         scheduleCompaction({ docId: doc.id, doc: ydoc, role: doc.role, synced })
+        indexer?.onSynced()
       },
       // The server says only that comments changed, never what changed, so
       // the answer is always the same: refetch.
@@ -176,6 +179,7 @@
   })
 
   onDestroy(() => {
+    indexer?.stop()
     unwatchEdits?.()
     unobserve?.()
     provider?.destroy()

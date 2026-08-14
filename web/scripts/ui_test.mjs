@@ -1866,6 +1866,55 @@ try {
     await waitForNothing()
   })
 
+  // Search, end to end. The document text reached the index from the client
+  // that had it open, and the query comes back through `permissions` — see
+  // DESIGN-DECISIONS.md, *Search*. Worth a browser step rather than only Go
+  // tests, because everything between the two is UI: the panel, the debounce,
+  // and the snippet markers being split rather than injected as markup.
+  await step('a document is searchable once it has been opened', async () => {
+    // Reopening is what indexes the *current* text. The first index happens on
+    // sync, so a document typed into after that is indexed on its next open —
+    // which is exactly the staleness stage 2 is meant to expose.
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await clickText(page, 'a', 'Renamed By Test')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+
+    await clickText(page, 'button', 'search')
+    await page.waitForSelector('input[type="search"]', { timeout: 3000 })
+    await page.type('input[type="search"]', 'second')
+    await page.waitForFunction(
+      () => /in documents/i.test(document.body.innerText),
+      { timeout: 8000 },
+    )
+  })
+
+  // The other half of the index, and the half that needed no client at all:
+  // comment bodies were already plain text in SQLite.
+  await step('comments are searchable too', async () => {
+    await page.evaluate(() => {
+      const i = document.querySelector('input[type="search"]')
+      const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+      set.call(i, '')
+      i.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await page.type('input[type="search"]', 'number')
+    await page.waitForFunction(
+      () => /in comments/i.test(document.body.innerText),
+      { timeout: 8000 },
+    )
+    // The snippet is rendered as elements, never as markup: if the server's
+    // control characters ever reached the DOM as text, this is what would
+    // catch it.
+    const raw = await page.evaluate(() => document.body.innerText)
+    check(!raw.includes('\u0002') && !raw.includes('\u0003'),
+      'snippet markers are rendered, not shown')
+    check(await page.$('.panel mark') !== null, 'the matched term is highlighted')
+    await clickText(page, 'button', 'close')
+  })
+
 } finally {
   await browser.close()
   server.kill()

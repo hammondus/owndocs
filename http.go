@@ -25,6 +25,9 @@ func routes(db *sql.DB, h *hub, mail *mailer, staticFS fs.FS, signupOpen, dev bo
 	mux.HandleFunc("GET /api/notifications", requireAuth(db, handleListNotifications(db)))
 	mux.HandleFunc("POST /api/notifications/read", requireAuth(db, handleMarkNotificationsRead(db)))
 
+	// Content-keyed index, permissions applied in the query — see search.go.
+	mux.HandleFunc("GET /api/search", requireAuth(db, handleSearch(db)))
+
 	mux.HandleFunc("GET /api/docs", requireAuth(db, handleListDocs(db)))
 	mux.HandleFunc("POST /api/docs", requireAuth(db, handleCreateDoc(db)))
 	mux.HandleFunc("PATCH /api/docs/{id}", requireAuth(db, handleUpdateDoc(db)))
@@ -57,6 +60,10 @@ func routes(db *sql.DB, h *hub, mail *mailer, staticFS fs.FS, signupOpen, dev bo
 	mux.HandleFunc("DELETE /api/docs/{id}/comments/{tid}", requireAuth(db, handleDeleteThread(db, h)))
 	mux.HandleFunc("PATCH /api/docs/{id}/comments/{tid}/{cid}", requireAuth(db, handleEditComment(db, h)))
 	mux.HandleFunc("DELETE /api/docs/{id}/comments/{tid}/{cid}", requireAuth(db, handleDeleteComment(db, h)))
+
+	// The client hands over text it already decoded, gated by the same role
+	// check as reading — see search.go, and *Search* stage 2.
+	mux.HandleFunc("POST /api/docs/{id}/index", requireAuth(db, handleIndexDoc(db)))
 
 	mux.HandleFunc("POST /api/docs/{id}/snapshot", requireAuth(db, handleSnapshotUpload(db)))
 	mux.HandleFunc("GET /api/docs/{id}/verify-bundle", requireAuth(db, handleVerifyBundle(db)))

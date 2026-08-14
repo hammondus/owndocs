@@ -1689,12 +1689,107 @@ verified rows are archived away.
 
 Pure-Go SQLite driver — **no cgo**, so the linux/arm64 cross-compile stays
 `GOOS=linux GOARCH=arm64 go build`. Single-writer SQLite is a fit for the
-scale target. Backups via Litestream. Postgres deferred until (if ever) the
-project goes multi-node; don't start there.
+scale target. ~~Backups via Litestream.~~ Superseded — see *Backups* below.
+Postgres deferred until (if ever) the project goes multi-node; don't start
+there.
 
 Schema sketch: `documents`, `updates` (append-only blob log), `snapshots`,
 `history_segments` (compressed archived update ranges), `users`,
 `permissions`.
+
+### Backups: `VACUUM INTO`, verified, and why not a file copy
+
+Recorded 2026-08-15, replacing the three words above. Those three words were
+the entire recorded answer to "how does this survive a disk failure", and they
+named a tool without a reason, an alternative, or an implementation. The
+offline-editing entry in this file exists because a bare bullet cost more to
+re-derive than writing it would have; this is the same debt, paid before it
+came due.
+
+**Everything is in one SQLite file.** Confirmed rather than assumed: there is
+no blob store, no upload directory, no state outside the database. Documents,
+users, sessions, permissions, share links, comments, invites, notifications,
+the append-only update log, snapshots and compacted history segments are all in
+`data/docs.db`. So a backup is one file — which is the good news, and the
+reason the bad news matters as much as it does.
+
+**A file copy is wrong, and wrong silently.** The database runs in WAL mode, so
+committed writes live in `docs.db-wal` until a checkpoint folds them back.
+Measured on this project's own database, with the server running and five
+freshly created documents sitting in the WAL:
+
+| taken while live | documents | the five new ones |
+| --- | --- | --- |
+| the database itself | 17 | present |
+| `cp data/docs.db` | 12 | **absent** |
+| `VACUUM INTO` | 17 | present |
+
+The copy is the dangerous one precisely because it *succeeds*: it opened with
+no error and passed `PRAGMA integrity_check`, a perfectly valid database
+missing every write since the last checkpoint. `docs.db` still carried its old
+mtime while 90 KB sat beside it. Copying `-wal` and `-shm` alongside is no
+better — that is a torn read across three files that are changing as they are
+read. This is the single most likely way to end up holding a backup you believe
+in and cannot use.
+
+**So: `VACUUM INTO`, in the binary, behind `-backup`.** One SQL statement, no
+cgo, no second process, no new dependency — the same constraints that chose the
+driver. It runs as an ordinary read transaction, and WAL readers do not block
+writers, so it is safe against a live instance and nobody's editing stops. The
+output is fully checkpointed and compacted, so it can then be copied around
+like any other file.
+
+Choices worth recording:
+
+- **It does not reuse `openDB`, because `openDB` migrates.** A migration is a
+  write, and a backup must never be the thing that changes what it is copying —
+  otherwise an older or newer binary's `-backup` silently upgrades a live
+  schema. `openSource` therefore opens without migrating and issues exactly one
+  statement.
+- **`query_only(1)` cannot express that, and the attempt is recorded because it
+  is surprising.** SQLite classes `VACUUM INTO` as a write statement — it does
+  write a file, just not to the source — so the pragma fails the backup with
+  "attempt to write a readonly database". The guarantee is a property of this
+  code path, not one the engine enforces.
+- **Every backup verifies itself.** It is reopened as an independent database,
+  integrity-checked, and its rows counted. This is not ceremony: every failure
+  mode here is silent by nature, and an empty database passes an integrity
+  check perfectly well. `users = 0` is refused outright, and the counts include
+  `updates` because a backup with documents and no update log restores a list
+  of empty files. Checking at backup time means the belief is tested while
+  there is still something to fall back on.
+- **A failed verification leaves the file on disk.** It is the only evidence of
+  whatever went wrong, and it is named in the error.
+- **Backups are `0600`.** They contain password hashes and live session tokens,
+  so they are credential material; `VACUUM INTO` would otherwise create them
+  with the process umask.
+- **A directory destination generates a timestamped name**, because
+  `VACUUM INTO` refuses to overwrite and a fixed filename is how a scheduled
+  backup quietly does nothing for a month. Two runs in the same second collide
+  on that name — found by the test rather than in production — so a numeric
+  suffix follows.
+
+**Restore is a file copy and a restart**, and that is the whole procedure: stop
+the server, put the backup at the database path, start it. Verified end to end
+rather than asserted — a backup taken from a live instance with uncheckpointed
+writes was restored into a separate instance, which logged in, listed every
+document, and replayed 1,190 update frames back into the original markdown.
+That last step is the one worth repeating after any change to compaction: the
+document text is *reconstructed* from the log, so "the file opens" and "the
+documents are there" are different claims.
+
+**What this deliberately is not.** It is a point-in-time copy, so the exposure
+is everything written since the last one. Continuous replication (Litestream,
+which the superseded note named) gives seconds instead, and costs a second
+process, somewhere to stream to, and one more thing whose own failure is
+silent if unmonitored. That trade is worth making when losing an hour of edits
+is unacceptable, and it is not yet. Recorded as deferred, with the condition
+attached, rather than rejected.
+
+**It also does not solve the second copy.** The Makefile target writes inside
+the data volume, which is the same disk as the database: fine for a mistake,
+useless for a disk failure. Whatever runs it on a schedule has to move the
+result somewhere else, and that is an operational step this repo does not own.
 
 ### Auth & sharing
 

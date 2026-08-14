@@ -30,6 +30,36 @@ End-to-end sync check (needs a running server): `cd web && node scripts/e2e.mjs`
     make release      # dist/owndocs-linux-arm64, static binary
     make deploy       # on the server: git pull && docker compose up -d --build
 
+### Backups
+
+    make backup       # on the server: a verified, timestamped copy in ./data/backups
+    make backup-local # the same against a local dev database
+
+Safe to run while people are editing — it is a read transaction, and WAL
+readers do not block writers. Every backup is reopened and checked before it
+is reported as good, so a run that prints `backup ok:` has been proved to open,
+pass an integrity check, and contain users, documents and their update log.
+
+**Do not back this up by copying `docs.db`.** SQLite runs in WAL mode here, so
+committed writes sit in `docs.db-wal` until a checkpoint: a plain copy is a
+valid, openable database silently missing everything since the last one.
+Measured, and the numbers are in `DESIGN-DECISIONS.md` under *Backups*.
+
+Scheduling it is yours to own, and so is the second copy — the target above is
+inside the data volume, on the same disk as the database, which helps with a
+mistake and not with a dead disk:
+
+    0 3 * * *  cd /srv/owndocs && make backup && rsync -a data/backups/ elsewhere:/owndocs/
+
+To restore: stop the server, put the backup file at the database path, start it.
+
+    docker compose down
+    cp data/backups/docs-20260814T220345Z.db data/docs.db
+    docker compose up -d
+
+Backups contain password hashes and live session tokens. They are written
+`0600`; keep them that way wherever they are copied to.
+
 ### Notification email (optional)
 
 Off unless `-smtp` is set, and the app is whole without it: mentions and

@@ -1,6 +1,6 @@
 BIN := owndocs
 
-.PHONY: build js runner-js runner test run release clean docker-build deploy logs
+.PHONY: build js runner-js runner test run release clean docker-build deploy logs backup backup-local
 
 # The Go binary embeds web/static, so the JS bundle must exist before go build.
 build: js runner-js
@@ -67,3 +67,27 @@ deploy:
 
 logs:
 	docker compose logs -f owndocs
+
+# A verified backup of the running instance, with a timestamped name. Safe
+# while people are editing: VACUUM INTO is a read transaction and WAL readers
+# do not block writers, so nobody is interrupted.
+#
+# `exec` into the running container rather than `run` a new one: both would see
+# the same files through the volume, but only the live container's SQLite knows
+# the current WAL state, and reading around it is the mistake this whole
+# mechanism exists to avoid.
+#
+# The destination is inside the volume — `./data/backups` on the host, already
+# git-ignored — because that needs no second mount to work. That also means it
+# is on the same disk as the database, which is fine for an oops and no use at
+# all for a disk failure: whatever runs this on a schedule must copy the result
+# somewhere else. See DESIGN-DECISIONS, *Backups*.
+.PHONY: backup backup-local
+backup:
+	mkdir -p ./data/backups
+	docker compose exec owndocs owndocs -db /data/docs.db -backup /data/backups
+
+# The same, against a local dev database with no Docker in the way.
+backup-local: build
+	mkdir -p ./data/backups
+	./$(BIN) -backup ./data/backups

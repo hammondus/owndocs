@@ -39,7 +39,21 @@ func main() {
 	smtpAddr := flag.String("smtp", "", "submission relay host:port for notification email; empty disables it")
 	mailFrom := flag.String("mail-from", "", "From address for notification email")
 	baseURL := flag.String("base-url", "", "public origin of this instance, e.g. https://docs.example.com — used for links in email")
+	backup := flag.String("backup", "", "write a verified backup to this file (or a timestamped one, if this is a directory) and exit; safe to run against a live instance")
 	flag.Parse()
+
+	// Backup runs instead of the server, not alongside it, and takes its own
+	// read-only connection — so it works equally well against a stopped
+	// instance or a running one, which is what lets cron call it without
+	// coordinating with the service. Handled before the data directory is
+	// created: a typo'd -db should report a missing database, not silently
+	// make an empty one and back that up.
+	if *backup != "" {
+		if err := runBackup(*dbPath, *backup); err != nil {
+			log.Fatalf("backup: %v", err)
+		}
+		return
+	}
 	if *signup != "open" && *signup != "closed" {
 		log.Fatalf("-signup must be open or closed, got %q", *signup)
 	}

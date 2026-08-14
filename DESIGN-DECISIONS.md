@@ -3557,6 +3557,45 @@ The domain noun is untouched throughout. A *document* is still a doc, `/api/docs
 is still `/api/docs`, and `handleListDocs` still lists documents. Only the
 product's own name moved; the vocabulary the product is about did not.
 
+### The icon, and the comment that stopped it rendering
+
+The mark itself is recorded in the commit that added it: the caret rule at
+32px, the app's one signature device marking a document, in the dark palette
+because the plate is dark ground. None of that changed. What follows is why it
+did not appear for a day, because the failure is worth more than the design.
+
+**The comment naming its colours contained a double hyphen, and an XML comment
+may not.** It documented where the colours came from by naming the custom
+properties in `app.css` the way CSS spells them. SVG is parsed as strict XML,
+so the parser aborted at that line and the file never became an image.
+
+The reason it survived a day is that **every check a person would think to make
+passed**. The file was in `web/public`, was copied into the build, was embedded
+in the binary, and was served at `/favicon.svg` with `Content-Type:
+image/svg+xml`, a 200, and the right byte count. The `<link rel="icon">` was in
+the head of the served HTML. Chrome did not even request it, which looked like
+another bug entirely and was just its favicon cache. Loading it as an `Image()`
+was the first thing that failed, and the parser was the only component with an
+opinion.
+
+Two changes, and a test:
+
+- The tokens are named in the comment **without their leading double hyphen**,
+  with a note in the file saying why, because "fixing" them back is the obvious
+  thing for the next person to do.
+- `width` and `height` alongside the `viewBox`. A favicon is rasterised into a
+  fixed box and an SVG with only a viewBox has no intrinsic size — not the
+  cause here, but two attributes to remove the question.
+- `favicon_test.go` parses it with `encoding/xml`, exactly as a browser would,
+  and says so in the failure message. Confirmed by reintroducing the original
+  mistake and watching it fail. It reads `web/public/favicon.svg` rather than
+  the build output, which does not exist on a fresh clone.
+
+The general lesson, which applies past this file: **a hand-written asset that
+nothing parses in CI is untested**, however carefully it is reviewed. Every
+other hand-written thing in this repo is exercised by something. This one was
+only looked at.
+
 ### The site is static, in this repo, and mostly cannot go stale
 
 Decided 2026-08-14. A `site/` directory of static pages served by nginx from

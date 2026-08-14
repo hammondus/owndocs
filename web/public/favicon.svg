@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Own Docs">
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-label="Own Docs">
   <!-- The caret rule, at icon size. app.css: "a 2px vertical bar in the signal
        colour meaning 'this is the live one'. It marks the wordmark, a focused
        field, the contents entry you are inside, and the row under the pointer.
@@ -11,9 +11,16 @@
        does not change is easier to find again.
 
        Colours are the app's DARK palette, because the plate is dark ground:
-       --signal #7f9cff (~6.9:1 here; the light-theme #2f5fe0 would be ~2.6:1)
-       --ink    #e7eaef (~14.6:1)
-       --ink    #14171c as the casing, from the light theme, where it is ink. -->
+       signal    #7f9cff (~6.9:1 here; the light theme's #2f5fe0 would be ~2.6:1)
+       ink       #e7eaef (~14.6:1)
+       ink       #14171c as the casing, from the light theme, where it is ink.
+
+       Those three name custom properties in app.css, and they are written here
+       WITHOUT their leading double hyphen on purpose. An XML comment may not
+       contain a double hyphen anywhere, and SVG is parsed as strict XML — so
+       spelling the tokens the way CSS does made this file fail to parse. It
+       was still served correctly and fetched correctly, and silently never
+       rendered. Do not "fix" the names back. -->
   <rect width="32" height="32" rx="7" fill="#14171c"/>
   <rect x="7" y="6" width="3" height="20" rx="1.5" fill="#7f9cff"/>
   <rect x="14" y="8" width="12" height="3" rx="1.5" fill="#e7eaef"/>

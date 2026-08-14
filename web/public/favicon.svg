@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Own Docs">
+  <!-- The caret rule, at icon size. app.css: "a 2px vertical bar in the signal
+       colour meaning 'this is the live one'. It marks the wordmark, a focused
+       field, the contents entry you are inside, and the row under the pointer.
+       One device, one meaning, used everywhere." This is that device marking a
+       document, which is the name — the caret already means "yours".
+
+       Deliberately one look rather than a light and a dark variant. The casing
+       is dark in both, so the mark cannot invert itself into invisibility in a
+       browser that ignores a media query inside a favicon, and a tab icon that
+       does not change is easier to find again.
+
+       Colours are the app's DARK palette, because the plate is dark ground:
+       --signal #7f9cff (~6.9:1 here; the light-theme #2f5fe0 would be ~2.6:1)
+       --ink    #e7eaef (~14.6:1)
+       --ink    #14171c as the casing, from the light theme, where it is ink. -->
+  <rect width="32" height="32" rx="7" fill="#14171c"/>
+  <rect x="7" y="6" width="3" height="20" rx="1.5" fill="#7f9cff"/>
+  <rect x="14" y="8" width="12" height="3" rx="1.5" fill="#e7eaef"/>
+  <rect x="14" y="14.5" width="12" height="3" rx="1.5" fill="#e7eaef"/>
+  <!-- Ragged last line: what makes three bars read as prose rather than a list. -->
+  <rect x="14" y="21" width="7" height="3" rx="1.5" fill="#e7eaef"/>
+</svg>

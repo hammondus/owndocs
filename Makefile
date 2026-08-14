@@ -9,7 +9,7 @@ build: js runner-js
 # Clear previous build output by hand (rather than vite's emptyOutDir) so
 # static/.gitkeep survives — it keeps the go:embed path valid on fresh clones.
 js: web/node_modules
-	cd web && rm -rf static/assets static/index.html && npm run build
+	cd web && rm -rf static/assets static/index.html static/favicon.svg && npm run build
 
 # Installed once, as a real target rather than every build.
 web/node_modules:
@@ -56,7 +56,7 @@ release: js runner-js
 
 clean:
 	rm -f $(BIN) runner cmd/runner/runtime.js
-	rm -rf dist web/static/assets web/static/index.html
+	rm -rf dist web/static/assets web/static/index.html web/static/favicon.svg
 
 docker-build:
 	docker compose build

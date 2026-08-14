@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- SVG only, and no .ico or .png alongside it. Those cannot be hand-written
+     and reviewed the way this repo's other assets can — they would mean either
+     a build dependency or a binary blob nobody can diff. Browsers without SVG
+     favicon support fall back to no icon, which is what is here today. -->
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>Own Docs</title>
 </head>
 <body>

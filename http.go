@@ -74,12 +74,23 @@ func routes(db *sql.DB, h *hub, mail *mailer, staticFS fs.FS, signupOpen, dev bo
 // bytes and are immutable; everything else (index.html) is no-cache — store
 // but always revalidate, since the HTML carries the hashed asset URLs and
 // serving it stale would defeat the hashing.
+//
+// The favicon is the third case, and the first asset to need it: vite copies
+// public/ through verbatim, so /favicon.svg is unhashed and its URL does NOT
+// name its bytes. no-cache would be wrong here for a reason specific to how
+// this binary serves files — the FS is an embed.FS, whose ModTime is the zero
+// time, so net/http emits no Last-Modified and there is no ETag. A
+// revalidation it cannot answer conditionally is just a full re-send on every
+// navigation. An hour bounds how long a changed icon can linger instead.
 func staticHandler(staticFS fs.FS) http.Handler {
 	fileServer := http.FileServerFS(staticFS)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/assets/") {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/assets/"):
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		} else {
+		case r.URL.Path == "/favicon.svg":
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+		default:
 			w.Header().Set("Cache-Control", "no-cache")
 		}
 		fileServer.ServeHTTP(w, r)

@@ -50,18 +50,15 @@ than cells.
 
 **Next up** — nothing else is queued ahead of it.
 
-**Deferred to a scratch VM, and it gates step 3 only.** The proxy manager's UI
-cannot route a wildcard host (issue #749, closed 2020), so the plan is a `server`
-block in its `/data/nginx/custom/http.conf`. `tools/npm-wildcard-test.sh` runs
-the probe; it needs neither DNS nor a certificate, only a Host header. Waiting on
-a throwaway VM with its own NPM and domain rather than running against the live
-proxy — a rejected config there stops nginx for everything behind it. Add one
-dummy proxy host in the UI before running, or the assertion that an exact
-`server_name` still beats the wildcard has nothing to beat.
+**Nothing is blocked.** Sessions are `<domain>/demo/<token>/`, routed on the
+first path segment — reversed 2026-08-14 from the subdomain plan, see *A path
+prefix per session* for why the original objection did not survive reading the
+code. That retires the wildcard question rather than answering it: one A record,
+one certificate, one proxy host with a custom location for `/demo`.
 
-If it fails, the supervisor has to own the wildcard certificate and its
-renewal — see *A subdomain per session* for why that is dearer than the design
-doc originally recorded, and worth reopening the subdomain choice over.
+`tools/npm-wildcard-test.sh` is kept and is **no longer on the critical path**.
+It probes the subdomain fallback, on a scratch VM, if the path prefix ever turns
+out to be wrong.
 
 Build order. Steps 1 and 2 are useful without 3, and are not blocked by it:
 
@@ -88,6 +85,12 @@ Build order. Steps 1 and 2 are useful without 3, and are not blocked by it:
   registry; either the list stays editor-only or the sheet half stays prose.
 - `data-shot` → the files `make site-shots` writes, both directions.
 
+One more of the same shape, guarding the app rather than the site: **no raw
+`fetch('/api…')` outside `api.js`**. Once sessions are path-prefixed, a new
+absolute call works in dev, works self-hosted, and is silently broken in the
+demo alone — the worst shape a bug has. One regex, and it retires the four
+strays that exist today.
+
 Wanted with it, none of which exist:
 
 - `-demo` mode: seeds the three users, and caps documents and bytes
@@ -98,8 +101,13 @@ Wanted with it, none of which exist:
   wants indexing; it is the demo's abandoned scratchpads that must not surface
   under the domain
 - A contact address and a paragraph of acceptable use
-- Wildcard DNS and certificate for `*.demo.<domain>` — a one-off ops task, and
-  the reason a subdomain beat a path prefix
+- Base-path awareness, and it is small because `api()` is a chokepoint: the
+  prefix in `api.js`, the four raw `fetch` strays routed through it, the
+  WebSocket URL in `provider.js`, the two share-link builders off
+  `location.href`, `base: './'` in vite, and the session cookie `Path` from a
+  new flag. See *A path prefix per session* for the table
+- One proxy host with a custom location for `/demo`. No wildcard DNS, no
+  wildcard certificate, no DNS-01
 
 The name is settled: **Own Docs**, `owndocs` as one word wherever a name has to
 be machine-readable. Decided 2026-08-14, so the site can be written against it —

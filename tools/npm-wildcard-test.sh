@@ -2,11 +2,15 @@
 # Does nginx proxy manager tolerate a whole `server` block in its custom
 # http.conf, and does a wildcard server_name there actually match?
 #
-# This is the one unverified assumption under the demo design: the supervisor
-# routes *.demo.<domain> on the Host header itself, so the proxy in front only
-# has to pass the wildcard through. NPM's UI cannot express that (issue #749,
-# closed 2020), leaving this file as the plan. See DESIGN-DECISIONS.md,
-# *A subdomain per session*.
+# NOT ON THE CRITICAL PATH as of 2026-08-14. The demo moved to path-prefixed
+# sessions (<domain>/demo/<token>/), which needs no wildcard anything — see
+# DESIGN-DECISIONS.md, *A path prefix per session*. This probes the subdomain
+# fallback, for if that turns out to be wrong.
+#
+# It was the one unverified assumption under the original design: the supervisor
+# would route *.demo.<domain> on the Host header itself, so the proxy in front
+# only had to pass the wildcard through. NPM's UI cannot express that (issue
+# #749, closed 2020), leaving this file as the plan.
 #
 # Needs no DNS and no certificate. The question is whether nginx accepts the
 # block and matches on it, and `curl -H Host:` sets the matching key directly.

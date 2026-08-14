@@ -3272,33 +3272,106 @@ with a temp database, proxies to it, and kills it after roughly twenty idle
 minutes. **A 17 MiB static binary over SQLite is what makes this affordable**;
 it would be an absurd design for anything that needed a database server.
 
-### A subdomain per session, not a path prefix
+### A path prefix per session, not a subdomain
 
-The client assumes it is at the root: ten absolute `/api/…` call sites, a
-WebSocket URL built from `location.host`, and no vite `base`. Serving a session
-at `/demo/<token>/` would mean teaching all of that about a base path —
-permanent complexity in the app for a demo-only need.
+**Reversed 2026-08-14**, having first decided the opposite the same day. The
+original entry is kept below, because both of its load-bearing claims were
+wrong in instructive ways and the reversal only makes sense against them.
 
-Routing by a cookie at one origin avoids that, and fails for the reason that
-matters most here. **Seeing the collaboration work means being two people at
-once**, which means two cookie jars, which means a private window — and a
-private window carries neither the app's `session` cookie nor the routing
-cookie, so it would land in a *different* instance and have nobody to
-collaborate with.
+So: `<domain>/demo/<token>/`, routed on the first path segment. The supervisor
+is plain Go — `http.StripPrefix` in front of `httputil.ReverseProxy` — and what
+fronts it needs one ordinary proxy host with a **custom location** for `/demo`,
+which is a first-class feature of the proxy manager's UI rather than a
+documented-but-unproven inclusion point.
 
-So: `<token>.demo.example.com`, routed by hostname. The app stays at the root
-and is unmodified, a private window reaches the same instance while keeping its
-own login, and the cost is a wildcard DNS record and a wildcard certificate —
-a one-off operational task rather than standing code.
+That retires an entire operational dependency rather than answering it: no
+wildcard DNS record, no wildcard certificate, no DNS-01 challenge, no
+DNS-provider credentials held by the proxy, and no unverified assumption about
+custom configuration files. One A record, one certificate, one proxy host.
 
-The site has to say this out loud: *open a private window to be the second
-person*. It is not guessable, and the demo is pointless without it.
+**What the original entry got wrong.** It said the client has "ten absolute
+`/api/…` call sites". There are 43, across 10 files — and the number was not
+only understated but beside the point, because they funnel through a single
+helper, `api()` in `web/src/lib/api.js`. Four strays bypass it with raw `fetch`
+(`compaction.js` ×3, `HistoryView.svelte`), and routing those through `api()` is
+a cleanup worth doing on its own account. The count sounded like the objection;
+the chokepoint was the fact that mattered, and nobody had looked.
 
-**What fronts it only has to pass the wildcard through.** The supervisor routes
-on the `Host` header itself, so nothing upstream ever learns about an
-individual session — there is no per-session proxy configuration to write, and
-no reload when one starts or ends. That reduces the whole dependency to a
-single question asked once: can the proxy in front be given one wildcard host?
+It also carried the private-window argument across from a different option.
+That argument kills **cookie** routing at one origin, and correctly: a private
+window carries no cookies, so the second person lands in a different instance
+with nobody to collaborate with. It says nothing about a path, where the *URL*
+carries the routing — paste it into a private window and it reaches the same
+instance. Two options were rejected with one reason that only applied to one of
+them.
+
+**What makes it cheap is a property nobody had connected to it: routing is
+hash-based.** `App.svelte` routes on `#doc=<id>`, `#share=<token>` and
+`#invite=<token>`, so there are no deep *path* links and the HTML is always
+served at exactly one depth. That is what allows `base: './'` in vite to resolve
+assets correctly and lets `index.html` stay a static embedded file. The usual
+expense of a path-prefixed SPA is injecting `<base href>` per session, which
+forces the server to template its own HTML; hash routing removes it. The hash
+routes were chosen for an unrelated reason — keeping share tokens out of logs
+and `Referer` — and paid off somewhere nobody was looking.
+
+The touch points, in full, so the cost is a list rather than an adjective:
+
+| Site | Change |
+| --- | --- |
+| `web/src/lib/api.js` | the prefix, in one function |
+| `compaction.js` ×3, `HistoryView.svelte` | route through `api()` |
+| `provider.js` | WebSocket URL, built from `location.host` today |
+| `ShareView.svelte`, `DocList.svelte` | derive from `location.href`, not `origin` |
+| `vite.config.js` | `base: './'` |
+| `auth.go` | session cookie `Path`, from a flag |
+
+**The cost that is real, and is not on that list.** A new absolute `/api/…` call
+added later breaks the demo *and only the demo* — it works in dev, works on
+every self-hosted instance, and is silently broken in the one place nobody runs
+day to day. That is the worst shape a bug can have. It is also exactly what the
+enforced tier is for: a test that fails on a raw `fetch('/api` outside `api.js`
+costs one regex, and belongs with the site checks rather than after the first
+incident.
+
+**The shared-origin worry, weighed honestly rather than used to justify the
+older answer.** One origin means demo instances are not isolated by the browser,
+and three things follow, none of which bite here:
+
+- **A hostile sheet script cannot reach another instance**, because it cannot
+  reach the network at all. `sandbox.js` runs scripts in an opaque origin with
+  `connect-src 'none'` — see *Scripting*. The one hostile-code vector this app
+  has was already sealed, for its own reasons.
+- **A session cookie crossing instances is meaningless.** Every instance has its
+  own database, so a token minted by one is not a session in another. The
+  failure mode of getting cookie `Path` scoping wrong is a login page, not a
+  breach.
+- **`localStorage` is genuinely shared** — `prefs.js` keys reading preferences
+  per origin, so one visitor's font choice reaches another's instance. Cosmetic,
+  and the only real leak of the three.
+
+On `Referer` the path is *better*, which is the reverse of the intuition. The
+default `strict-origin-when-cross-origin` policy sends only the origin to
+another site — so a path token is stripped, while a subdomain token **is** the
+origin and travels intact.
+
+The site still has to say this out loud: *open a private window to be the second
+person*. That is unchanged, not guessable, and the demo is pointless without it.
+
+#### The subdomain route, kept for if this is ever wrong
+
+The original decision was `<token>.demo.example.com` routed on the `Host`
+header, on the grounds that the app stays unmodified and the cost is a one-off
+wildcard DNS record and certificate rather than standing code. The supervisor
+would route on `Host` itself, so nothing upstream ever learns about an
+individual session — no per-session proxy configuration, no reload when one
+starts or ends. That reduced the whole dependency to one question asked once:
+can the proxy in front be given one wildcard host?
+
+The research below stands and is worth keeping, because it is the fallback if
+the path prefix turns out to be wrong, and because re-deriving it costs an
+afternoon. `tools/npm-wildcard-test.sh` still runs the probe. It is no longer on
+the critical path.
 
 Researched 2026-08-14, and the answer narrowed to one cheap test.
 

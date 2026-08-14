@@ -50,13 +50,18 @@ than cells.
 
 **Next up** — nothing else is queued ahead of it.
 
-**Do first, ten minutes, and it gates step 3 only.** The proxy manager's UI
+**Deferred to a scratch VM, and it gates step 3 only.** The proxy manager's UI
 cannot route a wildcard host (issue #749, closed 2020), so the plan is a `server`
-block in its `/data/nginx/custom/http.conf`. Confirm it survives a reload: drop
-in a block returning a fixed string, then
-`curl -H 'Host: abc123.demo.<domain>'`. If it does not, the supervisor has to own
-the wildcard certificate and its renewal — see *A subdomain per session* for why
-that is dearer than previously recorded.
+block in its `/data/nginx/custom/http.conf`. `tools/npm-wildcard-test.sh` runs
+the probe; it needs neither DNS nor a certificate, only a Host header. Waiting on
+a throwaway VM with its own NPM and domain rather than running against the live
+proxy — a rejected config there stops nginx for everything behind it. Add one
+dummy proxy host in the UI before running, or the assertion that an exact
+`server_name` still beats the wildcard has nothing to beat.
+
+If it fails, the supervisor has to own the wildcard certificate and its
+renewal — see *A subdomain per session* for why that is dearer than the design
+doc originally recorded, and worth reopening the subdomain choice over.
 
 Build order. Steps 1 and 2 are useful without 3, and are not blocked by it:
 

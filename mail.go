@@ -133,7 +133,7 @@ func domainOf(addr string) string {
 	if i := strings.LastIndex(addr, "@"); i >= 0 {
 		return strings.Trim(addr[i+1:], "<> ")
 	}
-	return "docs.invalid"
+	return "owndocs.invalid"
 }
 
 // queue drops the job rather than blocking when the relay is behind. The

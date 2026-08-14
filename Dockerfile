@@ -11,12 +11,14 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/static ./web/static
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /docs .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /owndocs .
 
 FROM alpine:3.22
-RUN adduser -D -H docs
-USER docs
-COPY --from=build /docs /usr/local/bin/docs
+RUN adduser -D -H owndocs
+USER owndocs
+COPY --from=build /owndocs /usr/local/bin/owndocs
 VOLUME /data
 EXPOSE 8484
-ENTRYPOINT ["docs", "-addr", ":8484", "-db", "/data/docs.db", "-signup=closed"]
+# The database filename stays docs.db: it names a file inside a volume, nobody
+# sees it, and changing it would orphan an existing volume for no gain.
+ENTRYPOINT ["owndocs", "-addr", ":8484", "-db", "/data/docs.db", "-signup=closed"]

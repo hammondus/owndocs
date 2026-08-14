@@ -1,4 +1,4 @@
-BIN := docs
+BIN := owndocs
 
 .PHONY: build js runner-js runner test run release clean docker-build deploy logs
 
@@ -66,4 +66,4 @@ deploy:
 	git pull && docker compose up -d --build
 
 logs:
-	docker compose logs -f docs
+	docker compose logs -f owndocs

@@ -1,4 +1,4 @@
-module docs
+module owndocs
 
 go 1.26.5
 

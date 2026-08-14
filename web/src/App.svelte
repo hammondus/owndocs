@@ -183,7 +183,7 @@
      you are. Anything about the *current* document belongs to the view that
      owns it, in its own bar below. -->
 <header class="appbar">
-  <span class="wordmark">docs</span>
+  <span class="wordmark">own docs</span>
   <span class="spacer"></span>
   {#if me}
     <!-- The unread count is the whole notification surface: no badge dot, no

@@ -22,7 +22,7 @@ import { CALLABLE } from '../src/sheet/engine.js'
 
 const PORT = process.env.UI_TEST_PORT || 8599 // never 8484: that is the dev instance
 const BASE = `http://127.0.0.1:${PORT}`
-const BIN = join(import.meta.dirname, '../../docs')
+const BIN = join(import.meta.dirname, '../../owndocs')
 
 // Chrome is found, never downloaded. CHROME_PATH overrides for a machine that
 // keeps it somewhere else.

@@ -1,4 +1,4 @@
-// docs is a self-hosted collaborative docs+sheets server.
+// owndocs (Own Docs) is a self-hosted collaborative docs+sheets server.
 //
 // The server is deliberately dumb about document content: it relays and
 // persists opaque Yjs updates (see DESIGN-DECISIONS.md). Everything lives in

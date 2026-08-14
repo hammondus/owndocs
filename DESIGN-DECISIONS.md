@@ -3048,6 +3048,36 @@ see *Open questions*.
 
 ## The site and the demo (decided, not built)
 
+### The name
+
+Decided 2026-08-14: **Own Docs**, written `owndocs` wherever a name has to be
+machine-readable — repo, Go module, binary, compose service, container user.
+The wordmark renders it as a two-word micro-label, `own docs`, because the app
+bar sets the product name as a readout rather than a logo.
+
+It was not the first choice. The objection recorded against it was
+searchability — a name made of two common words is hard to find, which matters
+for something people are meant to discover. What decided it was the opposite
+form of the same problem: **the namespace is less polluted than the more
+distinctive candidates were**. A name nobody else has taken beats a name that
+reads well but collides, because the collision is permanent and the reading
+improves with familiarity. "Own Docs" also says the one thing that actually
+separates this from every hosted alternative, which a coined name would have
+had to spend its first paragraph explaining.
+
+Two things deliberately kept the old name, because both name a file rather than
+a product and renaming either costs something for no gain:
+
+- `data/docs.db`, and `/data/docs.db` in the Dockerfile's ENTRYPOINT. It is a
+  filename inside a volume; changing it orphans an existing database.
+- `docs:reading` in `prefs.js` — a `localStorage` key. Changing it silently
+  resets every reader's preferences, which is a worse first impression of a
+  rename than a stale key name is.
+
+The domain noun is untouched throughout. A *document* is still a doc, `/api/docs`
+is still `/api/docs`, and `handleListDocs` still lists documents. Only the
+product's own name moved; the vocabulary the product is about did not.
+
 ### The site is static, in this repo, and mostly cannot go stale
 
 Decided 2026-08-14. A `site/` directory of static pages served by nginx from
@@ -3403,17 +3433,6 @@ multiple ownership, wanted and recorded — see `ROADMAP.md`, *Ownership*, and
   than passing quietly.
 
 ## Open questions
-
-- **What the thing is called.** Leaning **Own Docs** as of 2026-08-14, not
-  settled. Both candidates are hard to search for, which matters for something
-  people are meant to find, and "Your Docs" reads ambiguously — whose? A more
-  distinctive name with "your own docs" as the tagline would serve better, and
-  the counter-argument is that "Own Docs" says the one thing that actually
-  distinguishes this from every hosted alternative.
-
-  Worth settling before the site is written rather than after, since the name
-  is most of its first paragraph. The cost is small now and grows: the repo is
-  `docs` and the app bar renders the wordmark `DOCS`.
 
 - **Ownership: transfer, or more than one owner?** Wanted, not yet shaped —
   see `ROADMAP.md`. Today `owner` is the creator, is not grantable, is not

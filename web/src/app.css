@@ -98,8 +98,10 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
-/* The caret rule, first appearance. `docs` set as a micro-label makes the
-   product name a readout rather than a logo, which is the whole conceit. */
+/* The caret rule, first appearance. `own docs` set as a micro-label makes the
+   product name a readout rather than a logo, which is the whole conceit.
+   word-spacing pulls the gap back: at 0.085em tracking a full mono space reads
+   as two separate labels rather than one name. */
 .wordmark {
   display: flex;
   align-items: center;
@@ -108,6 +110,7 @@ body {
   font-size: var(--t-small);
   font-weight: 600;
   letter-spacing: var(--track);
+  word-spacing: -0.25em;
   text-transform: uppercase;
   color: var(--ink);
 }

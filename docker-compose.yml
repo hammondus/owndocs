@@ -1,5 +1,5 @@
 services:
-  docs:
+  owndocs:
     build: .
     restart: unless-stopped
     ports:

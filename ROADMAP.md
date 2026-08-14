@@ -80,9 +80,9 @@ Wanted with it, none of which exist:
 - Wildcard DNS and certificate for `*.demo.<domain>` — a one-off ops task, and
   the reason a subdomain beat a path prefix
 
-The name is leaning **Own Docs** but is not settled — see *Open questions*.
-Worth deciding before the site is written, since it is most of its first
-paragraph.
+The name is settled: **Own Docs**, `owndocs` as one word wherever a name has to
+be machine-readable. Decided 2026-08-14, so the site can be written against it —
+see *The name* in the design doc for why the searchability objection lost.
 
 ## Sheet protection
 

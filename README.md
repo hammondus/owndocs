@@ -60,6 +60,41 @@ To restore: stop the server, put the backup file at the database path, start it.
 Backups contain password hashes and live session tokens. They are written
 `0600`; keep them that way wherever they are copied to.
 
+### Export to git (optional)
+
+Mirrors **named versions** into a git repository, one commit per pin:
+
+    cd web
+    DOCS_EMAIL=you@example.com DOCS_PASSWORD=... \
+      node scripts/exporter.mjs https://docs.example.com /path/to/repo --once
+
+It creates the repo if the directory is empty, and `--once` does a single pass
+(cron friendly). Without it, the exporter polls — `--interval=60` sets the
+seconds. Rerunning when nothing new has been pinned does nothing at all, so a
+schedule is safe.
+
+It is just another client: it logs in with an ordinary account and only sees
+documents that account has access to. The account needs a real password, so a
+dev quick-login user will not do. Credentials come from the environment rather
+than argv, which is visible in `ps`.
+
+What lands in the repo:
+
+- A document becomes `slug(title)-<6 chars of id>.md`; a sheet becomes a
+  directory of one CSV per tab. Retitles show up as git renames.
+- One commit per pinned version, oldest first, authored by whoever pinned it
+  and dated when they pinned it. Each carries `Docs-Doc:` and `Docs-Version:`
+  trailers tying it back.
+- `.docs-export.json` records what has been exported and is committed with it,
+  so a clone of the repo can continue exporting.
+
+**Sessions are not exported, deliberately** — pinning a version *is* the act of
+saying "this one is a commit", and exporting every session would bury the
+meaningful states. To see what changed between two points that were never
+pinned, use the **Changes** view in the app's history instead.
+
+The exporter never adds a remote. Pushing somewhere is yours to arrange.
+
 ### Notification email (optional)
 
 Off unless `-smtp` is set, and the app is whole without it: mentions and

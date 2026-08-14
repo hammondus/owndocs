@@ -286,7 +286,6 @@ cannot. Pinning the ink makes that safe rather than correct. Replacing it with
 the named palette is the correct fix and is a breaking change to stored sheets;
 see the same entry for the argument.
 
-
 Shipped: the selection readout now prints in the selection's own number format
 — see *Selection readout* in the design doc.
 

@@ -2,7 +2,7 @@
   // The reading-preferences drawer. Everything here is a display choice that
   // belongs to the reader, never to the document — see prefs.js.
   import {
-    FONTS, SIZES, LINE_HEIGHTS, MEASURES, TOC_SIDES, TOC_DEPTHS, DEFAULTS,
+    THEMES, FONTS, SIZES, LINE_HEIGHTS, MEASURES, TOC_SIDES, TOC_DEPTHS, DEFAULTS,
     load, save, apply, listLocalFonts, localFontsSupported,
   } from '../prefs.js'
 
@@ -59,6 +59,17 @@
     <span class="spacer"></span>
     <button onclick={reset}>reset</button>
     <button onclick={onClose}>close</button>
+  </div>
+
+  <!-- Theme sits in its own row above the rest, and says so: everything below
+       it dresses the document, while this dresses the whole application. Same
+       kind of preference, wider blast radius. -->
+  <div class="row">
+    <label for="rp-theme">Theme</label>
+    <select id="rp-theme" value={prefs.theme} onchange={(e) => set({ theme: e.target.value })}>
+      {#each THEMES as t (t.value)}<option value={t.value}>{t.label}</option>{/each}
+    </select>
+    <span class="note">System follows your device. Printing is always light.</span>
   </div>
 
   <div class="row">
@@ -165,12 +176,15 @@
 </div>
 
 <style>
+  /* Tokens, not hex. This panel is where the theme is chosen, so a pinned
+     light background here was the one that showed up hardest — it stayed a
+     white card in a dark application. */
   .panel {
-    border: 1px solid #d0d1d3;
+    border: 1px solid var(--line);
     border-radius: 4px;
     padding: 0.5rem;
     margin-bottom: 0.5rem;
-    background: #fafafa;
+    background: var(--surface-2);
   }
   .head {
     display: flex;

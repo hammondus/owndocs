@@ -9,6 +9,25 @@
      favicon support fall back to no icon, which is what is here today. -->
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <title>Own Docs</title>
+<!-- The theme, before anything paints. main.js applies the rest of the reading
+     preferences, but it is a module and so deferred: by the time it runs the
+     browser may already have painted a white page at a reader who chose dark.
+     Custom properties can wait for that; a full-page colour cannot.
+
+     This is the one piece of application logic outside src/, and it duplicates
+     the storage key from prefs.js — noted in both places. Inline and untyped
+     rather than a second module, because an external script would need
+     fetching and would reintroduce the gap it exists to close.
+
+     Everything is inside try/catch: localStorage throws rather than returning
+     null in some privacy modes, and a stored blob from an older version may
+     not parse. Either way the OS setting is a perfectly good answer. -->
+<script>
+  try {
+    var t = JSON.parse(localStorage.getItem('docs:reading') || '{}').theme
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t
+  } catch (e) {}
+</script>
 </head>
 <body>
 <div id="app"></div>

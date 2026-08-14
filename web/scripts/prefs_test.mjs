@@ -1,6 +1,6 @@
 // Reading preferences: pure enough to test without a browser, apart from the
 // two DOM shims below. Run from web/: node scripts/prefs_test.mjs
-import { load, save, apply, familyStack, listLocalFonts, DEFAULTS, FONTS } from '../src/prefs.js'
+import { load, save, apply, familyStack, listLocalFonts, DEFAULTS, FONTS, THEMES } from '../src/prefs.js'
 
 let failures = 0
 const ok = (what) => console.log('ok:', what)
@@ -13,7 +13,11 @@ const eq = (got, want, what) =>
     ? ok(what)
     : fail(what, `got  ${JSON.stringify(got)}\n  want ${JSON.stringify(want)}`)
 
-// Minimal stand-ins: a Storage and an element that records custom properties.
+// Minimal stand-ins: a Storage and an element that records custom properties
+// and data attributes. `dataset` is a plain object rather than a DOMStringMap,
+// which is faithful for what apply() does to it — assignment and `delete`
+// behave the same on both, and `delete` is the operation that carries the
+// meaning of "System".
 function fakeStorage(initial = {}) {
   const map = new Map(Object.entries(initial))
   return {
@@ -21,7 +25,11 @@ function fakeStorage(initial = {}) {
     setItem: (k, v) => map.set(k, v),
   }
 }
-const fakeRoot = () => ({ props: {}, style: { setProperty(k, v) { this.props ??= {}; this.props[k] = v } } })
+const fakeRoot = () => ({
+  props: {},
+  dataset: {},
+  style: { setProperty(k, v) { this.props ??= {}; this.props[k] = v } },
+})
 const propsOf = (root) => root.style.props
 
 globalThis.window = { localStorage: fakeStorage() }
@@ -125,6 +133,37 @@ eq(familyStack('a'.repeat(200)).length < 100, true, 'an absurd name is truncated
   eq(propsOf(root)['--reading-font'], FONTS.find((f) => f.id === 'serif').stack,
      'an unusable family falls back rather than unsetting the font')
 }
+
+// The theme is the one preference applied as an attribute rather than a custom
+// property, because app.css matches a selector on it. What matters is the
+// three-into-two mapping: 'system' is stored as the *absence* of the
+// attribute, so that CSS has two states to match instead of three and an
+// unpinned `color-scheme: light dark` lets the OS decide.
+{
+  const root = fakeRoot()
+  apply({ ...DEFAULTS, theme: 'dark' }, root)
+  eq(root.dataset.theme, 'dark', 'a chosen theme is pinned as a data attribute')
+
+  // The case a one-way implementation gets wrong: switching back to System has
+  // to *remove* the attribute. Leaving 'system' there, or leaving the previous
+  // value, silently pins the theme the reader just turned off.
+  apply({ ...DEFAULTS, theme: 'system' }, root)
+  eq('theme' in root.dataset, false, 'System removes the attribute rather than naming itself')
+
+  apply({ ...DEFAULTS, theme: 'light' }, root)
+  eq(root.dataset.theme, 'light', 'light pins too — dark is not a special case')
+
+  // A hand-edited or downgraded store must not put arbitrary text into a
+  // selector-matched attribute, which would pin a scheme that no rule matches
+  // and leave the OS setting ignored.
+  apply({ ...DEFAULTS, theme: 'solarized' }, root)
+  eq('theme' in root.dataset, false, 'an unknown theme falls back to following the system')
+}
+
+// The default is to follow the machine: a first-time reader gets the setting
+// they already chose at the OS level, not one this app picked for them.
+eq(DEFAULTS.theme, 'system', 'the default theme defers to the system')
+eq(THEMES.map((t) => t.value), ['system', 'light', 'dark'], 'the offered themes, System first')
 
 // Enumeration is Chromium-only, prompts for permission, and needs a secure
 // context. Every one of those is a normal outcome, not an error.

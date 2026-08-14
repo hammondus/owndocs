@@ -273,6 +273,13 @@ design doc; the open questions underneath it are in *Open questions*.
 - Merged cells
 - Conditional formatting
 - Font size / family
+- **Dark mode for the grid and charts.** Both draw on a canvas with literal
+  colours chosen for a white ground, so a sheet stays a white island in a dark
+  application — the one part of the app the theme does not reach. Needs a
+  colour source that resolves tokens for canvas and a redraw on scheme change.
+  Carries an undecided question, so read *Choosing a theme* before starting:
+  per-cell colours are stored as literal hex from a picker, which is exactly
+  what *A palette of named tokens* refuses for documents.
 
 Shipped: the selection readout now prints in the selection's own number format
 — see *Selection readout* in the design doc.

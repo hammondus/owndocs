@@ -8,6 +8,9 @@
 // Applied as CSS custom properties on the root element, so a change takes
 // effect everywhere at once with no component needing to know.
 
+// Also read by the inline script in index.html, which applies the theme before
+// the first paint. Renaming this key means renaming it there too — the flash it
+// prevents is silent, so nothing would fail loudly if only one moved.
 const KEY = 'docs:reading'
 
 // System stacks only: no font files to ship, so no assets, no licensing, and
@@ -17,6 +20,21 @@ export const FONTS = [
   { id: 'serif', label: 'Serif', stack: 'Charter, Georgia, "Times New Roman", Times, serif' },
   { id: 'sans', label: 'Sans', stack: '"Helvetica Neue", Helvetica, Arial, sans-serif' },
   { id: 'mono', label: 'Monospace', stack: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' },
+]
+
+// Light or dark, or neither and let the machine say. This is the one
+// preference here that dresses the whole application rather than the document,
+// and it lives with the others anyway: it is a display choice belonging to one
+// person on one machine, which is exactly what this file is for, and the
+// drawer already opens from both the document list and the editor.
+//
+// 'system' is the absence of a choice, and is stored as the absence of the
+// attribute — see apply(). Storing the word would give app.css a third state
+// to match for no gain.
+export const THEMES = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
 ]
 
 export const SIZES = [14, 15, 16, 17, 18, 20, 22]
@@ -50,6 +68,7 @@ export const TOC_DEPTHS = [1, 2, 3, 4, 5, 6]
 // the four built-ins stay ids — relabelling or re-stacking one later then does
 // not orphan everyone's stored preference.
 export const DEFAULTS = {
+  theme: 'system',
   font: 'system',
   size: 16,
   lineHeight: 1.6,
@@ -124,6 +143,13 @@ export function save(prefs) {
 }
 
 export function apply(prefs, root = document.documentElement) {
+  // The theme is an attribute rather than a custom property because app.css
+  // matches on it: it pins `color-scheme`, and every colour token is a
+  // `light-dark()` pair that resolves from that one property. Removing the
+  // attribute is what "System" means — with nothing pinned the OS decides.
+  if (prefs.theme === 'light' || prefs.theme === 'dark') root.dataset.theme = prefs.theme
+  else delete root.dataset.theme
+
   // A named family wins over the built-in stacks; an unusable one falls back
   // rather than leaving the property unset to inherit whatever the page had.
   const custom = prefs.family ? familyStack(prefs.family) : ''

@@ -1189,6 +1189,85 @@ Not in scope, and deliberately so: the information design of the history
 timeline, share dialog and sheet chrome. They inherit the tokens and the view
 bar, and read consistently, but their content layout is untouched.
 
+### Choosing a theme: one property, not a second stylesheet
+
+Recorded 2026-08-15. Dark mode itself is older than this entry and was never
+optional: the tokens carried both schemes from the start, keyed on
+`prefers-color-scheme`. What was missing was the ability to *choose* — a reader
+whose machine says light and who wants dark had no answer. This records how
+that choice was added, and what it cost.
+
+**The mechanism is `color-scheme`, and the tokens are `light-dark()` pairs.**
+Every scheme-dependent token is written once as `light-dark(light, dark)`,
+which resolves against the used value of `color-scheme` on the element. So the
+entire palette turns over by setting one property, and `prefs.js` needs to set
+exactly one attribute: `data-theme="light"|"dark"` on the root, with two rules
+in `app.css` pinning `color-scheme` from it.
+
+The obvious alternative was a second copy of each dark block under
+`:root[data-theme="dark"]`, keyed off the existing media queries. It was
+refused for the reason recorded in *A palette of named tokens*: that is three
+scheme blocks becoming six, each colour written in two places that must agree,
+and nothing but discipline keeping them in step. Collapsing the pair onto one
+line also reads better than the two blocks it replaced — the dark value of
+`--ink` is precisely the thing you want in front of you when reading the light
+one, and it used to be five hundred lines away.
+
+**Switching the property rather than swapping tokens is what themes the things
+this app does not draw.** Native selects, scrollbars, the caret and the focus
+ring follow `color-scheme` and would have stayed light under any token-only
+scheme. That is a real part of why the interface looks finished in dark rather
+than merely dark-coloured, and it is free.
+
+**"System" is stored as the absence of the attribute**, not as the word
+`system`. CSS then has two states to match instead of three, and an unpinned
+`color-scheme: light dark` means the OS decides exactly as it did before the
+feature existed. The consequence worth knowing: `apply()` must *delete* the
+attribute, not set it — the one-way version of this function silently pins the
+theme a reader has just turned off, which is what the test asserts.
+
+**The theme is a reading preference, and lives with them.** It is the widest
+one — everything else in that drawer dresses the document, this dresses the
+application — but it is the same kind of thing: a display choice belonging to
+one person on one machine, never reaching the file, the CRDT or the export. The
+drawer already opens from both the document list and the editor, so no new
+surface was needed.
+
+**Six lines of inline script in `index.html`, to stop a white flash.**
+`main.js` applies the rest of the preferences before mount, but it is a module
+and therefore deferred: the browser can paint a light page before it runs. A
+custom property arriving a frame late is invisible; a full-page colour is not.
+This is the only application logic outside `src/`, and it duplicates the
+storage key — noted in both files, because the failure it prevents is silent
+and nothing would break loudly if only one of them moved.
+
+**The print block needed a specificity fix, and it fixed an older bug.** That
+block ends the file and relies on source order, since a media query adds no
+specificity. A pinned theme broke that: `:root[data-theme='dark']` scores
+(0,1,1) against the print block's `:root` at (0,0,1), and specificity beats
+order — so a reader who had *chosen* dark would have printed dark. The block
+now matches `:root, :root[data-theme]`, tying the score and winning on order.
+
+Forcing `color-scheme: light` there rather than only restating tokens covers
+the eight document colours, which the print block never restated. Those were
+already wrong on paper before any of this: `prefers-color-scheme` keeps
+matching while printing, so a dark-mode reader printed a coloured document in
+the dark palette — `oklch(0.80 …)` pastels on white. Confirmed both ways in the
+browser by retargeting the print block to `screen`, which is also how to check
+it after any change to that block.
+
+**What this does not cover: the sheet grid and charts.** `SheetView` paints on
+a canvas and `chart.js` draws into one, and a canvas cannot read a CSS
+variable — every `fillStyle` in both is a literal, chosen for a white ground,
+sitting on `.grid { background: #fff }`. So a sheet is a white island in a dark
+application. That predates the toggle and is unchanged by it; what the toggle
+changes is how many people meet it. Fixing it needs a colour source that
+resolves tokens for canvas and a redraw on scheme change — there is currently
+no `getComputedStyle` anywhere in the frontend, so that is a new seam, not a
+substitution. It also has an unanswered question of its own: cell background
+and text colours are stored per-cell as literal hex from a picker, which is the
+decision *A palette of named tokens* refuses for documents, and dark mode is
+where that bill comes due.
 ### Threat model: trusted users, untrusted network
 
 The audience is **staff inside one company**, all authenticated, all known to

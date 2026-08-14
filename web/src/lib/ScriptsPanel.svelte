@@ -134,12 +134,13 @@ await docs.format('D1:E1', { b: 1 })
 </div>
 
 <style>
+  /* Tokens, not hex — a pinned light panel stayed white in a dark app. */
   .panel {
-    border: 1px solid #d0d1d3;
+    border: 1px solid var(--line);
     border-radius: 4px;
     padding: 0.5rem;
     margin-bottom: 0.5rem;
-    background: #fafafa;
+    background: var(--surface-2);
   }
   .head {
     display: flex;
@@ -178,6 +179,9 @@ await docs.format('D1:E1', { b: 1 })
     font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
     resize: vertical;
   }
+  /* Pinned dark in both schemes on purpose, following .md-highlight: this is a
+     console, and console output is light-on-dark wherever you find it. Ground
+     and ink are a pair, so neither may be tokenised on its own. */
   .out {
     margin: 0.4rem 0 0;
     padding: 0.4rem;

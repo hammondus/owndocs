@@ -250,12 +250,17 @@
 </div>
 
 <style>
+  /* Tokens, not hex: pinned light values here left the panel a white card in a
+     dark application. The greys below with an alpha channel (#8884 and the
+     like) are deliberate and stay — a neutral at low opacity reads correctly
+     against either ground, which is the whole reason they were written that
+     way. */
   .panel {
-    border: 1px solid #d0d1d3;
+    border: 1px solid var(--line);
     border-radius: 4px;
     padding: 0.5rem;
     margin-bottom: 0.5rem;
-    background: #fafafa;
+    background: var(--surface-2);
     max-height: 40vh;
     overflow-y: auto;
   }
@@ -300,7 +305,7 @@
     flex: 1;
   }
   .thread {
-    border-top: 1px solid #e4e5e7;
+    border-top: 1px solid var(--line);
     padding: 0.4rem 0;
   }
   .thread.resolved {
@@ -318,7 +323,7 @@
   .quote {
     margin: 0.2rem 0;
     padding-left: 0.5rem;
-    border-left: 3px solid #d0d1d3;
+    border-left: 3px solid var(--line-strong);
     font-size: 0.8rem;
     opacity: 0.75;
   }
@@ -360,7 +365,7 @@
     opacity: 0.7;
   }
   .error {
-    color: #b00020;
+    color: var(--danger);
     opacity: 1;
   }
 </style>

@@ -15,27 +15,48 @@
    one meaning, used everywhere.
    ────────────────────────────────────────────────────────────────────────── */
 
+/* ── How the two schemes are switched ────────────────────────────────────────
+   Every scheme-dependent token is written once, as `light-dark(light, dark)`.
+   That function resolves against the *used* value of `color-scheme`, so the
+   whole palette turns over by changing one property on the root element —
+   which is what makes a manual override cheap: `prefs.js` sets
+   `data-theme="light"|"dark"` and the two rules below do the rest. Absent that
+   attribute nothing is pinned, `light dark` stands, and the OS decides exactly
+   as it did before.
+
+   The alternative was a second copy of every block under
+   `:root[data-theme="dark"]`, which would have put each colour in two places
+   that must agree — the failure this file already refuses for the document
+   palette (see DESIGN-DECISIONS, *A palette of named tokens*). Keeping the
+   pair on one line is also better documentation: the dark value of `--ink` is
+   the thing you most want to see when reading the light one.
+
+   `light-dark()` takes colours only, which is all these are. It is Baseline
+   2024, alongside `oklch()` and `color-mix()` already used below.
+   ───────────────────────────────────────────────────────────────────────── */
+
 :root {
+  /* Unpinned: follow the OS. The two rules after this block pin it. */
   color-scheme: light dark;
 
   /* Ink ramp, cool rather than warm: instrument casing, not paper. */
-  --ground: #f4f6f8;
-  --surface: #ffffff;
-  --surface-2: #eef1f4;
-  --line: #dde2e8;
-  --line-strong: #c2cad4;
-  --ink: #14171c;
-  --ink-2: #545c68;
-  --ink-3: #858f9c;
+  --ground: light-dark(#f4f6f8, #0e1014);
+  --surface: light-dark(#ffffff, #16191e);
+  --surface-2: light-dark(#eef1f4, #1e222a);
+  --line: light-dark(#dde2e8, #262b33);
+  --line-strong: light-dark(#c2cad4, #39414d);
+  --ink: light-dark(#14171c, #e7eaef);
+  --ink-2: light-dark(#545c68, #a4adba);
+  --ink-3: light-dark(#858f9c, #717b8a);
 
   /* One accent. It means "live", "yours", or "here" — never decoration. */
-  --signal: #2f5fe0;
-  --signal-soft: #e9eefc;
+  --signal: light-dark(#2f5fe0, #7f9cff);
+  --signal-soft: light-dark(#e9eefc, #1b2440);
   /* What goes ON the signal colour. Dark mode lightens the signal so it reads
      against a dark ground, and white text on it drops below any usable
      contrast — so the pair moves together. */
-  --on-signal: #ffffff;
-  --danger: #c0392b;
+  --on-signal: light-dark(#ffffff, #0e1014);
+  --danger: light-dark(#c0392b, #e06c5c);
 
   /* System stacks only. No font files to ship, so no assets, no licensing and
      nothing to load before text can paint — the same rule the reading
@@ -56,22 +77,17 @@
   --bar: 44px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ground: #0e1014;
-    --surface: #16191e;
-    --surface-2: #1e222a;
-    --line: #262b33;
-    --line-strong: #39414d;
-    --ink: #e7eaef;
-    --ink-2: #a4adba;
-    --ink-3: #717b8a;
-    --signal: #7f9cff;
-    --signal-soft: #1b2440;
-    --on-signal: #0e1014;
-    --danger: #e06c5c;
-  }
-}
+/* The manual override, and the only two rules in this file that know a theme
+   can be chosen. `data-theme` is set by prefs.js — and, so that a chosen dark
+   does not flash white first, by an inline script in index.html before the
+   first paint. Choosing "System" removes the attribute rather than writing
+   `system`, so there is no third state to handle here.
+
+   This pins `color-scheme` and nothing else: every token above resolves from
+   it. Form controls, scrollbars and the caret follow it too, which is the
+   reason to switch the property rather than swap a token block. */
+:root[data-theme='light'] { color-scheme: light; }
+:root[data-theme='dark'] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 
@@ -509,23 +525,15 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
    file — and as a light/dark pair, because unlike the alpha trick used
    elsewhere a syntax colour is a real hue and cannot serve both grounds. */
 :root {
-  --tok-keyword: #7238b8;
-  --tok-string:  #0a7038;
-  --tok-comment: #6a737d;
-  --tok-number:  #a8500a;
-  --tok-name:    #1058a8;
-  --tok-type:    #a80070;
+  --tok-keyword: light-dark(#7238b8, #c792ea);
+  --tok-string:  light-dark(#0a7038, #7ee787);
+  --tok-comment: light-dark(#6a737d, #8b949e);
+  --tok-number:  light-dark(#a8500a, #ffab70);
+  --tok-name:    light-dark(#1058a8, #79c0ff);
+  --tok-type:    light-dark(#a80070, #ff7b9c);
+  /* The one token that does not turn over: a red that reads as wrong on
+     either ground, and invalid syntax is worth the same alarm in both. */
   --tok-invalid: #c33;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --tok-keyword: #c792ea;
-    --tok-string:  #7ee787;
-    --tok-comment: #8b949e;
-    --tok-number:  #ffab70;
-    --tok-name:    #79c0ff;
-    --tok-type:    #ff7b9c;
-  }
 }
 
 /* remote cursors (y-codemirror.next) */
@@ -562,14 +570,14 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
    light yellow that contrasts with white — and the name follows the hue so the
    two roles stay in step. */
 :root {
-  --doc-c-red: oklch(0.50 0.15 25);
-  --doc-c-orange: oklch(0.50 0.15 60);
-  --doc-c-yellow: oklch(0.50 0.15 95);
-  --doc-c-green: oklch(0.50 0.15 145);
-  --doc-c-teal: oklch(0.50 0.15 195);
-  --doc-c-blue: oklch(0.50 0.15 255);
-  --doc-c-purple: oklch(0.50 0.15 300);
-  --doc-c-pink: oklch(0.50 0.15 345);
+  --doc-c-red: light-dark(oklch(0.50 0.15 25), oklch(0.80 0.13 25));
+  --doc-c-orange: light-dark(oklch(0.50 0.15 60), oklch(0.80 0.13 60));
+  --doc-c-yellow: light-dark(oklch(0.50 0.15 95), oklch(0.80 0.13 95));
+  --doc-c-green: light-dark(oklch(0.50 0.15 145), oklch(0.80 0.13 145));
+  --doc-c-teal: light-dark(oklch(0.50 0.15 195), oklch(0.80 0.13 195));
+  --doc-c-blue: light-dark(oklch(0.50 0.15 255), oklch(0.80 0.13 255));
+  --doc-c-purple: light-dark(oklch(0.50 0.15 300), oklch(0.80 0.13 300));
+  --doc-c-pink: light-dark(oklch(0.50 0.15 345), oklch(0.80 0.13 345));
 
   /* Highlight grounds do NOT vary by scheme, following .md-highlight exactly:
      a highlighter pen is a light ground by definition, so inheriting the
@@ -584,19 +592,6 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
   --doc-h-purple: oklch(0.90 0.09 300);
   --doc-h-pink: oklch(0.90 0.09 345);
   --doc-h-ink: #1a1a1a;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --doc-c-red: oklch(0.80 0.13 25);
-    --doc-c-orange: oklch(0.80 0.13 60);
-    --doc-c-yellow: oklch(0.80 0.13 95);
-    --doc-c-green: oklch(0.80 0.13 145);
-    --doc-c-teal: oklch(0.80 0.13 195);
-    --doc-c-blue: oklch(0.80 0.13 255);
-    --doc-c-purple: oklch(0.80 0.13 300);
-    --doc-c-pink: oklch(0.80 0.13 345);
-  }
 }
 
 .md-c-red { color: var(--doc-c-red); }
@@ -651,8 +646,9 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
    screen of whoever happened to press print.
 
    This block must stay LAST in the file. It restates :root tokens that the
-   prefers-color-scheme block above also sets, and at equal specificity the
-   later rule is the one that wins. */
+   token block above also sets, and at equal specificity the later rule is the
+   one that wins. A media query adds no specificity of its own, so source order
+   is the whole mechanism — see the note on the selector list below. */
 @media print {
   /* Dark mode must not follow the document onto paper. Browsers routinely drop
      background colours when printing but keep foreground ones, so a dark
@@ -660,10 +656,26 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
      light palette is restated unconditionally rather than guarded, because
      there is no such thing as a dark sheet of paper.
 
+     Forcing `color-scheme` is what covers the tokens NOT restated below: the
+     eight document colours are `light-dark()` pairs too, and left dark they
+     print as pastels on white paper. That was a real fault while the scheme
+     was chosen by media query alone — `prefers-color-scheme` keeps matching
+     during printing, so a dark-mode reader printed a coloured document in the
+     dark palette.
+
+     `:root[data-theme]` is listed alongside `:root` deliberately, and is not
+     redundant. When a reader has pinned a theme, `:root[data-theme='dark']`
+     above scores (0,1,1) against this rule's (0,0,1), and specificity beats
+     source order — so the bare selector alone would lose to a pinned dark and
+     print the dark palette anyway. The attribute selector ties the score, and
+     being last, wins.
+
      Ink is blacker and the signal deeper than on screen: a display is
      backlit and paper is not, so the hairline greys that read as "quiet" on a
      monitor read as "missing" out of a laser printer. */
-  :root {
+  :root,
+  :root[data-theme] {
+    color-scheme: light;
     --ground: #ffffff;
     --surface: #ffffff;
     --surface-2: #f1f3f5;

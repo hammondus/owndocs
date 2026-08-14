@@ -1256,18 +1256,96 @@ the dark palette — `oklch(0.80 …)` pastels on white. Confirmed both ways in 
 browser by retargeting the print block to `screen`, which is also how to check
 it after any change to that block.
 
-**What this does not cover: the sheet grid and charts.** `SheetView` paints on
-a canvas and `chart.js` draws into one, and a canvas cannot read a CSS
-variable — every `fillStyle` in both is a literal, chosen for a white ground,
-sitting on `.grid { background: #fff }`. So a sheet is a white island in a dark
-application. That predates the toggle and is unchanged by it; what the toggle
-changes is how many people meet it. Fixing it needs a colour source that
-resolves tokens for canvas and a redraw on scheme change — there is currently
-no `getComputedStyle` anywhere in the frontend, so that is a new seam, not a
-substitution. It also has an unanswered question of its own: cell background
-and text colours are stored per-cell as literal hex from a picker, which is the
-decision *A palette of named tokens* refuses for documents, and dark mode is
-where that bill comes due.
+**What this did not cover, when it shipped: the sheet grid and charts.** Both
+paint on a canvas, and a canvas cannot read a CSS variable, so every colour in
+them was a literal chosen for a white ground. A sheet stayed a white island in
+a dark application. That is now fixed — see the next entry.
+
+### Dark mode reaches the grid: one JS reader for the token system
+
+Recorded 2026-08-15, immediately after the entry above. The problem was known
+when the toggle shipped and is described there; this is how it was closed.
+
+**`theme.js` is the only place that reads the token system from JavaScript**,
+and the canvas surfaces are its only consumers. It exists to stop a second
+palette growing: literal hex in drawing code cannot follow a scheme, which is
+exactly why the grid was white. The map from a drawing word (`ink`, `gridline`,
+`headerGround`) to a token lives there in one readable list, and *no entry adds
+a colour* — every one is a token the interface already used elsewhere. That the
+mapping came out one-to-one is the real finding: the sheet needed almost no
+colours of its own, so what looked like a second palette was the same palette
+written twice.
+
+**A custom property's computed value is not a colour.** `getPropertyValue('--surface')`
+returns the text `light-dark(#fff, #16191e)`, because substitution happens where
+a property is *used*, not where it is defined. So the resolution trick is a
+hidden probe element that is given `color: var(--token)` and asked what colour
+it ended up. One forced style recalculation per token, which is why the result
+is cached and rebuilt only when the scheme changes — never per frame.
+
+**Two triggers, and both are needed.** A `MutationObserver` on `data-theme`
+catches the reader's own choice; a `matchMedia` listener catches the machine
+changing its mind underneath someone on "System". Watching only the first
+leaves a sheet stale at sunset on a Mac set to auto. Both feed the existing
+`scheduleDraw`, which already coalesces on a frame, and charts already repaint
+from `draw()` — so one subscription covers grid and charts together.
+
+**A cell background is paper, and paper takes dark ink.** This is the question
+the previous entry called unanswered, and the answer was already in this
+document. Cell colours come from an `<input type="color">` and are stored as
+literal hex, so they cannot follow a scheme — and a cell with a background but
+no chosen text colour would take the themed default ink, putting white text on
+the pale yellow somebody chose to make a cell stand out. That is the one case
+where dark mode does not merely look wrong but *hides the value*.
+
+So a stored background pins the ink dark, in both schemes, reusing `--doc-h-ink`
+— the token named for the highlight grounds, because it is the same decision.
+`.md-highlight` won this argument for documents already: a ground the author
+picked is a ground, and ink and ground are a pair. Applied in `formatCss` too,
+so the history preview and the clipboard's HTML flavour agree with the canvas.
+
+The considered alternative was replacing the picker with the named palette, as
+documents have. It is the more correct answer and it stays refused for now: it
+is a breaking change to every stored sheet and it narrows what an author can
+say, to fix a case that pinning the ink already fixes for nothing.
+
+**Two identity palettes, and they are not the same problem as chrome.**
+
+- **Chart series** are ours to choose and are drawn on our canvas, so they
+  became `--chart-1..8`: the same eight hues as `palette.js`, at a lightness
+  that carries area rather than text, with light and dark variants. A chart of
+  a document's data no longer introduces a ninth idea of "red". The old set was
+  a Google-ish palette at mixed lightness, where some series shouted and others
+  receded — the flaw the fixed-lightness method exists to prevent.
+- **Peer cursors** cannot be resolved by the viewer, and that is a protocol
+  fact rather than a shortcoming. Awareness carries the colour from the person
+  it belongs to, and `y-codemirror.next` reads `user.color`/`user.colorLight`
+  straight off that state, so the value is chosen on the sender's machine and
+  painted on the receiver's. Carrying an index and resolving it per viewer would
+  work for our canvas and not for the editor.
+
+  So both roles were made scheme-*independent* instead: the caret sits at a
+  middle lightness that reads on white and on near-black, and the selection wash
+  is the same colour with an alpha channel, so it composites over whatever
+  ground it lands on. That second one is the trick this interface already used
+  for its hairline greys — `#8884` is exactly this, and the panels keep those
+  literals deliberately for the same reason.
+
+  Both lists lived twice, byte-identical in `EditorView` and `SheetView`.
+  Neither copy had ever needed to change, so neither had diverged; dark mode was
+  the change that would have done it. They are now `peers.js`.
+
+**Ink on an identity colour follows the colour, not the scheme.** Peer name
+tags on the grid and pie-slice labels both sit on a colour that does not move
+with the theme, so their ink does not either. `.cm-ySelectionInfo` had already
+pinned its label ink for this reason; the grid now agrees with it instead of
+using white, which at the caret lightness was the weaker of the two.
+
+**`chart.js` still runs without a DOM.** Its extraction and scaling halves are
+pure and tested headlessly, so `drawChart` takes the resolved colours as an
+argument rather than reaching for `getComputedStyle`. The default is the light
+scheme, which is what keeps the existing chart tests free of colour setup.
+
 ### Threat model: trusted users, untrusted network
 
 The audience is **staff inside one company**, all authenticated, all known to

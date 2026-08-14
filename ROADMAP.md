@@ -273,13 +273,17 @@ design doc; the open questions underneath it are in *Open questions*.
 - Merged cells
 - Conditional formatting
 - Font size / family
-- **Dark mode for the grid and charts.** Both draw on a canvas with literal
-  colours chosen for a white ground, so a sheet stays a white island in a dark
-  application — the one part of the app the theme does not reach. Needs a
-  colour source that resolves tokens for canvas and a redraw on scheme change.
-  Carries an undecided question, so read *Choosing a theme* before starting:
-  per-cell colours are stored as literal hex from a picker, which is exactly
-  what *A palette of named tokens* refuses for documents.
+
+Shipped: dark mode reaches the grid and charts — see *Dark mode reaches the
+grid* for the canvas colour seam, and for why an author's cell background now
+pins its own ink rather than following the scheme.
+
+Still open, and deliberately not scheduled: the cell colour picker is still a
+raw `<input type="color">`, so a sheet can hold arbitrary hex where a document
+cannot. Pinning the ink makes that safe rather than correct. Replacing it with
+the named palette is the correct fix and is a breaking change to stored sheets;
+see the same entry for the argument.
+
 
 Shipped: the selection readout now prints in the selection's own number format
 — see *Selection readout* in the design doc.

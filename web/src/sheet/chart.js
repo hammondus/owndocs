@@ -13,9 +13,13 @@ export const CHART_TYPES = [
   { id: 'pie', label: 'Pie' },
 ]
 
+// The light-scheme series colours, and the fallback for a caller that passes
+// no chrome. The live app does not use these: SheetView resolves --chart-1..8
+// from the stylesheet so a chart follows the scheme like everything else. They
+// are kept as a literal here so this module stays runnable without a document.
 export const SERIES_COLORS = [
-  '#1565c0', '#e8710a', '#0f9d58', '#c62828',
-  '#7b1fa2', '#00838f', '#f9a825', '#5d4037',
+  'oklch(0.55 0.17 25)', 'oklch(0.55 0.17 60)', 'oklch(0.55 0.17 95)', 'oklch(0.55 0.17 145)',
+  'oklch(0.55 0.17 195)', 'oklch(0.55 0.17 255)', 'oklch(0.55 0.17 300)', 'oklch(0.55 0.17 345)',
 ]
 
 export const MIN_CHART_W = 160
@@ -110,16 +114,36 @@ export function extractChartData(model, rect, spec) {
 
 const PAD = 10
 
-export function drawChart(ctx, w, h, spec, data, formatTick) {
+// The chrome a chart draws that is not data: ground, ink, axis labels and
+// gridlines. Passed in rather than read from the document, because everything
+// above this line is pure and tested headlessly, and reaching for
+// `getComputedStyle` here would make drawChart need a DOM to run.
+//
+// The default is the light scheme, so a caller that does not care — the test
+// suite, which asserts geometry rather than colour — needs no argument. The
+// real caller is SheetView, which passes the resolved tokens from theme.js.
+export const LIGHT_CHART_CHROME = {
+  ground: '#ffffff',
+  ink: '#202124',
+  ink2: '#5f6368',
+  gridline: '#e2e3e5',
+  onSeries: '#ffffff',
+  series: SERIES_COLORS,
+}
+
+export function drawChart(ctx, w, h, spec, data, formatTick, chrome = LIGHT_CHART_CHROME) {
+  // Wrapped rather than indexed at each use: `series` is already the *data*
+  // series here, and the two must not be confusable.
+  const seriesColor = (i) => chrome.series[i % chrome.series.length]
   ctx.clearRect(0, 0, w, h)
-  ctx.fillStyle = '#fff'
+  ctx.fillStyle = chrome.ground
   ctx.fillRect(0, 0, w, h)
   ctx.font = '11px system-ui, sans-serif'
   ctx.textBaseline = 'middle'
 
   let top = PAD
   if (spec.title) {
-    ctx.fillStyle = '#202124'
+    ctx.fillStyle = chrome.ink
     ctx.font = 'bold 12px system-ui, sans-serif'
     ctx.textAlign = 'center'
     ctx.fillText(spec.title, w / 2, top + 7)
@@ -129,7 +153,7 @@ export function drawChart(ctx, w, h, spec, data, formatTick) {
 
   const { categories, series } = data
   if (!series.length || !categories.length) {
-    ctx.fillStyle = '#5f6368'
+    ctx.fillStyle = chrome.ink2
     ctx.textAlign = 'center'
     ctx.fillText('No data in range', w / 2, h / 2)
     return
@@ -142,9 +166,9 @@ export function drawChart(ctx, w, h, spec, data, formatTick) {
     let x = PAD
     ctx.textAlign = 'left'
     for (let i = 0; i < series.length; i++) {
-      ctx.fillStyle = SERIES_COLORS[i % SERIES_COLORS.length]
+      ctx.fillStyle = seriesColor(i)
       ctx.fillRect(x, h - PAD - 12, 9, 9)
-      ctx.fillStyle = '#5f6368'
+      ctx.fillStyle = chrome.ink2
       const label = series[i].name
       ctx.fillText(label, x + 13, h - PAD - 7)
       x += 13 + ctx.measureText(label).width + 12
@@ -152,7 +176,7 @@ export function drawChart(ctx, w, h, spec, data, formatTick) {
     }
   }
 
-  if (spec.type === 'pie') return drawPie(ctx, w, top, bottom, data)
+  if (spec.type === 'pie') return drawPie(ctx, w, top, bottom, data, chrome)
 
   // Value range across every series, with zero included for columns so the
   // bars stand on a real baseline rather than a floating one.
@@ -183,8 +207,8 @@ export function drawChart(ctx, w, h, spec, data, formatTick) {
   const yOf = (v) => top + plotH - ((v - scale.min) / (scale.max - scale.min)) * plotH
 
   // Gridlines and value labels.
-  ctx.strokeStyle = '#e2e3e5'
-  ctx.fillStyle = '#5f6368'
+  ctx.strokeStyle = chrome.gridline
+  ctx.fillStyle = chrome.ink2
   ctx.lineWidth = 1
   scale.ticks.forEach((t, i) => {
     const y = Math.round(yOf(t)) + 0.5
@@ -199,7 +223,7 @@ export function drawChart(ctx, w, h, spec, data, formatTick) {
   const slot = plotW / n
   // Category labels, thinned out until they stop overlapping.
   ctx.textAlign = 'center'
-  ctx.fillStyle = '#5f6368'
+  ctx.fillStyle = chrome.ink2
   const every = Math.max(1, Math.ceil((n * 46) / plotW))
   for (let i = 0; i < n; i++) {
     if (i % every) continue
@@ -208,7 +232,7 @@ export function drawChart(ctx, w, h, spec, data, formatTick) {
 
   if (spec.type === 'line') {
     series.forEach((s, si) => {
-      ctx.strokeStyle = SERIES_COLORS[si % SERIES_COLORS.length]
+      ctx.strokeStyle = seriesColor(si)
       ctx.lineWidth = 2
       ctx.beginPath()
       let pen = false
@@ -230,7 +254,7 @@ export function drawChart(ctx, w, h, spec, data, formatTick) {
   const barW = Math.max(1, groupW / series.length)
   const zeroY = yOf(Math.max(scale.min, Math.min(0, scale.max)))
   series.forEach((s, si) => {
-    ctx.fillStyle = SERIES_COLORS[si % SERIES_COLORS.length]
+    ctx.fillStyle = seriesColor(si)
     s.values.forEach((v, i) => {
       if (v === null) return
       const x = left + slot * i + (slot - groupW) / 2 + si * barW
@@ -240,14 +264,15 @@ export function drawChart(ctx, w, h, spec, data, formatTick) {
   })
 }
 
-function drawPie(ctx, w, top, bottom, data) {
+function drawPie(ctx, w, top, bottom, data, chrome) {
+  const seriesColor = (i) => chrome.series[i % chrome.series.length]
   const s = data.series[0]
   const total = s.values.reduce((a, v) => a + (v === null || v < 0 ? 0 : v), 0)
   const cx = w / 2
   const cy = (top + bottom) / 2
   const r = Math.max(4, Math.min(w, bottom - top) / 2 - PAD)
   if (total <= 0) {
-    ctx.fillStyle = '#5f6368'
+    ctx.fillStyle = chrome.ink2
     ctx.textAlign = 'center'
     ctx.fillText('Nothing to plot', cx, cy)
     return
@@ -260,12 +285,12 @@ function drawPie(ctx, w, top, bottom, data) {
     ctx.moveTo(cx, cy)
     ctx.arc(cx, cy, r, angle, angle + sweep)
     ctx.closePath()
-    ctx.fillStyle = SERIES_COLORS[i % SERIES_COLORS.length]
+    ctx.fillStyle = seriesColor(i)
     ctx.fill()
     // Label slices with room for one.
     if (sweep > 0.25) {
       const mid = angle + sweep / 2
-      ctx.fillStyle = '#fff'
+      ctx.fillStyle = chrome.onSeries
       ctx.textAlign = 'center'
       ctx.fillText(data.categories[i] || '', cx + Math.cos(mid) * r * 0.62, cy + Math.sin(mid) * r * 0.62)
     }

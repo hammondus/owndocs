@@ -103,12 +103,12 @@
   }
   .tabs button.active {
     font-weight: 600;
-    box-shadow: inset 0 -2px 0 #1565c0;
+    box-shadow: inset 0 -2px 0 var(--signal);
   }
   .scroll {
     overflow: auto;
     max-height: 70vh;
-    border: 1px solid #d0d1d3;
+    border: 1px solid var(--line-strong);
   }
   table {
     border-collapse: collapse;
@@ -116,7 +116,7 @@
   }
   th,
   td {
-    border: 1px solid #e2e3e5;
+    border: 1px solid var(--line);
     padding: 1px 5px;
     white-space: nowrap;
     max-width: 18rem;
@@ -124,8 +124,8 @@
     text-overflow: ellipsis;
   }
   th {
-    background: #f8f9fa;
-    color: #5f6368;
+    background: var(--surface-2);
+    color: var(--ink-2);
     font-weight: 500;
     position: sticky;
     top: 0;

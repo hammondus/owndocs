@@ -20,6 +20,7 @@
   import Toc from './Toc.svelte'
   import { load as loadPrefs } from '../prefs.js'
   import { listThreads, textAnchor, resolveTextAnchor } from '../comments.js'
+  import { peerColor } from '../peers.js'
   import { scheduleCompaction } from '../compaction.js'
   import { makeIndexer } from '../searchindex.js'
   import { canEdit, canComment, visibleToolbar } from '../roles.js'
@@ -116,12 +117,6 @@
     return i
   })
 
-  const cursorColors = [
-    ['#30bced', '#a8dff2'], ['#6eeb83', '#c6f7cf'], ['#fa69d1', '#fcc4ea'],
-    ['#ffbc42', '#ffe3b0'], ['#ecd444', '#f5edb0'], ['#ee6352', '#f8c2ba'],
-    ['#9b6ef3', '#d9c6fa'], ['#1be7ff', '#b3f6ff'],
-  ]
-
   onMount(() => {
     ydoc = new Y.Doc()
     const ytext = ydoc.getText('text')
@@ -139,8 +134,9 @@
       onProblem: (msg) => { problem = msg },
     })
 
-    const [color, colorLight] = cursorColors[ydoc.clientID % cursorColors.length]
-    provider.awareness.setLocalStateField('user', { name: me.name, color, colorLight })
+    // y-codemirror.next reads these two fields by name to draw remote carets.
+    const { caret, wash } = peerColor(ydoc.clientID)
+    provider.awareness.setLocalStateField('user', { name: me.name, color: caret, colorLight: wash })
     provider.awareness.on('change', () => {
       peerCount = provider.awareness.getStates().size
     })

@@ -5,7 +5,7 @@ import * as Y from 'yjs'
 import { parseFormula, serialize, evaluate, isErr, fmtNum, colName, parseColName, setClock } from '../src/sheet/engine.js'
 import { Workbook, SheetModel, FIRST_SHEET } from '../src/sheet/model.js'
 import { toTSV, parseTSV, toHTML, readHTMLPayload } from '../src/sheet/clipboard.js'
-import { formatNumber, parseTypedNumber, mergeFormat, resolveFormat } from '../src/sheet/format.js'
+import { formatNumber, parseTypedNumber, mergeFormat, resolveFormat, formatCss } from '../src/sheet/format.js'
 import { serialFromParts, partsFromSerial, parseDate, formatDate, setDayFirst } from '../src/sheet/dates.js'
 import { niceScale, extractChartData, drawChart, chartDragPatch } from '../src/sheet/chart.js'
 import { parseA1, formatA1, handleCall } from '../src/sheet/scriptapi.js'
@@ -825,6 +825,16 @@ for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A
   eq(mergeFormat({ b: 1 }, { b: null }), null, 'emptying a record yields null so it can be deleted')
   eq(resolveFormat({ n: 'cur' }, null, { b: 1 }), { n: 'cur', b: 1 }, 'cell format layers over the column')
   eq(resolveFormat({ n: 'cur' }, null, { n: 'pct' }), { n: 'pct' }, 'the cell wins over its column')
+
+  // A cell background is paper, so it carries its own ink rather than
+  // inheriting whatever scheme it is rendered into. Without this an author's
+  // pale cell shows light-on-light in dark mode and the value vanishes.
+  eq(formatCss({ bg: '#fff59d' }), 'background-color:#fff59d;color:#1a1a1a',
+     'a background with no chosen text colour states its ink')
+  eq(formatCss({ bg: '#fff59d', c: '#b00020' }), 'color:#b00020;background-color:#fff59d',
+     'a chosen text colour is left alone — the author already answered')
+  eq(formatCss({ b: 1 }), 'font-weight:bold',
+     'no background means no ink is stated, so it inherits the scheme as before')
 }
 
 {

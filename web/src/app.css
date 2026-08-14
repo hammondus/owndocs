@@ -57,6 +57,16 @@
      contrast — so the pair moves together. */
   --on-signal: light-dark(#ffffff, #0e1014);
   --danger: light-dark(#c0392b, #e06c5c);
+  /* The signal at reading-through strength, for a selected region that must
+     not hide what it covers. Named rather than written at each use because the
+     sheet canvas needs it too, and a canvas can only take a resolved colour. */
+  --signal-tint: color-mix(in srgb, var(--signal) 8%, transparent);
+
+  /* Annotation amber: "somebody wrote about this". Pinned in both schemes,
+     like the highlight grounds and for the same reason — a margin mark reads
+     as a mark on the page, not as part of the interface. One value, shared by
+     the commented ranges in the editor and the corner markers on the grid. */
+  --marker-comment: #f9a825;
 
   /* System stacks only. No font files to ship, so no assets, no licensing and
      nothing to load before text can paint — the same rule the reading
@@ -550,8 +560,8 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
    background: the text stays readable, and several overlapping comments do
    not compound into an unreadable block. */
 .cm-comment-range {
-  background: color-mix(in srgb, #f9a825 14%, transparent);
-  border-bottom: 2px solid #f9a825;
+  background: color-mix(in srgb, var(--marker-comment) 14%, transparent);
+  border-bottom: 2px solid var(--marker-comment);
 }
 
 /* ---- the rich-document palette -------------------------------------------
@@ -592,6 +602,23 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
   --doc-h-purple: oklch(0.90 0.09 300);
   --doc-h-pink: oklch(0.90 0.09 345);
   --doc-h-ink: #1a1a1a;
+
+  /* Chart series: the same eight hues again, in a third role. A series colour
+     has to carry area — a filled bar or a 2px line — against the chart's
+     ground, so it is lighter than a text colour in dark and a touch deeper in
+     light. Same method as above, and the same wheel, so a chart of a document's
+     data does not introduce a ninth idea of "red".
+
+     The canvas cannot read these, so theme.js resolves them and SheetView
+     hands the resolved list to drawChart. */
+  --chart-1: light-dark(oklch(0.55 0.17 25), oklch(0.75 0.15 25));
+  --chart-2: light-dark(oklch(0.55 0.17 60), oklch(0.75 0.15 60));
+  --chart-3: light-dark(oklch(0.55 0.17 95), oklch(0.75 0.15 95));
+  --chart-4: light-dark(oklch(0.55 0.17 145), oklch(0.75 0.15 145));
+  --chart-5: light-dark(oklch(0.55 0.17 195), oklch(0.75 0.15 195));
+  --chart-6: light-dark(oklch(0.55 0.17 255), oklch(0.75 0.15 255));
+  --chart-7: light-dark(oklch(0.55 0.17 300), oklch(0.75 0.15 300));
+  --chart-8: light-dark(oklch(0.55 0.17 345), oklch(0.75 0.15 345));
 }
 
 .md-c-red { color: var(--doc-c-red); }

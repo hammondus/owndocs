@@ -20,6 +20,8 @@
   import {
     acceptsRef, insertRef, formulaRefs, refColor, cycleAbsolute, nextPoint, pointRect,
   } from '../sheet/refs.js'
+  import { canvasColors, onSchemeChange } from '../theme.js'
+  import { PEERS, peerColor } from '../peers.js'
   import { scheduleCompaction } from '../compaction.js'
   import { makeIndexer } from '../searchindex.js'
   import ScriptsPanel from './ScriptsPanel.svelte'
@@ -122,12 +124,7 @@
   let layout = null
   let handleAt = null // fill handle position, in scroll-content coordinates
 
-  const cursorColors = [
-    ['#30bced', '#a8dff2'], ['#6eeb83', '#c6f7cf'], ['#fa69d1', '#fcc4ea'],
-    ['#ffbc42', '#ffe3b0'], ['#ecd444', '#f5edb0'], ['#ee6352', '#f8c2ba'],
-    ['#9b6ef3', '#d9c6fa'], ['#1be7ff', '#b3f6ff'],
-  ]
-  let myColor = '#30bced'
+  let myColor = PEERS[0].caret
 
   onMount(() => {
     ydoc = new Y.Doc()
@@ -151,7 +148,7 @@
 
     loadComments()
 
-    myColor = cursorColors[ydoc.clientID % cursorColors.length][0]
+    myColor = peerColor(ydoc.clientID).caret
     provider.awareness.setLocalStateField('user', { name: me.name, color: myColor })
     provider.awareness.on('change', () => {
       peerCount = provider.awareness.getStates().size
@@ -173,9 +170,16 @@
 
     const ro = new ResizeObserver(scheduleDraw)
     ro.observe(containerEl)
+
+    // The canvas holds pixels, not tokens, so a scheme change is invisible to
+    // it — everything else in the app re-resolves through the cascade, and
+    // this one surface has to be told. Covers both the reader flipping the
+    // theme and the machine flipping it underneath "System".
+    const unwatchScheme = onSchemeChange(scheduleDraw)
+
     scheduleDraw()
 
-    return () => ro.disconnect()
+    return () => { ro.disconnect(); unwatchScheme() }
   })
 
   onDestroy(() => {
@@ -360,6 +364,17 @@
     ctx.font = BASE_FONT
     ctx.textBaseline = 'middle'
 
+    // The scheme's colours, resolved once for the frame. Cached in theme.js
+    // and rebuilt only when the scheme changes, so this is a property read.
+    const paint = canvasColors()
+
+    // The grid paints its own ground rather than leaving the canvas clear.
+    // Cell backgrounds, the selection tint and the headers all assume there is
+    // something underneath them, and `.grid`'s CSS background cannot serve —
+    // it is behind the canvas, so a dark-mode sheet showed through as a hole.
+    ctx.fillStyle = paint.ground
+    ctx.fillRect(0, 0, w, h)
+
     const sx = containerEl.scrollLeft
     const sy = containerEl.scrollTop
     const { R, C, colX, rowY } = layout
@@ -391,7 +406,7 @@
 
     // Selection tint over the backgrounds.
     const s = selRect()
-    ctx.fillStyle = 'rgba(21, 101, 192, 0.08)'
+    ctx.fillStyle = paint.signalTint
     ctx.fillRect(screenX(s.c1), screenY(s.r1), colX[s.c2 + 1] - colX[s.c1], rowY[s.r2 + 1] - rowY[s.r1])
 
     // Cell contents, clipped to their cell.
@@ -415,9 +430,21 @@
         // An error cell keeps its red through a preview: the picker is
         // offering a colour for text, and #REF! is not text.
         const fg = fgPreview && inRect(fgPreview.rect, r, c) ? fgPreview.value : null
+        // A cell the author gave a background to is *paper*, and paper takes
+        // dark ink in either scheme. Without this the default ink follows the
+        // theme and goes light, which puts white text on the pale yellow
+        // somebody chose to make a cell stand out — the one case where dark
+        // mode does not merely look wrong but hides the value.
+        //
+        // This is the argument .md-highlight already won for documents: a
+        // ground the author picked is a ground, and ink and ground are a pair.
+        // Doing it here rather than converting stored colours to tokens keeps
+        // every existing sheet rendering exactly as its author left it. See
+        // DESIGN-DECISIONS, *Dark mode reaches the grid*.
+        const onPaper = fmt?.bg || (bgPreview && inRect(bgPreview.rect, r, c))
         ctx.fillStyle = text.startsWith('#') && align === 'center'
-          ? '#c62828'
-          : fg || (fmt && fmt.c) || '#202124'
+          ? paint.danger
+          : fg || fmt?.c || (onPaper ? paint.paperInk : paint.ink)
         ctx.textAlign = align
         const tx = align === 'right' ? x + cw - 5 : align === 'center' ? x + cw / 2 : x + 5
         ctx.fillText(text, tx, y)
@@ -427,7 +454,7 @@
     ctx.font = BASE_FONT
 
     // Gridlines.
-    ctx.strokeStyle = '#e2e3e5'
+    ctx.strokeStyle = paint.gridline
     ctx.lineWidth = 1
     ctx.beginPath()
     for (let c = c0; c <= Math.min(c1 + 1, C); c++) {
@@ -450,7 +477,7 @@
     // Walks the window and asks the model per cell; the answer is memoized
     // beside the value cache, so a repaint costs a map lookup per cell and
     // the comparison itself is done once per edit.
-    ctx.fillStyle = '#1565c0'
+    ctx.fillStyle = paint.signal
     for (let r = r0; r <= r1 && r < R; r++) {
       for (let c = c0; c <= c1 && c < C; c++) {
         if (!model.lossyLiteral(r, c)) continue
@@ -469,7 +496,7 @@
     // gridlines so it sits on top of them, and only for visible cells — this
     // runs on every repaint, so it walks the window, never the thread list.
     if (commentedCells.size) {
-      ctx.fillStyle = '#f9a825'
+      ctx.fillStyle = paint.comment
       for (let r = r0; r <= r1 && r < R; r++) {
         for (let c = c0; c <= c1 && c < C; c++) {
           if (!commentedCells.has(r + '.' + c)) continue
@@ -498,14 +525,19 @@
         colX[Math.min(o.c2, C - 1) + 1] - colX[o.c1], rowY[Math.min(o.r2, R - 1) + 1] - rowY[o.r1])
       ctx.fillStyle = st.user.color
       ctx.fillRect(screenX(o.c1), screenY(o.r1) - 14, ctx.measureText(st.user.name).width + 8, 14)
-      ctx.fillStyle = '#fff'
+      // Ink on a *peer's* colour, so it follows that colour rather than the
+      // scheme — see peers.js, where the identity palette is deliberately
+      // scheme-independent. Dark, because the carets sit at a middle lightness
+      // where dark ink reads and white does not. The editor pins the same
+      // choice on `.cm-ySelectionInfo`, so a name tag looks the same in both.
+      ctx.fillStyle = paint.paperInk
       ctx.textAlign = 'left'
       ctx.fillText(st.user.name, screenX(o.c1) + 4, screenY(o.r1) - 7)
     }
 
     // Cut source: marching-ants style dashes, so it's clear what will move.
     if (cutRegion) {
-      ctx.strokeStyle = '#5f6368'
+      ctx.strokeStyle = paint.ink2
       ctx.lineWidth = 1
       ctx.setLineDash([4, 3])
       ctx.strokeRect(screenX(cutRegion.c1), screenY(cutRegion.r1),
@@ -531,14 +563,14 @@
     }
 
     // Own selection border.
-    ctx.strokeStyle = '#1565c0'
+    ctx.strokeStyle = paint.signal
     ctx.lineWidth = 2
     ctx.strokeRect(screenX(s.c1), screenY(s.r1), colX[s.c2 + 1] - colX[s.c1], rowY[s.r2 + 1] - rowY[s.r1])
 
     // Fill preview while dragging the handle.
     if (filling) {
       const d = filling.dest
-      ctx.strokeStyle = '#5f6368'
+      ctx.strokeStyle = paint.ink2
       ctx.lineWidth = 1
       ctx.setLineDash([3, 2])
       ctx.strokeRect(screenX(d.c1), screenY(d.r1),
@@ -552,23 +584,23 @@
     if (!readOnly) {
       const hx = screenX(s.c2 + 1)
       const hy = screenY(s.r2 + 1)
-      ctx.fillStyle = '#fff'
+      ctx.fillStyle = paint.ground
       ctx.fillRect(hx - 4, hy - 4, 8, 8)
-      ctx.fillStyle = '#1565c0'
+      ctx.fillStyle = paint.signal
       ctx.fillRect(hx - 3, hy - 3, 6, 6)
     }
 
     // Headers last, so scrolled content disappears underneath them.
-    ctx.fillStyle = '#f8f9fa'
+    ctx.fillStyle = paint.headerGround
     ctx.fillRect(0, 0, w, HEADER_H)
     ctx.fillRect(0, 0, HEADER_W, h)
-    ctx.fillStyle = '#5f6368'
+    ctx.fillStyle = paint.ink2
     for (let c = c0; c <= c1 && c < C; c++) {
       const x = screenX(c), cw = colX[c + 1] - colX[c]
       if (c >= s.c1 && c <= s.c2) {
-        ctx.fillStyle = '#e8f0fe'
+        ctx.fillStyle = paint.headerActive
         ctx.fillRect(x, 0, cw, HEADER_H)
-        ctx.fillStyle = '#5f6368'
+        ctx.fillStyle = paint.ink2
       }
       ctx.textAlign = 'center'
       ctx.fillText(colName(c), x + cw / 2, HEADER_H / 2)
@@ -576,14 +608,14 @@
     for (let r = r0; r <= r1 && r < R; r++) {
       const y = screenY(r), rh = rowY[r + 1] - rowY[r]
       if (r >= s.r1 && r <= s.r2) {
-        ctx.fillStyle = '#e8f0fe'
+        ctx.fillStyle = paint.headerActive
         ctx.fillRect(0, y, HEADER_W, rh)
-        ctx.fillStyle = '#5f6368'
+        ctx.fillStyle = paint.ink2
       }
       ctx.textAlign = 'center'
       ctx.fillText(String(r + 1), HEADER_W / 2, y + rh / 2)
     }
-    ctx.strokeStyle = '#d0d1d3'
+    ctx.strokeStyle = paint.edge
     ctx.lineWidth = 1
     ctx.strokeRect(0.5, 0.5, w - 1, HEADER_H - 1)
     ctx.strokeRect(0.5, 0.5, HEADER_W - 1, h - 1)
@@ -846,9 +878,10 @@
     const rect = model.chartRect(chart)
     if (!rect) {
       ctx.clearRect(0, 0, w, h)
-      ctx.fillStyle = '#fff'
+      const paint = canvasColors()
+      ctx.fillStyle = paint.ground
       ctx.fillRect(0, 0, w, h)
-      ctx.fillStyle = '#c62828'
+      ctx.fillStyle = paint.danger
       ctx.font = '12px system-ui, sans-serif'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
@@ -859,7 +892,20 @@
     // Tick labels borrow the first series' cell format, so a currency
     // chart gets currency ticks and a plain one gets plain numbers.
     const fmt = data.series[0]?.fmt
-    drawChart(ctx, w, h, chart, data, (v) => formatNumber(v, fmt) ?? String(Math.round(v * 1e6) / 1e6))
+    // chart.js stays free of the DOM, so the resolved colours are handed to it
+    // rather than looked up there — see LIGHT_CHART_CHROME for why.
+    const paint = canvasColors()
+    drawChart(ctx, w, h, chart, data, (v) => formatNumber(v, fmt) ?? String(Math.round(v * 1e6) / 1e6), {
+      ground: paint.ground,
+      ink: paint.ink,
+      ink2: paint.ink2,
+      gridline: paint.gridline,
+      series: paint.series,
+      // A pie slice's label sits on a series colour, not on the chart's
+      // ground, so its ink follows that colour rather than the scheme — the
+      // same call as the peer name tags above, and the same answer.
+      onSeries: paint.paperInk,
+    })
   }
 
   function onChartMouseDown(e, chart, mode) {
@@ -1886,13 +1932,13 @@
     flex-wrap: wrap;
   }
   .toolbar button.on {
-    background: #e8f0fe;
-    border-color: #1565c0;
+    background: var(--signal-soft);
+    border-color: var(--signal);
   }
   .toolbar .sep {
     width: 1px;
     align-self: stretch;
-    background: #d0d1d3;
+    background: var(--line-strong);
     margin: 0 0.25rem;
   }
   .toolbar label {
@@ -1913,7 +1959,7 @@
     width: 22px;
     height: 20px;
     padding: 0;
-    border: 1px solid #d0d1d3;
+    border: 1px solid var(--line-strong);
     background: none;
   }
   .formula-bar {
@@ -1926,7 +1972,7 @@
     font: 13px monospace;
     min-width: 3.5rem;
     text-align: center;
-    border: 1px solid #d0d1d3;
+    border: 1px solid var(--line-strong);
     border-radius: 3px;
     padding: 3px 0;
   }
@@ -1948,16 +1994,16 @@
     gap: 6px;
     font-size: 0.85rem;
     padding: 4px 10px;
-    border: 1px solid #d0d1d3;
+    border: 1px solid var(--line-strong);
     border-top: none;
     border-radius: 0 0 4px 4px;
-    background: #f8f9fa;
+    background: var(--surface-2);
     cursor: pointer;
   }
   .tab.active {
-    background: #fff;
+    background: var(--surface);
     font-weight: 600;
-    box-shadow: inset 0 -2px 0 #1565c0;
+    box-shadow: inset 0 -2px 0 var(--signal);
   }
   .tab-x {
     opacity: 0.45;
@@ -1966,7 +2012,7 @@
   }
   .tab-x:hover {
     opacity: 1;
-    color: #c62828;
+    color: var(--danger);
   }
   .tab.add {
     font-weight: 600;
@@ -1981,7 +2027,7 @@
     gap: 12px;
     padding: 4px 8px;
     font-size: 0.8rem;
-    color: #5f6368;
+    color: var(--ink-2);
     white-space: nowrap;
     cursor: default;
     /* Digits that don't jitter as the selection grows: without this the bar
@@ -2004,16 +2050,16 @@
     background: none;
     font: inherit;
     font-size: 0.8rem;
-    color: #1565c0;
+    color: var(--signal);
     font-variant-numeric: tabular-nums;
     cursor: pointer;
   }
   .lossy:disabled {
     cursor: default;
-    color: #5f6368;
+    color: var(--ink-2);
   }
   .lossy:not(:disabled):hover {
-    background: #e8f0fe;
+    background: var(--signal-soft);
     border-radius: 4px;
   }
   .lossy + .sel-stats {
@@ -2021,16 +2067,16 @@
   }
   .sel-stats b {
     font-weight: 600;
-    color: #202124;
+    color: var(--ink);
   }
   .sel-stats .warn {
-    color: #c62828;
+    color: var(--danger);
   }
   .tab-rename {
     font-size: 0.85rem;
     padding: 4px 8px;
     width: 8rem;
-    border: 1px solid #1565c0;
+    border: 1px solid var(--signal);
     border-radius: 0 0 4px 4px;
   }
   .grid {
@@ -2041,9 +2087,9 @@
        shrink below its content and pushes the page taller instead. */
     flex: 1;
     min-height: 0;
-    border: 1px solid #d0d1d3;
+    border: 1px solid var(--line-strong);
     outline: none;
-    background: #fff;
+    background: var(--surface);
   }
   .spacer {
     position: absolute;
@@ -2059,8 +2105,8 @@
   .chart {
     position: absolute;
     z-index: 3;
-    background: #fff;
-    border: 1px solid #d0d1d3;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
     border-radius: 4px;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
     display: flex;
@@ -2069,8 +2115,8 @@
     cursor: move;
   }
   .chart.selected {
-    border-color: #1565c0;
-    box-shadow: 0 0 0 1px #1565c0, 0 2px 8px rgba(0, 0, 0, 0.2);
+    border-color: var(--signal);
+    box-shadow: 0 0 0 1px var(--signal), 0 2px 8px rgba(0, 0, 0, 0.2);
   }
   .chart-bar {
     display: flex;
@@ -2078,8 +2124,8 @@
     gap: 4px;
     height: 26px;
     padding: 0 4px;
-    background: #f8f9fa;
-    border-bottom: 1px solid #e2e3e5;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
     cursor: move;
     font-size: 0.75rem;
   }
@@ -2115,13 +2161,13 @@
     width: 12px;
     height: 12px;
     cursor: nwse-resize;
-    background: linear-gradient(135deg, transparent 50%, #9aa0a6 50%);
+    background: linear-gradient(135deg, transparent 50%, var(--ink-3) 50%);
   }
   .cell-edit {
     position: absolute;
     z-index: 2;
     font: 13px system-ui, sans-serif;
-    border: 2px solid #1565c0;
+    border: 2px solid var(--signal);
     padding: 0 3px;
     outline: none;
     box-sizing: border-box;
@@ -2130,8 +2176,10 @@
     margin: 0 0 0.25rem;
     padding: 0.2rem 0.4rem;
     font-size: 0.8rem;
-    color: #c62828;
-    background: #fdecea;
+    color: var(--danger);
+    /* Mixed from the accent rather than pinned, so the wash under an error
+       stays a wash in both schemes instead of a pink card in a dark one. */
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
     border-radius: 3px;
   }
   .status {
@@ -2148,7 +2196,7 @@
     margin-left: 0.5rem;
     font: inherit;
     font-size: 0.9rem;
-    color: #1565c0;
+    color: var(--signal);
     cursor: pointer;
   }
 </style>

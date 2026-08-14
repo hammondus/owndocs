@@ -139,6 +139,17 @@ export function formatCss(f) {
   if (f.a) css.push(`text-align:${f.a === 'l' ? 'left' : f.a === 'c' ? 'center' : 'right'}`)
   if (f.c) css.push(`color:${f.c}`)
   if (f.bg) css.push(`background-color:${f.bg}`)
+  // A cell with a background but no chosen text colour has to say what its ink
+  // is, rather than inheriting it. Everywhere this CSS lands the surrounding
+  // ink follows a scheme — the history preview follows this app's, the
+  // clipboard flavour follows whatever the receiving app uses — while the
+  // background it is pinned to does not. Left to inherit, an author's pale
+  // yellow cell gets light text in dark mode and the value disappears.
+  //
+  // The same rule the grid canvas applies, and for the same reason: a ground
+  // the author picked is paper, and paper takes dark ink. See DESIGN-DECISIONS,
+  // *Dark mode reaches the grid*.
+  if (f.bg && !f.c) css.push('color:#1a1a1a')
   return css.join(';')
 }
 

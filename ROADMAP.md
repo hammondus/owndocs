@@ -50,24 +50,38 @@ than cells.
 
 **Next up** — nothing else is queued ahead of it.
 
-Answer first, because the subdomain design rests on it: **can nginx proxy
-manager be given one wildcard host?** The certificate half is settled. The
-supervisor routes on `Host` itself, so there is never per-session proxy
-configuration — this is one question asked once, not an ongoing burden. If the
-answer is no, the fallbacks are a custom nginx snippet or exposing the demo
-container directly for that name.
+**Do first, ten minutes, and it gates step 3 only.** The proxy manager's UI
+cannot route a wildcard host (issue #749, closed 2020), so the plan is a `server`
+block in its `/data/nginx/custom/http.conf`. Confirm it survives a reload: drop
+in a block returning a fixed string, then
+`curl -H 'Host: abc123.demo.<domain>'`. If it does not, the supervisor has to own
+the wildcard certificate and its renewal — see *A subdomain per session* for why
+that is dearer than previously recorded.
 
-Build order, and the first two are useful without the third:
+Build order. Steps 1 and 2 are useful without 3, and are not blocked by it:
 
 1. **`site/`** — what it is, how to host it, and the self-hosting instructions
-   that today only exist in `README.md`. Static, no build step beyond what is
-   already here.
+   that today only exist in `README.md`. Static, no build step. Enforced claims
+   carry `data-` attributes; see *The enforced tier* for the mechanism and the
+   registry order.
 2. **`make site-shots`** — the images the site uses, driven through the real
    app by the `ui_test.mjs` harness. Locks the sync property in while the site
    is small enough to retrofit cheaply.
-3. **The demo supervisor** — a mode of the same binary. Starts `docs -demo` per
-   visitor on a free port with a temp database, routes by hostname, kills it
+3. **The demo supervisor** — a mode of the same binary. Starts `owndocs -demo`
+   per visitor on a free port with a temp database, routes by hostname, kills it
    after ~20 idle minutes and deletes the directory.
+
+`site_test.mjs`, built alongside step 1, in value order:
+
+- `data-make` → `.PHONY` targets. Do this one first: it is the class of claim
+  the rename broke, and it costs a regex over the `Makefile`.
+- `data-fn` → `CALLABLE`. Joins the existing `functions_test.mjs` check.
+- `data-role` → `RANK` in `roles.js` **and** `roleRank` in `docs_api.go`. Those
+  two are hand-mirrored with nothing checking them — a live drift risk in the
+  app, not just on the site.
+- `data-key` → the editor's `formatKeymap` only. The sheet's shortcuts are not a
+  registry; either the list stays editor-only or the sheet half stays prose.
+- `data-shot` → the files `make site-shots` writes, both directions.
 
 Wanted with it, none of which exist:
 
@@ -75,7 +89,9 @@ Wanted with it, none of which exist:
 - Caps announced in the UI, and the message naming the *real* figure beside the
   demo one — the unsaved-change banner is the shape
 - A ceiling on concurrent sessions, and a per-source rate limit on creating one
-- `robots.txt` and `noindex`
+- `robots.txt` and `noindex` on **`*.demo.<domain>` only** — the site itself
+  wants indexing; it is the demo's abandoned scratchpads that must not surface
+  under the domain
 - A contact address and a paragraph of acceptable use
 - Wildcard DNS and certificate for `*.demo.<domain>` — a one-off ops task, and
   the reason a subdomain beat a path prefix

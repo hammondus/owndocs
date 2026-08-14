@@ -3104,6 +3104,90 @@ real:
 Anything that cannot be put in the first two tiers should be *shorter*, not
 more carefully written.
 
+### The enforced tier is data attributes, not prose
+
+Decided 2026-08-14. An enforced claim carries a machine-readable attribute, and
+`site_test.mjs` compares the *attributes* against the real registries in both
+directions. The prose wrapped around one is free to be prose.
+
+    <li data-fn="SUM">Adds up a range.</li>
+    <code data-make="release">make release</code>
+    <kbd data-key="Mod-b">⌘B</kbd>
+    <img data-shot="editor" src="shots/editor.png">
+
+The alternative was generating the pages from the registries, which cannot drift
+at all. It was rejected for the reason the site is static in the first place: it
+adds a build step, and it stops `site/` being readable as the files that are
+actually served. The attribute gets most of the guarantee at none of that cost.
+
+Three things make this better than matching prose, which was the obvious first
+instinct:
+
+- **A regex over an attribute is robust; a regex over prose is not.** Rewording
+  a sentence must not break a test, or the test will be deleted the first time
+  somebody edits a paragraph.
+- **The attribute makes the tier visible in the source.** Which claims are
+  enforced is legible where the claim is written, rather than in this document.
+  A claim added without an attribute is visibly in the prose tier, on purpose or
+  by accident, and either way it is obvious in review.
+- **Both directions, as with the formula list.** A `data-fn` the engine does not
+  have fails, and a callable the site never mentions fails too. One-directional
+  checks are how a page quietly stops being a complete list.
+
+The registries to compare against, in the order they are worth doing — and this
+list is deliberately honest about which exist:
+
+1. **`data-make` → the `Makefile`'s `.PHONY` targets.** Exists today, trivially
+   parsed, and the highest value for the effort: this is the class of claim that
+   broke during the rename. `ui_test.mjs` held the binary name as a string, went
+   green, and would have stayed broken until somebody ran the browser suite by
+   hand. A site page reading `./docs -allow-origin …` is the same failure with
+   nothing behind it at all.
+2. **`data-fn` → `CALLABLE` in `engine.js`.** Already works this way for
+   `functions.js`; the site joins an existing check rather than adding one.
+3. **`data-role` → `RANK` in `roles.js`, *and* `roleRank` in `docs_api.go`.**
+   Those two are hand-mirrored today, each with a comment saying they must stay
+   in step, and nothing reads the Go side. The Go comment notes that adding a
+   level silently widens access. Parsing one map literal closes a real
+   cross-language drift risk in the app, which the site merely gave a reason to
+   fix.
+4. **`data-key` → the editor's `formatKeymap`.** Partial, and worth stating why:
+   `formatKeymap` is a CodeMirror binding array whose `key` fields are
+   machine-readable, so the seven editor bindings can be checked today. The
+   sheet's shortcuts are handled in `SheetView.svelte` and are **not** a
+   registry, so they cannot be. Either the site's shortcut list stays editor-only
+   until the sheet grows one, or the sheet's shortcuts stay in the prose tier and
+   are kept short. Not a reason to delay the other three.
+5. **`data-shot` → the files `make site-shots` writes.** Both directions again: a
+   shot the site references that the harness does not produce fails, and one the
+   harness produces that nothing uses fails, so the set cannot rot in either
+   direction.
+
+### The self-hosting instructions are duplicated on purpose
+
+They exist in `README.md` today and the site needs them too, so one of the three
+had to be chosen: site canonical, README canonical, or both with a check.
+
+**Both, with a check.** Each stands alone, and `site_test.mjs` asserts that every
+command the site shows also appears in `README.md` and is a real target. The
+duplication is real and is accepted, because the alternatives both fail somebody
+mid-task: a README that points at the site leaves anyone who has cloned the repo
+reaching for the network to find out how to build it, and a site that points at
+the README sends a visitor off to a repo host in the middle of deciding whether
+to bother.
+
+What makes that acceptable is that the duplicated part is *commands*, which is
+the half a test can hold. Prose explaining them may differ between the two, and
+should — a visitor and someone at a checkout want different framing. Only the
+commands have to agree, and those are exactly what a rename breaks.
+
+### What the site does not claim
+
+Cheaper to decide once than to relitigate per page. No uptime or performance
+promises, no roadmap or "coming soon", and **no comparison table** — a table of
+competitors is the fastest-rotting content on any software site, because it goes
+stale when *someone else* ships, which is not an event this repo can observe.
+
 ### Every visitor gets their own instance, because the demo cannot be moderated
 
 The server checks a role on a document write and then stores opaque bytes; it
@@ -3122,7 +3206,7 @@ one visitor writing abuse *at* another inside a document they are both in.
 It also collapses "documents must not stay around" into the same mechanism: an
 instance is a temp directory, and expiry is deleting it.
 
-A supervisor — a mode of the same binary — starts `docs -demo` on a free port
+A supervisor — a mode of the same binary — starts `owndocs -demo` on a free port
 with a temp database, proxies to it, and kills it after roughly twenty idle
 minutes. **A 17 MiB static binary over SQLite is what makes this affordable**;
 it would be an absurd design for anything that needed a database server.
@@ -3155,14 +3239,54 @@ individual session — there is no per-session proxy configuration to write, and
 no reload when one starts or ends. That reduces the whole dependency to a
 single question asked once: can the proxy in front be given one wildcard host?
 
-Unverified as of 2026-08-14, and worth answering before anything is built,
-because it is the one assumption the subdomain design rests on. The wildcard
-certificate itself is settled — that part is routine. The open half is whether
-nginx proxy manager can express a wildcard *host*; it is a UI over nginx, so
-the fallbacks if it cannot are a custom configuration snippet, or exposing the
-demo container directly for that one name and leaving the proxy manager out of
-it. The demo has its own container either way, which makes the second fallback
-cheap rather than a compromise.
+Researched 2026-08-14, and the answer narrowed to one cheap test.
+
+**The proxy manager's UI cannot do it.** A wildcard in a proxy host's *Domain
+Names* field was requested as issue #749, framed explicitly as routing rather
+than certificates, and closed in December 2020 without the feature.
+
+Worth recording the trap, because it will be hit again by whoever checks this
+next: **almost everything written about "wildcards in nginx proxy manager" is
+about the certificate.** The usual guide sets up a wildcard DNS record and a
+DNS-01 wildcard certificate, and then adds *one named proxy host per service* —
+the opposite of what the demo needs. That is the half that was already settled.
+Search results actively blur the two.
+
+**The fallback has a documented hook.** The advanced-configuration page defines
+fixed inclusion points under `/data/nginx/custom/`, one of which is `http.conf`,
+included at the end of the `http` block — which is exactly where a `server { }`
+block is legal. So `server_name *.demo.<domain>;` is plain nginx in a supported
+file, rather than a fork of the container.
+
+Three properties of nginx make that safe, none of which depend on the proxy
+manager behaving well:
+
+- **It cannot break the existing hosts.** `server_name` resolves by specificity,
+  not by file order: exact name, then longest leading-wildcard, then regex. Every
+  named proxy host beats `*.demo.<domain>` for its own name, so appending the
+  block at the end of the `http` block changes nothing else.
+- **A leading wildcard matches exactly one label.** `abc123.demo.<domain>` hits
+  it; `a.b.demo.<domain>` does not. That is the wanted behaviour, and it means a
+  session token can never contain a dot.
+- **Nothing upstream needs to know a session exists**, as above — the block is
+  written once and never again.
+
+What is still unverified is narrow: whether the proxy manager leaves `http.conf`
+intact and reloads cleanly with a whole `server` block in it, rather than only
+tolerating directive-level snippets. That is inference from nginx's grammar plus
+the documented inclusion point, not something a source states. More reading will
+not settle it; a ten-minute test will — drop a `server` block returning a fixed
+string into `http.conf`, reload, and `curl -H 'Host: abc123.demo.<domain>'`.
+
+**If it fails, the remaining fallback costs more than previously recorded.**
+Exposing the demo container directly for that one name was called cheap because
+it has its own container regardless. The container is cheap; the TLS is not.
+Fronted by the proxy manager, it terminates TLS and forwards plain HTTP over the
+docker network, and the supervisor never handles a certificate. Exposed
+directly, the supervisor owns the wildcard certificate and its renewal — either
+mounting the proxy manager's certificate directory read-only and re-reading it
+when it changes, or running a second ACME client. That is a standing obligation,
+not a one-off task, which is what makes the ten-minute test worth doing first.
 
 ### The limits are smaller, and they say so
 

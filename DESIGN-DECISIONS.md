@@ -4152,8 +4152,21 @@ of arrival.
   `console.error` line stays either way — that is where a script author debugs,
   and it survives the message going.
 
-  There is no browser test of the trigger path itself; what is tested is the
-  channel both now use, which is where the defect was.
+  Both paths are driven in `ui_test.mjs`, the trigger one in a step of its own
+  because it needs a script, the `onEdit` setting and the confirm that gates
+  automatic runs. A protected cell is what makes that test possible at all: it
+  is the cheapest way to build a script that fails *every* time, which is
+  exactly the case the old banner could not clear. The step asserts the message
+  names the cell, arrives as one line, and then goes with no successful run
+  behind it — and asserts the `console.error` rather than tolerating it, since
+  without an `expect` the harness would fail the step on the very line that
+  proves the feature works.
+
+  Writing that test found one more thing. The sandbox reports a thrown error as
+  `String(err.stack)`, which is right for the scripts panel — a `<pre>` that
+  wants the frames — and useless in a one-line bar, where everything after
+  "Error:" ellipsizes away. The bar takes the first line; the console keeps the
+  stack.
 
 **Every model write from the view goes through one `attempt` wrapper**, which
 catches `ProtectedError` and routes it to that status line. Belt and braces, and

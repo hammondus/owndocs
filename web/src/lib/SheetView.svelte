@@ -71,6 +71,11 @@
   // banner that matters.
   const refuse = (msg, ms) => onNotice?.(msg, ms)
 
+  // A thrown error arrives as its stack. The first line is the message; the
+  // rest is frames from inside the sandbox, which name nothing a script author
+  // wrote.
+  const firstLine = (s) => String(s).split('\n')[0].trim()
+
   // Selection: anchor (r,c) to head (r2,c2). A single cell has both equal.
   let sel = $state({ r: 0, c: 0, r2: 0, c2: 0 })
   // While editing: which cell and the in-progress text. null = not editing.
@@ -866,7 +871,11 @@
           //
           // The console keeps the detail. That line is where a script author
           // debugs, and it survives the message going.
-          refuse(`on-edit script “${s.name}” failed — ${res.error}`, 10000)
+          // First line only. The sandbox reports `err.stack`, which is the
+          // right thing for the scripts panel — a <pre> that wants the frames —
+          // and useless in a one-line bar that would ellipsize everything after
+          // "Error:". The console keeps the whole thing.
+          refuse(`on-edit script “${s.name}” failed — ${firstLine(res.error)}`, 10000)
           console.error('trigger failed:', s.name, res.error)
         }
       }

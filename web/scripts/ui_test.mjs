@@ -1894,6 +1894,112 @@ try {
     check(!(await page.$eval('.formula-bar input', (e) => e.readOnly)), 'and opens the protected cell')
   })
 
+  // The on-edit trigger path, end to end. Its failure message used to clear only
+  // when a LATER trigger run succeeded — so a script that fails every time left
+  // it on screen for good — and a protected cell is the cheapest way to build a
+  // script that fails every time. Driving it needs a script, the onEdit setting
+  // and the confirm that gates automatic runs, which is why it is its own step.
+  await step('a failed on-edit script says so, and then stops saying it', async () => {
+    if (await page.$('[aria-label="Back to documents"]')) {
+      await clickSel(page, '[aria-label="Back to documents"]')
+    }
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI trigger failure')
+    await page.select('select', 'sheet')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('canvas', { timeout: 5000 })
+
+    const cellAt = async (r, c) => {
+      const b = await page.$eval('.grid', (el) => {
+        const x = el.getBoundingClientRect()
+        return { x: x.x, y: x.y }
+      })
+      return { x: b.x + 48 + c * 100 + 50, y: b.y + 24 + r * 24 + 12 }
+    }
+
+    // B1 is the input the trigger will fire on; A1 is what the script writes to
+    // and what protection will refuse.
+    const b1 = await cellAt(0, 1)
+    await page.mouse.click(b1.x, b1.y)
+    await page.keyboard.type('1')
+    await page.keyboard.press('Enter')
+
+    // A script bound to onEdit that writes to A1. The code goes in by setting
+    // the textarea and dispatching change, because the panel commits on blur
+    // rather than per keystroke and typing a script is not what is being tested.
+    await clickText(page, 'button', '⚙ scripts')
+    // The panel shows a hint and no editor until a script exists, so "new"
+    // comes first and the textarea only then.
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'new'),
+      { timeout: 5000 },
+    )
+    await clickText(page, 'button', 'new')
+    await page.waitForFunction(() => document.querySelector('textarea')?.value.length > 0, { timeout: 3000 })
+    await page.$eval(
+      'textarea',
+      (el, code) => {
+        el.value = code
+        el.dispatchEvent(new Event('change', { bubbles: true }))
+      },
+      "await docs.set('A1', [['written by a script']])\n",
+    )
+    // Addressed through its label: the panel has one checkbox today, and a
+    // bare input[type=checkbox] would silently start meaning the tint toggle
+    // the moment a sheet is protected below it.
+    const ticked = await page.evaluate(() => {
+      const label = [...document.querySelectorAll('label')].find((l) => /run on edit/.test(l.textContent))
+      if (!label) return false
+      label.querySelector('input[type=checkbox]').click()
+      return true
+    })
+    check(ticked, 'a script can be set to run on edit')
+    await clickText(page, 'button', 'close')
+
+    // Mark B as the input column, then protect: now the script's target is
+    // locked and the cell that fires it is not.
+    const bHeader = await cellAt(-1, 1)
+    await page.mouse.click(bHeader.x, bHeader.y)
+    await clickText(page, 'button', 'mark input')
+    await clickText(page, 'button', 'unprotected')
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('button')].some((b) => /🔒 protected/.test(b.textContent)),
+      { timeout: 3000 },
+    )
+
+    // Automatic script runs are gated by a confirm the first time one would
+    // fire, and the answer is remembered per document — so one accept covers
+    // the whole step. Registered before the edit that triggers it, and removed
+    // after, so no later step inherits an auto-accepting dialog handler.
+    const acceptOnce = (d) => d.accept()
+    page.on('dialog', acceptOnce)
+    try {
+      const b1b = await cellAt(0, 1)
+      await page.mouse.click(b1b.x, b1b.y)
+      await page.keyboard.type('2')
+      await page.keyboard.press('Enter')
+
+      await page.waitForSelector('.appbar .notice', { timeout: 8000 })
+      const msg = await page.$eval('.appbar .notice', (e) => e.textContent.trim())
+      check(/on-edit script/.test(msg), `a failed trigger reports itself (${JSON.stringify(msg)})`)
+      check(/A1 is protected/.test(msg), 'and names the cell the script was refused')
+      // One line. The sandbox reports a thrown error as its stack, and every
+      // frame after the first is inside the sandbox itself.
+      check(!msg.includes('\n'), 'as one line, not a stack trace')
+    } finally {
+      page.off('dialog', acceptOnce)
+    }
+
+    // The reported bug: it used to clear only when a later trigger run
+    // succeeded, and this script cannot succeed.
+    await page.waitForFunction(() => !document.querySelector('.appbar .notice'), { timeout: 15000 })
+    ok('and the message goes on its own, with no successful run to clear it')
+    // The console line is deliberate and is asserted rather than tolerated: it
+    // is what survives the message going, and it is where a script author
+    // debugs. Without `expect` the step would fail on it, which would be the
+    // harness reporting the feature working.
+  }, { expect: /trigger failed: .*A1 is protected/ })
+
   await step('a formula can be written by pointing at cells', async () => {
     if (await page.$('[aria-label="Back to documents"]')) {
       await clickSel(page, '[aria-label="Back to documents"]')

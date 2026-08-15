@@ -1859,6 +1859,14 @@ try {
     const msg = await page.$eval('.appbar .notice', (e) => e.textContent.trim())
     check(await barHeight() === barBefore, 'the message does not grow the app bar')
     check(await gridTop() === topBefore, 'and the grid does not move under it')
+
+    // It goes on its own. Asserted because the first version of the on-edit
+    // trigger banner did not: it cleared only when a LATER trigger run
+    // succeeded, so a script that always fails left it up permanently with
+    // nothing to dismiss it. Both now share this channel, so this is the
+    // property that has to hold for either of them.
+    await page.waitForFunction(() => !document.querySelector('.appbar .notice'), { timeout: 8000 })
+    ok('and the message clears itself')
     check(/A1 is protected/.test(msg), `a refusal explains rather than doing nothing (${JSON.stringify(msg)})`)
     check(await bar() === '=B1*2', 'and the cell is unchanged')
 

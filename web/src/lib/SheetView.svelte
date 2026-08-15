@@ -69,7 +69,7 @@
   // an alarm, and stays until dismissed; a protection refusal is routine and
   // nothing is wrong. Borrowing the alarm would teach people to ignore the
   // banner that matters.
-  const refuse = (msg) => onNotice?.(msg)
+  const refuse = (msg, ms) => onNotice?.(msg, ms)
 
   // Selection: anchor (r,c) to head (r2,c2). A single cell has both equal.
   let sel = $state({ r: 0, c: 0, r2: 0, c2: 0 })
@@ -114,7 +114,6 @@
   let showFunctions = $state(false)
   let showComments = $state(false)
   let threads = $state([])
-  let triggerError = $state('')
   let triggerBusy = false // one trigger run at a time; bursts coalesce
   let chartCanvases = $state({})
   let chartDrag = null // {id, mode, startX, startY, orig} while dragging
@@ -857,10 +856,18 @@
           onLog: (line) => console.log(`[${s.name}]`, line),
         })
         if (res.error) {
-          triggerError = `${s.name}: ${res.error}`
+          // Same channel as a refusal, and for the same two reasons: it went
+          // away for nobody, and it moved the grid while it was up. It used to
+          // be a block here that cleared only when a LATER trigger run
+          // succeeded — so a script that always fails, or an edit you never
+          // make again, left it on screen permanently with nothing to dismiss
+          // it. Reported from use, and a protected cell is the easiest way to
+          // reach it: the script refuses every single time.
+          //
+          // The console keeps the detail. That line is where a script author
+          // debugs, and it survives the message going.
+          refuse(`on-edit script “${s.name}” failed — ${res.error}`, 10000)
           console.error('trigger failed:', s.name, res.error)
-        } else if (triggerError) {
-          triggerError = ''
         }
       }
     } finally {
@@ -1894,10 +1901,6 @@
   </div>
 {/if}
 
-{#if triggerError}
-  <p class="trigger-error">⚠ on-edit script failed — {triggerError}</p>
-{/if}
-
 {#if showFunctions}
   <FunctionsPanel {readOnly} onPick={useFunction} onClose={() => (showFunctions = false)} />
 {/if}
@@ -2400,16 +2403,6 @@
     padding: 0 3px;
     outline: none;
     box-sizing: border-box;
-  }
-  .trigger-error {
-    margin: 0 0 0.25rem;
-    padding: 0.2rem 0.4rem;
-    font-size: 0.8rem;
-    color: var(--danger);
-    /* Mixed from the accent rather than pinned, so the wash under an error
-       stays a wash in both schemes instead of a pink card in a dark one. */
-    background: color-mix(in srgb, var(--danger) 12%, transparent);
-    border-radius: 3px;
   }
   .status {
     font-size: 0.85rem;

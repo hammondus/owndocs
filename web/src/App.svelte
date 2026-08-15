@@ -45,10 +45,15 @@
   // Passed down as `onNotice`. Held here rather than per view so the timer and
   // the replace-rather-than-stack rule are written once: a held-down key raises
   // one message, not a queue of them.
-  function notify(msg) {
+  //
+  // `ms` because the two things this reports are not read at the same speed. A
+  // refusal you caused by typing is understood the moment you see it — you know
+  // what you just did. A script that failed on your behalf has to be read: it
+  // names a script you did not run and a cell you may not have been looking at.
+  function notify(msg, ms = 5000) {
     notice = msg
     clearTimeout(noticeTimer)
-    noticeTimer = setTimeout(() => (notice = ''), 5000)
+    noticeTimer = setTimeout(() => (notice = ''), ms)
   }
 
   // Search. `seq` is what makes an out-of-order response harmless: typing is

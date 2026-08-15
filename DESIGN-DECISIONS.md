@@ -4135,10 +4135,25 @@ of arrival.
   sentence stays available as a `title`.
 
   The state and its timer live in `App.svelte` and reach the view as `onNotice`,
-  so the replace-rather-than-stack rule is written once rather than per view —
-  and the next view that needs to say "that did nothing, here is why" inherits
-  it. `ui_test.mjs` pins the property rather than the placement: the app bar's
-  height and the grid's top must both be unchanged while the message is up.
+  so the replace-rather-than-stack rule is written once rather than per view.
+  `ui_test.mjs` pins the property rather than the placement: the app bar's
+  height and the grid's top must both be unchanged while the message is up, and
+  the message must clear itself.
+
+  **The on-edit trigger banner joined it, having had the same two faults and one
+  worse.** It was a block above the toolbar, so it moved the grid; and it
+  cleared only when a *later* trigger run succeeded, so a script that fails
+  every time — writing to a protected cell is the easiest way to arrange that —
+  left it on screen permanently with nothing to dismiss it. Both reported from
+  use. It now goes through `onNotice` with a longer life, because the two things
+  are not read at the same speed: a refusal you caused by typing is understood
+  the moment you see it, while a script that failed on your behalf names a
+  script you did not run and a cell you may not have been looking at. The
+  `console.error` line stays either way — that is where a script author debugs,
+  and it survives the message going.
+
+  There is no browser test of the trigger path itself; what is tested is the
+  channel both now use, which is where the defect was.
 
 **Every model write from the view goes through one `attempt` wrapper**, which
 catches `ProtectedError` and routes it to that status line. Belt and braces, and

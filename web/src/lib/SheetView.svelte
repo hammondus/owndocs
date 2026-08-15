@@ -35,7 +35,7 @@
   import { handleCall } from '../sheet/scriptapi.js'
   import { allowTriggers, summariseEdit } from '../sheet/triggers.js'
 
-  let { me, doc, onBack, onShare, onHistory, onRenamed } = $props()
+  let { me, doc, onBack, onShare, onHistory, onRenamed, onNotice } = $props()
 
   // $derived, not a plain const: props can change, and a const would keep
   // the value from the first render forever.
@@ -59,20 +59,17 @@
   let problem = $state('')
   let peerCount = $state(1)
 
-  // Why the last thing you tried did nothing. Deliberately NOT the `problem`
-  // banner: that one says "Not saved", is an alarm, and stays until dismissed.
-  // A protection refusal is routine and expected — nothing is wrong — and
-  // borrowing the alarm would teach people to ignore the banner that matters.
+  // Why the last thing you tried did nothing. Raised to the app bar rather than
+  // rendered here, because the bar's height is fixed: a message appearing and
+  // going cannot move the grid. Rendered here it was a block above the toolbar,
+  // so every row shifted down and then back up — a worse interruption than the
+  // refusal it was reporting.
   //
-  // Self-replacing rather than accumulating, so holding a key down produces one
-  // line rather than a wall of them.
-  let notice = $state('')
-  let noticeTimer = 0
-  function refuse(msg) {
-    notice = msg
-    clearTimeout(noticeTimer)
-    noticeTimer = setTimeout(() => (notice = ''), 4000)
-  }
+  // Deliberately not the `problem` banner either. That one says "Not saved", is
+  // an alarm, and stays until dismissed; a protection refusal is routine and
+  // nothing is wrong. Borrowing the alarm would teach people to ignore the
+  // banner that matters.
+  const refuse = (msg) => onNotice?.(msg)
 
   // Selection: anchor (r,c) to head (r2,c2). A single cell has both equal.
   let sel = $state({ r: 0, c: 0, r2: 0, c2: 0 })
@@ -1810,14 +1807,6 @@
   </div>
 {/if}
 
-{#if notice}
-  <!-- A status line, not the "Not saved" banner and not an alert. A protection
-       refusal is routine: nothing is wrong, nothing was lost, and the sheet is
-       telling you why the last thing you tried did nothing. It replaces itself
-       and fades on its own, so holding a key down does not build a wall. -->
-  <p class="notice" role="status">{notice}</p>
-{/if}
-
 {#if !readOnly}
   <div class="toolbar protect">
     <!-- Marking cells and turning protection on are changes *to* the
@@ -2143,18 +2132,6 @@
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .problem :global(button) { margin-left: auto; }
-  /* Quiet by design, and nothing like .problem above. That one is an alarm
-     about work that did not reach the server; this says the sheet declined to
-     do something and is still perfectly healthy. Same reason it carries no
-     dismiss button: it goes on its own. */
-  .notice {
-    margin: 0 0 6px;
-    padding: 4px 10px;
-    font-size: 0.85rem;
-    border-radius: var(--r);
-    border-left: 3px solid var(--signal);
-    background: var(--signal-tint);
-  }
   /* The protection strip reads as a state readout rather than another row of
      actions, so it sits quieter than the toolbars under it. */
   .toolbar.protect {

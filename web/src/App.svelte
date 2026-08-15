@@ -30,6 +30,27 @@
   let notes = $state([])
   let showNotes = $state(false)
 
+  // Why the last thing you tried did nothing — today, a write refused by sheet
+  // protection. It lives in the app bar rather than in the view that raised it,
+  // and that is the whole point: the bar has a fixed height, so a message
+  // appearing and going cannot move anything. As a block above the grid it
+  // pushed every row down and then back up, which is a worse interruption than
+  // the refusal it was reporting.
+  //
+  // Not the "Not saved" banner, which is an alarm about work that did not reach
+  // the server and stays until dismissed. This is routine and self-clearing.
+  let notice = $state('')
+  let noticeTimer = 0
+
+  // Passed down as `onNotice`. Held here rather than per view so the timer and
+  // the replace-rather-than-stack rule are written once: a held-down key raises
+  // one message, not a queue of them.
+  function notify(msg) {
+    notice = msg
+    clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => (notice = ''), 5000)
+  }
+
   // Search. `seq` is what makes an out-of-order response harmless: typing is
   // faster than the network, so a slow early query can land after a fast later
   // one and overwrite the results for what is currently in the box.
@@ -238,6 +259,13 @@
      owns it, in its own bar below. -->
 <header class="appbar">
   <span class="wordmark">own docs</span>
+  <!-- Beside the wordmark, in the space the spacer would otherwise eat. The
+       bar's height is fixed, so this can never move the page under whoever is
+       reading it — which is what it did as a block above the grid. `title`
+       carries the whole sentence when the window is too narrow to show it. -->
+  {#if notice}
+    <span class="notice" role="status" title={notice}>{notice}</span>
+  {/if}
   <span class="spacer"></span>
   {#if me}
     <!-- The unread count is the whole notification surface: no badge dot, no
@@ -291,7 +319,7 @@
          stale CodeMirror/provider from the previous doc can never leak. -->
     {#key route.doc.id}
       {#if route.doc.kind === 'sheet'}
-        <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} />
+        <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} onNotice={notify} />
       {:else}
         <!-- onOpenDoc follows a document link, by id. It ends in openDoc like
              any other navigation, so the hash updates and the #key above swaps
@@ -318,5 +346,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Truncates rather than pushing: `min-width: 0` is what lets a flex item
+     shrink below its content, without which a long message would shove the
+     inbox and sign-out off the end of the bar instead of ellipsing.
+     Signal-coloured, because this is the app telling you something about right
+     now — not danger-coloured, because nothing is wrong. */
+  .notice {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.85rem;
+    padding: 2px 8px;
+    border-radius: var(--r);
+    color: var(--ink);
+    background: var(--signal-tint);
+    border-left: 2px solid var(--signal);
   }
 </style>

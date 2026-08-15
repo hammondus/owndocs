@@ -4118,12 +4118,27 @@ of arrival.
   there is no keystroke to discard and no half-typed value to explain away.
   Opening an editor on a cell that cannot accept the value is a promise the
   sheet will not keep.
-- **A status line saying why.** Deliberately not the `problem` banner: that one
-  says "Not saved", is an alarm about work that did not reach the server, and
-  stays until dismissed. A protection refusal is routine and nothing is wrong,
-  and borrowing the alarm would train people to ignore the banner that matters.
-  It replaces itself and fades, so holding a key down produces one line rather
-  than a wall.
+- **A line in the app bar saying why.** Deliberately not the `problem` banner:
+  that one says "Not saved", is an alarm about work that did not reach the
+  server, and stays until dismissed. A protection refusal is routine and nothing
+  is wrong, and borrowing the alarm would train people to ignore the banner that
+  matters. It replaces itself and fades, so holding a key down produces one line
+  rather than a wall.
+
+  **Where it goes is the part that had to be fixed after using it.** The first
+  version rendered a block above the toolbar, which pushed every row of the grid
+  down while it showed and back up when it went — an interruption worse than the
+  refusal it was reporting, and while you were looking at the cell it was about.
+  It now lives beside the wordmark in `.appbar`, whose height is fixed, so a
+  message arriving cannot move anything. `min-width: 0` is what makes it
+  ellipsize rather than shove the inbox off the end of the bar, and the whole
+  sentence stays available as a `title`.
+
+  The state and its timer live in `App.svelte` and reach the view as `onNotice`,
+  so the replace-rather-than-stack rule is written once rather than per view —
+  and the next view that needs to say "that did nothing, here is why" inherits
+  it. `ui_test.mjs` pins the property rather than the placement: the app bar's
+  height and the grid's top must both be unchanged while the message is up.
 
 **Every model write from the view goes through one `attempt` wrapper**, which
 catches `ProtectedError` and routes it to that status line. Belt and braces, and

@@ -1848,11 +1848,17 @@ try {
     check(await enabled('+row ↑') === false, 'row insertion is disabled while protected')
     check(await enabled('B') === false, 'and so is bold, with the formula cell selected')
 
-    // Typing into it changes nothing and explains why, in the status line
-    // rather than the "Not saved" alarm.
+    // Typing into it changes nothing and explains why — in the app bar, which
+    // has a fixed height, so the message cannot move the grid under whoever is
+    // reading it. That is why it is not a block above the toolbar.
+    const barHeight = () => page.$eval('.appbar', (e) => e.getBoundingClientRect().height)
+    const gridTop = () => page.$eval('.grid', (e) => e.getBoundingClientRect().top)
+    const [barBefore, topBefore] = [await barHeight(), await gridTop()]
     await page.keyboard.type('999')
-    await page.waitForSelector('.notice', { timeout: 3000 })
-    const msg = await page.$eval('.notice', (e) => e.textContent.trim())
+    await page.waitForSelector('.appbar .notice', { timeout: 3000 })
+    const msg = await page.$eval('.appbar .notice', (e) => e.textContent.trim())
+    check(await barHeight() === barBefore, 'the message does not grow the app bar')
+    check(await gridTop() === topBefore, 'and the grid does not move under it')
     check(/A1 is protected/.test(msg), `a refusal explains rather than doing nothing (${JSON.stringify(msg)})`)
     check(await bar() === '=B1*2', 'and the cell is unchanged')
 

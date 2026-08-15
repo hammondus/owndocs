@@ -1793,8 +1793,10 @@ result somewhere else, and that is an operational step this repo does not own.
 
 ### Auth & sharing
 
-stdlib sessions, argon2id password hashing (`x/crypto`), owner/editor/viewer
-roles, share-by-link via capability tokens. Permissions are checked at
+stdlib sessions, argon2id password hashing (`x/crypto`), ranked
+owner/manager/editor/commenter/viewer roles, share-by-link via capability
+tokens.
+Permissions are checked at
 WebSocket upgrade **and** per-message — read-only clients receive updates but
 their writes are rejected server-side, not just hidden in the UI.
 
@@ -1807,9 +1809,9 @@ the `-signup=open|closed` flag — close it before exposing an instance to the
 internet (sharing-by-email requires existing accounts, so onboard the team
 while open, then close).
 
-Sharing (phase: sharing UI): invite-by-email grants editor/viewer to
-existing accounts; only owners mutate shares and nothing can change or
-remove the owner. Share links are capability tokens stored as SHA-256 like
+Sharing (phase: sharing UI): invite-by-email grants a role to an existing
+account; managers and owners mutate shares, nobody may act on somebody at or
+above their own rank, and ownership moves only through POST /transfer. Share links are capability tokens stored as SHA-256 like
 sessions — the plaintext appears exactly once at creation; lost links are
 revoked and re-minted, never retrieved. Redeeming grants the link's role but
 only ever upgrades (viewer→editor); revoking a link stops future
@@ -4014,7 +4016,7 @@ Structural operations are blocked outright while a sheet is protected: deleting
 a row takes protected cells with it, and there is no useful sense in which that
 is allowed when editing them is not.
 
-### One owner, which is the known limit
+### One owner, which was the known limit
 
 `handleCreateDoc` writes the creator as owner; `handleAddShare` refuses `owner`
 as a grantable role and refuses to change an existing owner's; a share link
@@ -4023,10 +4025,228 @@ transfer it — which means "the owner can override" means literally one person,
 and while they are away nobody can change a protected cell or unprotect the
 sheet.
 
-Accepted for now, deliberately: the escape hatch is that the owner can
-unprotect for somebody before going away. The proper fix is transferable or
-multiple ownership, wanted and recorded — see `ROADMAP.md`, *Ownership*, and
-*Open questions* for which of the two shapes it should take.
+Answered 2026-08-15 by the `manager` rank, now built — see *Ownership: one
+owner, one deputy rank*. Overriding protection and unprotecting a sheet are
+manager powers, not owner-only ones, so "the owner is away" stops being a wall
+by the time protection ships. The
+"edit protected cells" toggle is offered at manager and above; editors still
+get no override, which is what makes protection hold.
+
+## Ownership: one owner, one deputy rank
+
+### A new rank, not a second owner
+
+Decided 2026-08-15, closing the open question that had been sitting between
+*transfer* and *multiple owners*. The answer is **both, in a way that is
+neither**: ownership becomes transferable, and a new rank sits directly below
+it holding every owner power except the two that cannot be undone.
+
+The deciding argument is structural rather than about features. `roleRank`
+(`docs_api.go:44`) is a **total order**, and `requireRole` (`snapshots.go:51`)
+is a threshold test — `roleRank[role] < roleRank[min]` — not an equality test.
+So a new level is an *insertion into a list*, and every gate above it keeps
+working by arithmetic: a call site asking for `manager` admits the owner
+because 4 > 3, with no change at the call site beyond the argument.
+
+Multiple owners would have been a change of *kind*. `roleFor` returns one row
+and therefore one answer; every caller treats that answer as a single
+comparable rank. Making ownership a set turns "cannot change the owner's role"
+(`shares.go:87`) into "cannot remove the last owner" — a stateful invariant
+that has to be re-checked on every revoke and every role change, and that has
+no natural place to live. It buys nothing the deputy rank does not.
+
+It also keeps the door open rather than closing it. When permission *groups*
+arrive, one person can hold two grants at once (direct, and via a group), and
+resolution has to be `MAX` over the ranks. That is only well defined because
+the roles are ordered. Had this gone to capability bags instead — "may share"
+✓, "may protect" ✗ — there would be no natural join, and conflict resolution
+would have needed designing before anyone had asked for groups at all. The
+change groups actually force is confined to `roleFor` becoming a `MAX` over
+several rows; everything downstream already consumes one rank.
+
+### The ladder, and the name
+
+    viewer < commenter < editor < manager < owner
+
+**`manager`, not `publisher`.** "Publisher" implies pushing content outward —
+to the web, to a feed — which is the one thing this role has nothing to do
+with. It administers a document: who may see it, what is locked, which links
+exist. `admin` was rejected because `invites.go:25` states there is no global
+admin in this app, and borrowing the word invites exactly the scope confusion
+that comment was written to prevent. `co-owner` is accurate but implies parity,
+which is the property being deliberately withheld.
+
+The share UI says what it grants rather than only naming itself, by the rule
+the `commenter` fix established: *"Manager — can share, revoke and override
+protection, but cannot delete or transfer the document."*
+
+### The criterion: the owner keeps what is irreversible and total
+
+Defining the rank as "owner minus two things" only holds if there is a
+principle behind the minus; otherwise every new owner power reopens the
+argument. The principle is that **the owner keeps what is irreversible and
+total**. Deleting destroys the document and its whole history for everyone;
+transferring surrenders the power to undo anything. Everything else a manager
+does, an owner can reverse.
+
+Against every owner-gated call site that exists today:
+
+| Call site | Today | Decided |
+|---|---|---|
+| `handleDeleteDoc` (`docs_api.go:209`) | owner | **owner** — irreversible, total |
+| transfer (does not exist yet) | — | **owner** |
+| `handleAddShare` / `handleRemoveShare` (`shares.go:57,114`) | owner | manager — this *is* the fix |
+| `handleCreateLink` / `handleListLinks` / `handleDeleteLink` (`shares.go:152,187,213`) | owner | manager |
+| `handleDeleteVersion` (`history.go:307`) | owner | manager — only the label goes; the history is untouched |
+| comment delete / reopen (`comments.go:326,378`) | owner | manager |
+| override sheet protection (decided, not built) | owner | manager |
+
+Exactly one existing endpoint stays owner-only, which is the check that the
+line is in the right place rather than drawn to be convenient.
+
+### Grant up to your own rank; modify strictly below it
+
+Two rules, replacing the two `existing == "owner"` special cases at
+`shares.go:87` and `shares.go:128`:
+
+- You may grant a role up to **and including** your own rank.
+- You may change or revoke someone only if their current rank is **strictly
+  below** yours.
+
+So a manager can create peers but cannot demote one, and nobody but the owner
+can touch the owner. The asymmetry is deliberate. If a manager could not grant
+`manager`, only the owner could ever mint one and the away-owner problem would
+be back the moment it mattered; if a manager could demote a peer, two managers
+would be one coup apart. Creating peers is recoverable by the owner, so it is
+the safe half to allow.
+
+This is also strictly less special-casing than today: one rank comparison in
+place of two name tests, and it needs nothing rewritten when a fifth level
+appears.
+
+### A share link can never carry `manager`
+
+A link is a bearer token — whoever holds the URL gets the role, and by design
+nobody knows who that is. A manager link would let anyone who saw the URL
+revoke the owner's collaborators.
+
+The trap is that `shares.go:68` and `shares.go:161` reject `owner` **by name**.
+Adding a rank above `editor` therefore silently makes `manager` mintable as a
+link, which is precisely the hole the comment on `roleRank` warns about
+("adding a level silently widens access"). Both checks become
+`roleRank[in.Role] > roleRank["editor"]` → reject, so the cap is expressed as
+the rule it actually is. The `share_links` CHECK constraint stays as it is,
+deliberately: it already lists only the three grantable roles and should not
+learn the new one.
+
+### Transfer, and where the old owner lands
+
+Transfer is one owner-only endpoint: the target becomes `owner`, the caller
+becomes **`manager`**. This overrides the earlier note that the outgoing owner
+should become an editor — that was written before this rank existed. Editor is
+a two-step demotion and a surprise; transfer usually means "you run this now",
+not "I am locked out of the thing I built".
+
+**The target must already hold a permission on the document.** That keeps
+transfer a change of rank rather than a grant and a transfer at once, and it
+means the owner has already deliberately shared with that person, which is a
+natural confirmation step rather than an invented one.
+
+The known sharp edge, recorded rather than solved: **transfer is the one action
+its own actor cannot undo.** Transfer to the wrong person and you are a manager
+who cannot transfer back. No acceptance handshake is specified — this is a
+self-hosted app for a known team, and a pending-transfer state is a second
+schema and a second UI for a rare action. The mitigation is that the
+already-has-access rule shrinks the target list to people the owner chose, and
+the confirmation names the person. If a transfer does go wrong, the fix is the
+new owner transferring back.
+
+### `documents.owner_id` goes
+
+The column is **written and never read**: `docs_api.go:85` inserts it and no
+query selects it. Every real ownership check goes through `permissions`.
+Leaving it in place would make transfer maintain two sources of truth in one
+transaction for the benefit of no reader — and the failure mode of that drift
+is silent, because nothing consults the copy that would be wrong.
+
+So `permissions` is the single answer: a document's owner is its row with role
+`owner`. This is a breaking schema change with no compatibility path, which is
+correct for where this project sits.
+
+### What building it touched
+
+Schema **v11** — not the "v6" this section first said, which was the *table*
+suffix from the v5 migration mistaken for a version number; v6 has been invites
+since it shipped. A `permissions_v11` rebuild in the same create-insert-drop-
+rename style as v5, since SQLite cannot alter a `CHECK`, plus one
+`ALTER TABLE documents DROP COLUMN owner_id`. The drop is allowed despite the
+column's outgoing foreign key because nothing indexes it — checked against
+`modernc.org/sqlite` rather than assumed, since the fallback would have been
+rebuilding `documents` and every key pointing at it.
+
+`share_links` is deliberately not rebuilt alongside it, so the old CHECK stays
+as the database-level backstop for the editor cap.
+
+Then, in the app:
+
+- **`roleRank` in `docs_api.go` and `RANK` in `web/src/roles.js` both gained the
+  level**, hand-mirrored as before. Third time that pair has had to be edited
+  together, which is more evidence for parsing one of them from the other than
+  the site-registry item had on its own.
+- **Seven `requireRole(..., "owner")` call sites became `"manager"`** — both
+  share endpoints, all three link endpoints, the version-label delete — and
+  `handleDeleteDoc`'s inline `role != "owner"` became `requireRole(...,
+  "owner")`, so no ownership check anywhere is a name comparison now.
+- **`mayGrant`/`mayModify` in `docs_api.go`** replaced the two `existing ==
+  "owner"` special cases, and the refusal became 403 rather than 409: it is an
+  authorisation decision by rank, not a conflict with a particular state.
+- **The share UI gained `manager` in its one role list, plus a `link` flag** on
+  each entry and a `LINK_ROLES` filter over it. The list stays single-source;
+  what differs between the two audiences is the filter, not a second array.
+- **`POST /api/docs/{id}/transfer`**, and a per-person "make owner" button in
+  the share panel — per person because the target must already have access.
+
+**The collaborator list is ordered in Go, not in SQL.** `handleListShares` said
+`ORDER BY p.role`, which is alphabetical — commenter, editor, owner, viewer —
+and only looked deliberate because owner happened to land third of four.
+Inserting `manager` moved it to fourth and made the accident visible. The list
+now comes back by rank, most to least.
+
+Sorted after the scan rather than with a `CASE` in the query, and that is the
+whole point of mentioning it: a `CASE` would be a *third* hand-written copy of
+the rank order, after `roleRank` and `RANK` — and the one furthest from
+anything that would notice it going stale, since no test reads a query's
+`ORDER BY`. The SQL orders by name and the stable sort reorders the small
+result by the one map that already exists, so equal ranks stay alphabetical for
+free.
+
+Three things the sweep turned up that were already wrong, or would have been:
+
+- **`compaction.js` enumerated instead of ranking.** `role !== 'owner' && role
+  !== 'editor'` meant a manager would silently stop producing snapshots — no
+  error, just a document whose log never compacts. It is `canEdit(role)` now.
+  Same failure mode as the `commenter` incidents, arriving from the other
+  direction: an enumeration written when the list was complete, and a new level
+  landing *above* its top entry rather than below it.
+- **`roleVerb` in `mail.go` had a `default: return "read"` arm.** A manager's
+  share notification would have told them they could read the document. A
+  default arm is a floor, and every level added since it was written has gone in
+  above it, not below.
+- **`allowTriggers` in `sheet/triggers.js` keeps `role !== 'owner'`**, and is
+  the one deliberate exception in the codebase. Its question is not "how
+  privileged are you" but "is this document yours": a manager was handed the
+  document by somebody else, so a script in it is somebody else's script, and
+  being trusted with the sharing list is not a reason to run it unasked. It
+  carries a comment saying so, because it now looks like the bug the other two
+  were.
+
+Tests: `TestShareRequiresOwner` became `TestShareRequiresManager`, joined by
+`TestManagerPowersAndLimits`, `TestShareLinkCannotCarryManager` and
+`TestTransferOwnership`. `roles_test.mjs` pins the new rank in both directions.
+`ui_test.mjs` asserts the picker offers `manager` and the link buttons do not,
+and drives the split gates through the real screens — a manager's document row
+must offer share and withhold delete, which is exactly the shape of failure a
+unit test cannot see.
 
 ## Incidents
 
@@ -4149,25 +4369,17 @@ multiple ownership, wanted and recorded — see `ROADMAP.md`, *Ownership*, and
 
 ## Open questions
 
-- **Ownership: transfer, or more than one owner?** Wanted, not yet shaped —
-  see `ROADMAP.md`. Today `owner` is the creator, is not grantable, is not
-  carried by a share link, and cannot be changed, so every owner-only power
-  (deleting the document, and later overriding sheet protection) belongs to one
-  person who may be on leave.
-
-  **Transfer** is the smaller change: one endpoint, and the old owner becomes
-  an editor. It keeps "exactly one owner" true, which is what every
-  `role != "owner"` test in the codebase currently assumes.
-
-  **Multiple owners** is the more useful one and the more invasive: `roleFor`
-  stops being a single answer per person, "cannot change the owner's role"
-  becomes "cannot remove the last owner", and the share UI has to say what
-  granting it means. It also removes a whole class of "the one person is away"
-  problem rather than moving it.
-
-  Worth deciding *before* sheet protection ships rather than after, because
-  protection adds a second owner-only power and doubles what a wrong answer
-  costs.
+- ~~**Ownership: transfer, or more than one owner?**~~ Answered 2026-08-15 —
+  neither alone. Ownership becomes transferable *and* a `manager` rank slots
+  between `editor` and `owner`, holding every owner power except deleting and
+  transferring. See *Ownership: one owner, one deputy rank*. Still open
+  underneath it:
+  - **Permission groups.** Deliberately not built. The shape is settled by the
+    rank order — a person's role is `MAX` over their grants — so the change is
+    confined to `roleFor` returning that maximum instead of one row. What is
+    not settled is what a group *is* here: an instance-wide list of people, or
+    something owned per document, and who may edit one. Not worth answering
+    until somebody is re-typing the same share list for the third time.
 
 - Snapshot-trigger thresholds (currently >100 tail rows or >128 KiB) and the
   1s batch-flush interval: revisit once there's real typing traffic.

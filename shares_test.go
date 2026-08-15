@@ -94,7 +94,7 @@ func TestShareGrantChangeRevoke(t *testing.T) {
 	}
 }
 
-func TestShareRequiresOwner(t *testing.T) {
+func TestShareRequiresManager(t *testing.T) {
 	srv, _, _ := testServer(t)
 	alice := apiClient(t, srv, "alice@example.com")
 	bob := apiClient(t, srv, "bob@example.com")
@@ -104,7 +104,9 @@ func TestShareRequiresOwner(t *testing.T) {
 	res := postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": "bob@example.com", "role": "editor"})
 	res.Body.Close()
 
-	// An editor cannot grant; an outsider cannot either.
+	// An editor cannot grant; an outsider cannot either. Editor is the rank
+	// immediately below the bar, so this is the test that the bar did not slip
+	// down a level when `manager` was inserted above it.
 	for name, c := range map[string]*http.Client{"editor": bob, "outsider": mallory} {
 		res := postJSON(t, c, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": "mallory@example.com", "role": "editor"})
 		if res.StatusCode != http.StatusNotFound {
@@ -113,12 +115,264 @@ func TestShareRequiresOwner(t *testing.T) {
 		res.Body.Close()
 	}
 
-	// Nobody can change the owner's role.
+	// Nobody can change the owner's role — not even the owner. 403 rather than
+	// the 409 this used to return: it is an authorisation refusal now, decided
+	// by rank, not a conflict with some particular state.
 	res = postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": "alice@example.com", "role": "viewer"})
-	if res.StatusCode != http.StatusConflict {
-		t.Fatalf("owner role change: %d, want 409", res.StatusCode)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("owner role change: %d, want 403", res.StatusCode)
 	}
 	res.Body.Close()
+
+	// `owner` is not grantable at all: it moves only through /transfer, which
+	// demotes the outgoing owner in the same transaction. Granting it here
+	// would leave the document with two.
+	res = postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": "bob@example.com", "role": "owner"})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("granting owner: %d, want 400", res.StatusCode)
+	}
+	res.Body.Close()
+}
+
+// The manager rank: what it may do, and the two things it may not. See
+// DESIGN-DECISIONS.md, *Ownership: one owner, one deputy rank*.
+func TestManagerPowersAndLimits(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com") // owner
+	bob := apiClient(t, srv, "bob@example.com")     // manager
+	carol := apiClient(t, srv, "carol@example.com") // second manager
+	dave := apiClient(t, srv, "dave@example.com")   // editor
+	docID := createDoc(t, srv, alice)
+
+	res := postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": "bob@example.com", "role": "manager"})
+	if res.StatusCode != 200 {
+		t.Fatalf("grant manager: %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	// A manager shares — the whole point of the rank. Granting a peer is
+	// allowed: if it were not, only the owner could ever mint a manager and the
+	// away-owner problem would be back the moment it mattered.
+	for _, g := range []struct{ email, role string }{
+		{"dave@example.com", "editor"},
+		{"carol@example.com", "manager"},
+	} {
+		res = postJSON(t, bob, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": g.email, "role": g.role})
+		if res.StatusCode != 200 {
+			t.Fatalf("manager granting %s: %d", g.role, res.StatusCode)
+		}
+		res.Body.Close()
+	}
+
+	// ...and mints links, lists them, and deletes a version label.
+	res = postJSON(t, bob, srv.URL+"/api/docs/"+docID+"/links", map[string]string{"role": "viewer"})
+	if res.StatusCode != 200 {
+		t.Fatalf("manager minting link: %d", res.StatusCode)
+	}
+	res.Body.Close()
+	res, _ = bob.Get(srv.URL + "/api/docs/" + docID + "/links")
+	if res.StatusCode != 200 {
+		t.Fatalf("manager listing links: %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	ids := shareIDs(t, srv, alice, docID)
+
+	// But a manager cannot demote a peer, cannot touch the owner, and cannot
+	// remove themselves. Creating a peer is recoverable by the owner; removing
+	// one is not, which is why only that half is withheld.
+	for name, target := range map[string]string{"peer": "carol@example.com", "owner": "alice@example.com", "self": "bob@example.com"} {
+		res = postJSON(t, bob, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": target, "role": "viewer"})
+		if res.StatusCode != http.StatusForbidden {
+			t.Fatalf("manager demoting %s: %d, want 403", name, res.StatusCode)
+		}
+		res.Body.Close()
+
+		req, _ := http.NewRequest("DELETE", srv.URL+"/api/docs/"+docID+"/shares/"+itoa(ids[target]), nil)
+		res, err := bob.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.StatusCode != http.StatusForbidden {
+			t.Fatalf("manager removing %s: %d, want 403", name, res.StatusCode)
+		}
+		res.Body.Close()
+	}
+
+	// A manager can remove somebody strictly below them.
+	req, _ := http.NewRequest("DELETE", srv.URL+"/api/docs/"+docID+"/shares/"+itoa(ids["dave@example.com"]), nil)
+	res, err := bob.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("manager removing editor: %v %d", err, res.StatusCode)
+	}
+	res.Body.Close()
+	_ = dave
+
+	// The two withheld powers. Delete is checked by rank now rather than by
+	// name, so a manager gets the same 404 an outsider does.
+	req, _ = http.NewRequest("DELETE", srv.URL+"/api/docs/"+docID, nil)
+	res, err = bob.Do(req)
+	if err != nil || res.StatusCode != http.StatusNotFound {
+		t.Fatalf("manager deleting doc: %v %d, want 404", err, res.StatusCode)
+	}
+	res.Body.Close()
+
+	res = postJSON(t, bob, srv.URL+"/api/docs/"+docID+"/transfer", map[string]int64{"user_id": ids["bob@example.com"]})
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("manager transferring: %d, want 404", res.StatusCode)
+	}
+	res.Body.Close()
+	_ = carol
+}
+
+// A share link is a bearer token, so it must never carry `manager`. This is the
+// hole that adding a rank above `editor` would have opened by itself: both link
+// endpoints rejected `owner` by *name*.
+func TestShareLinkCannotCarryManager(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	docID := createDoc(t, srv, alice)
+
+	for _, role := range []string{"manager", "owner"} {
+		res := postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/links", map[string]string{"role": role})
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("minting a %s link: %d, want 400", role, res.StatusCode)
+		}
+		res.Body.Close()
+	}
+}
+
+func TestTransferOwnership(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	bob := apiClient(t, srv, "bob@example.com")
+	mallory := apiClient(t, srv, "mallory@example.com")
+	docID := createDoc(t, srv, alice)
+
+	ids := shareIDs(t, srv, alice, docID)
+
+	// The target must already have access: transfer is a change of rank, not a
+	// grant and a transfer at once.
+	res := postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/transfer", map[string]int64{"user_id": 9999})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("transfer to a stranger: %d, want 400", res.StatusCode)
+	}
+	res.Body.Close()
+
+	res = postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": "bob@example.com", "role": "viewer"})
+	res.Body.Close()
+	ids = shareIDs(t, srv, alice, docID)
+
+	res = postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/transfer", map[string]int64{"user_id": ids["bob@example.com"]})
+	if res.StatusCode != 200 {
+		t.Fatalf("transfer: %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	// Exactly one owner, and the outgoing one lands on manager rather than
+	// editor — transfer means "you run this now", not "I am locked out".
+	roles := map[string]string{}
+	var shares []shareEntry
+	res, _ = bob.Get(srv.URL + "/api/docs/" + docID + "/shares")
+	json.NewDecoder(res.Body).Decode(&shares)
+	res.Body.Close()
+	for _, s := range shares {
+		roles[s.Email] = s.Role
+	}
+	if roles["bob@example.com"] != "owner" || roles["alice@example.com"] != "manager" {
+		t.Fatalf("after transfer: %v", roles)
+	}
+
+	// Alice can still manage, but the two owner powers are gone.
+	req, _ := http.NewRequest("DELETE", srv.URL+"/api/docs/"+docID, nil)
+	res, err := alice.Do(req)
+	if err != nil || res.StatusCode != http.StatusNotFound {
+		t.Fatalf("old owner deleting: %v %d, want 404", err, res.StatusCode)
+	}
+	res.Body.Close()
+
+	res = postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": "mallory@example.com", "role": "viewer"})
+	if res.StatusCode != 200 {
+		t.Fatalf("old owner sharing as manager: %d", res.StatusCode)
+	}
+	res.Body.Close()
+	_ = mallory
+
+	// Transferring to yourself is refused rather than silently demoting you.
+	res = postJSON(t, bob, srv.URL+"/api/docs/"+docID+"/transfer", map[string]int64{"user_id": ids["bob@example.com"]})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("self-transfer: %d, want 400", res.StatusCode)
+	}
+	res.Body.Close()
+}
+
+// The collaborator list comes back by rank, most to least, with people of the
+// same rank by name. It used to be `ORDER BY p.role`, which was alphabetical
+// and only looked deliberate — owner landed third of four by luck, and adding
+// `manager` moved it.
+func TestShareListIsRankOrdered(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	docID := createDoc(t, srv, alice)
+
+	// Granted in an order that is neither the wanted one nor alphabetical, so
+	// passing cannot be an accident of insertion order.
+	for _, g := range []struct{ email, role string }{
+		{"zoe@example.com", "viewer"},
+		{"bob@example.com", "manager"},
+		{"carol@example.com", "commenter"},
+		{"dave@example.com", "editor"},
+		{"adam@example.com", "manager"},
+	} {
+		apiClient(t, srv, g.email) // the account must exist to be shared with
+		res := postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares", map[string]string{"email": g.email, "role": g.role})
+		if res.StatusCode != 200 {
+			t.Fatalf("grant %s: %d", g.role, res.StatusCode)
+		}
+		res.Body.Close()
+	}
+
+	res, _ := alice.Get(srv.URL + "/api/docs/" + docID + "/shares")
+	var shares []shareEntry
+	json.NewDecoder(res.Body).Decode(&shares)
+	res.Body.Close()
+
+	got := make([]string, len(shares))
+	for i, s := range shares {
+		got[i] = s.Role
+	}
+	want := []string{"owner", "manager", "manager", "editor", "commenter", "viewer"}
+	if len(got) != len(want) {
+		t.Fatalf("roles: %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("roles: %v, want %v", got, want)
+		}
+	}
+	// The sort is stable, so equal ranks keep the query's name order.
+	if shares[1].Email != "adam@example.com" || shares[2].Email != "bob@example.com" {
+		t.Fatalf("equal ranks not left in name order: %s, %s", shares[1].Email, shares[2].Email)
+	}
+}
+
+// email → user id for a document's collaborators.
+func shareIDs(t *testing.T, srv *httptest.Server, c *http.Client, docID string) map[string]int64 {
+	t.Helper()
+	res, err := c.Get(srv.URL + "/api/docs/" + docID + "/shares")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var shares []shareEntry
+	if err := json.NewDecoder(res.Body).Decode(&shares); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]int64{}
+	for _, s := range shares {
+		ids[s.Email] = s.UserID
+	}
+	return ids
 }
 
 func TestShareLinkLifecycle(t *testing.T) {

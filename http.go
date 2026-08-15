@@ -39,6 +39,7 @@ func routes(db *sql.DB, h *hub, mail *mailer, staticFS fs.FS, signupOpen, dev bo
 	mux.HandleFunc("POST /api/docs/{id}/links", requireAuth(db, handleCreateLink(db)))
 	mux.HandleFunc("GET /api/docs/{id}/links", requireAuth(db, handleListLinks(db)))
 	mux.HandleFunc("DELETE /api/docs/{id}/links/{lid}", requireAuth(db, handleDeleteLink(db)))
+	mux.HandleFunc("POST /api/docs/{id}/transfer", requireAuth(db, handleTransferOwnership(db, h)))
 	mux.HandleFunc("POST /api/share/redeem", requireAuth(db, handleRedeemLink(db)))
 
 	// Invites are how accounts come into existence once signup is closed.

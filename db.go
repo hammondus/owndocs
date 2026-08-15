@@ -305,6 +305,43 @@ CREATE VIRTUAL TABLE doc_search USING fts5(
 );
 `
 
+// Schema v11: the `manager` rank, and one source of truth for ownership. See
+// DESIGN-DECISIONS.md, *Ownership: one owner, one deputy rank*.
+//
+// `manager` sits between `editor` and `owner` and holds every owner power
+// except the two that cannot be undone — deleting the document and
+// transferring it. Widening the CHECK needs the same create/copy/drop/rename
+// dance v5 needed; no foreign key points *at* `permissions`, so the drop needs
+// no `foreign_keys` toggle around it.
+//
+// `share_links` is deliberately NOT rebuilt alongside it. A link is a bearer
+// token — whoever holds the URL gets the role, and by design nobody knows who
+// that is — so a manager link would let anyone who saw it revoke the owner's
+// collaborators. Leaving the v5 CHECK in place makes the database the backstop
+// for the cap the handlers enforce, which is worth having precisely because the
+// handlers got it wrong once: they rejected `owner` by *name*, so adding a rank
+// above editor would have made `manager` mintable as a link by default.
+//
+// `documents.owner_id` goes. It was written by `handleCreateDoc` and read by
+// nothing — every ownership check went through `permissions` — so transfer
+// would have had to keep two copies of one fact in step for the benefit of no
+// reader, and the copy that drifted would have been the silent one. SQLite
+// allows DROP COLUMN here despite the outgoing foreign key, since nothing
+// indexes the column.
+const schemaV11 = `
+CREATE TABLE permissions_v11 (
+	doc_id  TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	role    TEXT NOT NULL CHECK (role IN ('owner','manager','editor','commenter','viewer')),
+	PRIMARY KEY (doc_id, user_id)
+);
+INSERT INTO permissions_v11 SELECT doc_id, user_id, role FROM permissions;
+DROP TABLE permissions;
+ALTER TABLE permissions_v11 RENAME TO permissions;
+
+ALTER TABLE documents DROP COLUMN owner_id;
+`
+
 func openDB(path string) (*sql.DB, error) {
 	// _pragma values apply per-connection; busy_timeout is belt-and-braces
 	// since MaxOpenConns(1) already serializes everything through one
@@ -327,7 +364,7 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
-	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10} {
+	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11} {
 		if v > ver {
 			continue
 		}

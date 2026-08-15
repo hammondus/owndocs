@@ -302,11 +302,12 @@ func handleCreateVersion(db *sql.DB, h *hub) http.HandlerFunc {
 	}
 }
 
-// DELETE /api/docs/{id}/versions/{vid} — owner removes a name. Only the
-// label goes; the underlying history is untouched.
+// DELETE /api/docs/{id}/versions/{vid} — a manager or owner removes a name.
+// Only the label goes; the underlying history is untouched, which is why this
+// is not one of the powers the owner keeps.
 func handleDeleteVersion(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := requireRole(db, w, r, "owner"); !ok {
+		if _, ok := requireRole(db, w, r, "manager"); !ok {
 			return
 		}
 		if _, err := db.Exec("DELETE FROM versions WHERE doc_id = ? AND id = ?",

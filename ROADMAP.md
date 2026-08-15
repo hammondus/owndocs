@@ -159,16 +159,6 @@ public mutators today, plus the script API, undo, and `restoreFrom`. The
 deliverable is a table-driven test that enumerates every public mutator and
 asserts each refuses.
 
-## Ownership: transfer, and more than one owner
-
-Wanted. Today `owner` is the creator, is not grantable, is not carried by a
-share link, and cannot be changed — so every owner-only power belongs to one
-person who may be on leave. Sheet protection adds a second such power, which is
-what raised this.
-
-Two shapes, and which one is still open — see *Open questions*. Worth settling
-before protection ships rather than after.
-
 ## Kanban: a third document kind
 
 Boards alongside docs and sheets, riding the same sync, sharing, history and

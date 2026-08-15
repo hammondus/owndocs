@@ -20,7 +20,7 @@ func seedForBackup(t *testing.T) string {
 	defer db.Close()
 	for _, stmt := range []string{
 		`INSERT INTO users (id, email, name, pass_hash, created_at) VALUES (1,'a@e','A','x',0)`,
-		`INSERT INTO documents (id, kind, title, owner_id, created_at, updated_at) VALUES ('d1','doc','T',1,0,0)`,
+		`INSERT INTO documents (id, kind, title, created_at, updated_at) VALUES ('d1','doc','T',0,0)`,
 		`INSERT INTO updates (doc_id, seq, data, created_at) VALUES ('d1',1,x'0001',0)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
@@ -43,7 +43,7 @@ func TestBackupCapturesUncheckpointedWrites(t *testing.T) {
 	}
 	defer db.Close()
 	if _, err := db.Exec(
-		`INSERT INTO documents (id, kind, title, owner_id, created_at, updated_at) VALUES ('d2','doc','In the WAL',1,0,0)`,
+		`INSERT INTO documents (id, kind, title, created_at, updated_at) VALUES ('d2','doc','In the WAL',0,0)`,
 	); err != nil {
 		t.Fatal(err)
 	}

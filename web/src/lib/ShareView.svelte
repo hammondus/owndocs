@@ -1,22 +1,38 @@
 <script>
-  // Sharing panel for a document the current user owns: the collaborator
-  // list with add/remove, and capability share links. Each section loads
-  // and refreshes its own data with plain async functions.
+  // Sharing panel for a document the current user manages: the collaborator
+  // list with add/remove, capability share links, and — for the owner alone —
+  // handing the document over. Each section loads and refreshes its own data
+  // with plain async functions.
   import { onMount } from 'svelte'
   import { api } from './api.js'
+  import { rankOf } from '../roles.js'
 
   let { doc, onBack } = $props()
 
-  // The three grantable roles. `owner` is absent because it is not a thing to
-  // hand out — the server refuses it on both endpoints — and the list is
-  // shared by the person picker and the link buttons so the two can never
-  // offer different sets, which is exactly how `commenter` came to work
-  // everywhere except here.
+  // The grantable roles, in `roleRank` order, most to least. `owner` is absent
+  // because it is not a thing to hand out: there is exactly one and it moves
+  // only through transfer, which demotes the outgoing owner in the same
+  // transaction.
+  //
+  // One list, read by both the person picker and the link buttons, so the two
+  // can never offer different sets — which is exactly how `commenter` came to
+  // work everywhere except here. What differs between them is not the list but
+  // the *filter*: `link: false` marks a role no bearer token may carry.
   const ROLES = [
-    { value: 'editor', can: 'can change the document' },
-    { value: 'commenter', can: 'can comment, but not change it' },
-    { value: 'viewer', can: 'can read it' },
+    { value: 'manager', can: 'can share and administer it, but not delete it', link: false },
+    { value: 'editor', can: 'can change the document', link: true },
+    { value: 'commenter', can: 'can comment, but not change it', link: true },
+    { value: 'viewer', can: 'can read it', link: true },
   ]
+
+  const LINK_ROLES = ROLES.filter((r) => r.link)
+
+  const isOwner = $derived(doc.role === 'owner')
+
+  // Who this person may act on, mirroring mayModify on the server: strictly
+  // below their own rank. The server is what enforces it; hiding the button
+  // keeps the panel from offering an action that would only 403.
+  const mayModify = (person) => rankOf(doc.role) > rankOf(person.role)
 
   let people = $state([])
   let links = $state([])
@@ -59,6 +75,31 @@
     await loadPeople()
   }
 
+  // Handing the document over. The confirm names the person because this is the
+  // one action its own actor cannot undo: afterwards you are a manager, and a
+  // manager cannot transfer. See DESIGN-DECISIONS.md.
+  async function transfer(person) {
+    if (!confirm(
+      `Make ${person.name} <${person.email}> the owner of "${doc.title}"?\n\n` +
+      `You become a manager: you keep sharing and administration, but you ` +
+      `cannot delete the document or take ownership back. Only ${person.name} can.`
+    )) return
+    try {
+      await api(`/api/docs/${doc.id}/transfer`, {
+        method: 'POST',
+        body: JSON.stringify({ user_id: person.user_id }),
+      })
+      error = ''
+      // The caller's own role changed, so the panel is now showing a role the
+      // server disagrees with. Reload rather than patch `doc` in place: the
+      // socket was closed by the transfer and every gate in the app reads
+      // `doc.role`.
+      location.reload()
+    } catch (err) {
+      error = err.message
+    }
+  }
+
   async function createLink(role) {
     const link = await api(`/api/docs/${doc.id}/links`, {
       method: 'POST',
@@ -95,8 +136,17 @@
     {#each people as person (person.user_id)}
       <li>
         {person.name} &lt;{person.email}&gt; — {person.role}
-        {#if person.role !== 'owner'}
+        <!-- Gated on rank rather than on `!== 'owner'`: a manager may not
+             remove a peer either, and the old test would have offered them a
+             button that only ever returned 403. -->
+        {#if mayModify(person)}
           <button onclick={() => removePerson(person)}>remove</button>
+        {/if}
+        <!-- Transfer is owner-only, and offered per person because the target
+             must already have access — which is what makes this list the
+             natural place for it. -->
+        {#if isOwner && person.role !== 'owner'}
+          <button onclick={() => transfer(person)}>make owner</button>
         {/if}
       </li>
     {/each}
@@ -130,14 +180,16 @@
     {/each}
   </ul>
   <p>
-    {#each ROLES as r (r.value)}
+    {#each LINK_ROLES as r (r.value)}
       <button onclick={() => createLink(r.value)}>New {r.value} link</button>
     {/each}
   </p>
   <p class="note">
     Anyone with the link gets that role, without an account of their own being
     named — so a commenter link is the one to hand out when you want remarks
-    back but not edits.
+    back but not edits. There is no manager link, deliberately: a link is a
+    bearer token and nobody knows who is holding it, so it stops one level
+    below the roles that can change who else has access.
   </p>
   {#if newLinkURL}
     <p>

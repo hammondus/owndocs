@@ -3,7 +3,7 @@
   // and reports "open this doc" / "share this doc" upward via callbacks.
   import { onMount } from 'svelte'
   import { api } from './api.js'
-  import { canEdit } from '../roles.js'
+  import { canEdit, canManage } from '../roles.js'
   import ReadingPrefs from './ReadingPrefs.svelte'
 
   let { me, onOpen, onShare } = $props()
@@ -198,13 +198,18 @@
           {/if}
         </div>
       {/if}
-      {#if doc.role === 'owner'}
+      <!-- Two gates, not one, and this is where they part company: sharing is
+           administration and a manager does it; deleting is irreversible and
+           total, so it stays with the owner. -->
+      {#if canManage(doc.role)}
         <!-- Quiet until the row is under the pointer or holds focus. They are
              still in the tab order and still announced; what changes is how
              loudly a list of twenty rows shouts at you. -->
         <span class="actions">
           <button onclick={() => onShare(doc)}>share</button>
-          <button class="danger" onclick={() => deleteDoc(doc)}>delete</button>
+          {#if doc.role === 'owner'}
+            <button class="danger" onclick={() => deleteDoc(doc)}>delete</button>
+          {/if}
         </span>
       {/if}
     </li>

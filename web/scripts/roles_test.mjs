@@ -4,7 +4,7 @@
 // button is a programmatic dispatch. The other rule — the rich flag — is not a
 // boundary and must not be mistaken for one.
 // Run from web/: node scripts/roles_test.mjs
-import { canEdit, canComment, visibleToolbar } from '../src/roles.js'
+import { canEdit, canComment, canManage, rankOf, visibleToolbar } from '../src/roles.js'
 
 let failures = 0
 const ok = (what) => console.log('ok:', what)
@@ -19,10 +19,23 @@ const eq = (got, want, what) =>
 
 // ---- ranks -----------------------------------------------------------------
 
-eq([canEdit('owner'), canEdit('editor')], [true, true], 'owners and editors may edit')
+eq([canEdit('owner'), canEdit('manager'), canEdit('editor')], [true, true, true], 'owners, managers and editors may edit')
 eq([canEdit('commenter'), canEdit('viewer')], [false, false], 'commenters and viewers may not')
 eq(canComment('commenter'), true, 'a commenter may comment')
 eq(canComment('viewer'), false, 'a viewer may not')
+
+// The manager rank. Inserting it above `editor` is the change that would
+// silently widen anything written as `role === 'owner'` or narrow anything
+// written as an enumeration, so both directions are pinned here.
+eq([canManage('owner'), canManage('manager')], [true, true], 'owners and managers may administer')
+eq([canManage('editor'), canManage('commenter'), canManage('viewer')], [false, false, false], 'editors and below may not')
+eq(canManage('admin'), false, 'an unrecognised role may not administer')
+
+// rankOf is what the share panel compares two people with, mirroring mayModify
+// on the server: strictly below your own rank.
+eq(rankOf('owner') > rankOf('manager'), true, 'the owner outranks a manager')
+eq(rankOf('manager') > rankOf('manager'), false, 'a manager does not outrank a peer')
+eq(rankOf('manager') > rankOf('editor'), true, 'a manager outranks an editor')
 // An unknown role ranks below everything rather than above it: a role this
 // build has not heard of must not be handed the editing controls.
 eq([canEdit('admin'), canComment('admin')], [false, false], 'an unrecognised role gets nothing')

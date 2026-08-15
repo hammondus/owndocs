@@ -29,7 +29,7 @@
   import CommentsPanel from './CommentsPanel.svelte'
   import DocTitle from './DocTitle.svelte'
   import { listThreads, cellAnchor, cellKey, anchorKey } from '../comments.js'
-  import { canEdit, canComment } from '../roles.js'
+  import { canEdit, canComment, canManage } from '../roles.js'
   import { runScript } from '../sheet/sandbox.js'
   import { handleCall } from '../sheet/scriptapi.js'
   import { allowTriggers, summariseEdit } from '../sheet/triggers.js'
@@ -1609,7 +1609,9 @@
   <button class="linkish" onclick={() => (showComments = !showComments)}>
     comments{openComments ? ` (${openComments})` : ''}
   </button>
-  {#if doc.role === 'owner'}
+  <!-- Sharing is administration, so a manager reaches it too. Deleting stays
+       in the document list, where it is still owner-only. -->
+  {#if canManage(doc.role)}
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}
   <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
@@ -1704,7 +1706,7 @@
     {threads}
     {me}
     canComment={mayComment}
-    isOwner={doc.role === 'owner'}
+    canModerate={canManage(doc.role)}
     {makeAnchor}
     {canAnchor}
     {anchorNote}

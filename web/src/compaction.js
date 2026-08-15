@@ -5,12 +5,16 @@
 import * as Y from 'yjs'
 import * as decoding from 'lib0/decoding'
 import { iterFrames } from './frames.js'
+import { canEdit } from './roles.js'
 
 const TAIL_ROWS_LIMIT = 100
 const TAIL_BYTES_LIMIT = 128 * 1024
 
 export function scheduleCompaction({ docId, doc, role, synced }) {
-  if (role !== 'owner' && role !== 'editor') return
+  // Rank-compared, not enumerated. The old `owner || editor` pair silently
+  // excluded `manager` the moment that rank was added — a manager would have
+  // stopped producing snapshots, and nothing would have said so.
+  if (!canEdit(role)) return
   const snapInfo = synced.snapshot_state ? `; snapshot seq ${synced.snapshot_seq} ${synced.snapshot_state}` : ''
   console.log(
     `compaction: tail ${synced.tail_rows} rows / ${synced.tail_bytes} bytes ` +

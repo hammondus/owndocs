@@ -39,9 +39,34 @@ func newDocID() string {
 // roleRank orders access levels, least to most. `commenter` sits above viewer
 // because it grants a write — to the comment tables, over HTTP, never into the
 // Yjs log — and below editor, which is the first role allowed to change
-// document content. Anything comparing roles must go through this map rather
-// than test for a role by name, or adding a level silently widens access.
-var roleRank = map[string]int{"viewer": 0, "commenter": 1, "editor": 2, "owner": 3}
+// document content. `manager` sits above editor and below owner: it holds every
+// owner power except the two that cannot be undone, deleting the document and
+// transferring it. See DESIGN-DECISIONS.md, *Ownership: one owner, one deputy
+// rank*.
+//
+// Anything comparing roles must go through this map rather than test for a role
+// by name, or adding a level silently widens access. That is not a caution, it
+// is a bug report: `manager` went in above `editor` and the two share-link
+// endpoints, which rejected `owner` by name, would have started minting manager
+// links — the one role a bearer token must never carry.
+var roleRank = map[string]int{"viewer": 0, "commenter": 1, "editor": 2, "manager": 3, "owner": 4}
+
+// The two rules deciding who may hand out what, both rank comparisons so that
+// the next level added needs no edit here. See DESIGN-DECISIONS.md, *Grant up
+// to your own rank; modify strictly below it*.
+//
+// mayGrant cannot fire today: the highest grantable role is `manager` and only
+// managers and owners reach the endpoints that call it. It is here so that a
+// level added above `manager` is refused by default rather than granted by
+// default, which is the failure this codebase has now had twice.
+func mayGrant(actor, role string) bool { return roleRank[role] <= roleRank[actor] }
+
+// mayModify is the half that does real work: a manager can create peers but
+// cannot demote or remove one, and nobody but the owner can touch the owner.
+// Creating a peer is recoverable by the owner, so it is the safe half to allow;
+// removing one is not, so it is the half withheld. `target` is "" for somebody
+// with no access yet, which every caller handles before asking.
+func mayModify(actor, target string) bool { return roleRank[target] < roleRank[actor] }
 
 // roleFor returns the caller's role on a document, or "" for no access.
 func roleFor(db *sql.DB, docID string, userID int64) (string, error) {
@@ -82,8 +107,10 @@ func handleCreateDoc(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		defer tx.Rollback()
-		if _, err := tx.Exec("INSERT INTO documents (id, kind, title, owner_id, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-			id, in.Kind, in.Title, u.ID, now, now); err != nil {
+		// No owner column: the owner is the `permissions` row below, and that is
+		// the only place it is recorded. See schema v11.
+		if _, err := tx.Exec("INSERT INTO documents (id, kind, title, created_at, updated_at) VALUES (?,?,?,?,?)",
+			id, in.Kind, in.Title, now, now); err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
@@ -198,17 +225,15 @@ func handleUpdateDoc(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+// DELETE /api/docs/{id} — owner only, and one of exactly two things a manager
+// may not do. Deleting destroys the document and its whole history for
+// everyone, which is the criterion: the owner keeps what is irreversible and
+// total. Written as a rank check rather than the `role != "owner"` it used to
+// be, so that no ownership test in the codebase is a name comparison.
 func handleDeleteDoc(db *sql.DB, h *hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		u := currentUser(r)
 		id := r.PathValue("id")
-		role, err := roleFor(db, id, u.ID)
-		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "db error")
-			return
-		}
-		if role != "owner" {
-			jsonError(w, http.StatusNotFound, "not found")
+		if _, ok := requireRole(db, w, r, "owner"); !ok {
 			return
 		}
 		h.closeRoom(id) // disconnect live editors before their doc vanishes

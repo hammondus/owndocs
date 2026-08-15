@@ -266,6 +266,10 @@ func (m *mailer) shared(docID string, recipient, actorID int64, role string) {
 
 func roleVerb(role string) string {
 	switch role {
+	// A manager's mail must not say "read": the default arm is a floor for
+	// roles that grant less, and a new level lands above editor, not below it.
+	case "manager":
+		return "edit and share"
 	case "editor":
 		return "edit"
 	case "commenter":

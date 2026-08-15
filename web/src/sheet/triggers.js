@@ -25,6 +25,12 @@ const KEY_PREFIX = 'docs.triggers.'
 // called only when there is no remembered answer, and its result is
 // remembered. Kept as parameters so this is testable and so the decision
 // is never silently made somewhere else.
+// `role !== 'owner'` and not a rank comparison, which is the exception to the
+// rule everywhere else in this codebase and is deliberate. The question here is
+// not "how privileged are you", it is "is this document yours" — a manager was
+// handed the document by somebody else, so a script in it is somebody else's
+// script, and being trusted with the sharing list is not a reason to run it
+// unasked. A manager gets the prompt, exactly like an editor.
 export function allowTriggers(storage, docId, role, ask) {
   if (role !== 'owner') {
     const key = KEY_PREFIX + docId

@@ -6,6 +6,7 @@
   import { onMount, onDestroy } from 'svelte'
   import * as Y from 'yjs'
   import { api } from './api.js'
+  import { canManage } from '../roles.js'
   import { iterFrames } from '../frames.js'
   import { mountPreview } from '../editor.js'
   import { Provider } from '../provider.js'
@@ -279,7 +280,9 @@
               {v.name}
             </a>
             <small>{v.created_by}, {formatTime(v.created_at)}</small>
-            {#if doc.role === 'owner'}
+            <!-- Only the label goes; the underlying history is untouched,
+                 which is why this is not a power the owner keeps to itself. -->
+            {#if canManage(doc.role)}
               <button onclick={() => deleteVersion(v)}>✕</button>
             {/if}
           </li>

@@ -22,7 +22,9 @@
     threads,
     me,
     canComment,
-    isOwner,
+    // Moderation — deleting somebody else's comment or thread. A manager
+    // power rather than an owner one: it leaves the document untouched.
+    canModerate,
     makeAnchor, // () => anchor for "comment here"; called at submit, not before,
     // because for a sheet it may have to materialise the cell first
     canAnchor, // whether this spot can take a new thread at all
@@ -123,10 +125,10 @@
     })
   }
 
-  // Only the author may edit — an owner moderating a thread deletes it, since
-  // rewriting words that stay under someone else's name is forgery.
+  // Only the author may edit — a moderator dealing with a thread deletes it,
+  // since rewriting words that stay under someone else's name is forgery.
   const mayEdit = (c) => c.author_id === me.id
-  const mayDelete = (c) => c.author_id === me.id || isOwner
+  const mayDelete = (c) => c.author_id === me.id || canModerate
 
   const when = (ts) => new Date(ts * 1000).toLocaleString()
 </script>
@@ -187,7 +189,7 @@
             {t.resolved_at ? 'reopen' : 'resolve'}
           </button>
         {/if}
-        {#if t.created_by === me.id || isOwner}
+        {#if t.created_by === me.id || canModerate}
           <button
             onclick={() => confirm('Delete this whole thread?') && run(() => deleteThread(docId, t.id))}
             title="Delete thread"

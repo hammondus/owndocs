@@ -323,8 +323,10 @@ func handleDeleteComment(db *sql.DB, h *hub) http.HandlerFunc {
 			jsonError(w, http.StatusNotFound, "not found")
 			return
 		}
-		if author != currentUser(r).ID && role != "owner" {
-			jsonError(w, http.StatusForbidden, "only the author or the document owner can delete a comment")
+		// Moderation, not ownership: removing somebody else's comment is a
+		// manager power, and leaves the document itself untouched.
+		if author != currentUser(r).ID && roleRank[role] < roleRank["manager"] {
+			jsonError(w, http.StatusForbidden, "only the author or a manager of the document can delete a comment")
 			return
 		}
 		tx, err := db.Begin()
@@ -375,8 +377,8 @@ func handleDeleteThread(db *sql.DB, h *hub) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
-		if opener != currentUser(r).ID && role != "owner" {
-			jsonError(w, http.StatusForbidden, "only the thread's author or the document owner can delete it")
+		if opener != currentUser(r).ID && roleRank[role] < roleRank["manager"] {
+			jsonError(w, http.StatusForbidden, "only the thread's author or a manager of the document can delete it")
 			return
 		}
 		if _, err := db.Exec("DELETE FROM comment_threads WHERE id = ?", tid); err != nil {

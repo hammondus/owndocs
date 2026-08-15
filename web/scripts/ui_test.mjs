@@ -1611,14 +1611,29 @@ try {
     await clickText(page, 'a', 'share')
     await page.waitForSelector('input[type="email"]', { timeout: 5000 })
 
-    // All three grantable roles, and no `owner` — which is not a thing to hand
-    // out, and which the server refuses on this endpoint.
+    // Every grantable role, and no `owner` — which is not a thing to hand out,
+    // and which the server refuses on this endpoint. Ownership moves only
+    // through transfer, which demotes the outgoing owner in the same write.
     const roles = await page.evaluate(() =>
       [...document.querySelectorAll('form select option')].map((o) => o.value),
     )
     check(
-      JSON.stringify(roles) === JSON.stringify(['editor', 'commenter', 'viewer']),
+      JSON.stringify(roles) === JSON.stringify(['manager', 'editor', 'commenter', 'viewer']),
       `the picker offers every grantable role (got ${JSON.stringify(roles)})`,
+    )
+
+    // The link buttons read the same list through a filter, and the filter is
+    // the point: a link is a bearer token, so `manager` must not appear here
+    // even though it appears above. One list, two audiences — which is what
+    // stops the two from drifting the way they did before `commenter` shipped.
+    const linkRoles = await page.evaluate(() =>
+      [...document.querySelectorAll('button')]
+        .map((b) => /^New (\w+) link$/.exec(b.textContent.trim())?.[1])
+        .filter(Boolean),
+    )
+    check(
+      JSON.stringify(linkRoles) === JSON.stringify(['editor', 'commenter', 'viewer']),
+      `no manager link is offered (got ${JSON.stringify(linkRoles)})`,
     )
 
     await page.type('input[type="email"]', 'bob@dev.local')
@@ -1653,6 +1668,104 @@ try {
         ),
         'and the comments panel is reachable',
       )
+
+      const errs = bobConsole.drain()
+      check(errs.length === 0, `Bob's page logged nothing${errs.length ? ': ' + errs.join('; ') : ''}`)
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // The `manager` rank, end to end through the real screens. Two gates that
+  // used to be one `doc.role === 'owner'` now part company — sharing is
+  // administration and a manager does it, deleting is irreversible and stays
+  // with the owner — and a split like that is exactly the kind that goes wrong
+  // in one direction silently. A manager who cannot reach the share screen has
+  // no rank at all; a manager who can reach delete has the owner's.
+  await step('a manager can share but cannot delete or transfer', async () => {
+    if (await page.$('[aria-label="Back to documents"]')) {
+      await clickSel(page, '[aria-label="Back to documents"]')
+    }
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI manager doc')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('.cm-content', { timeout: 5000 })
+
+    await clickText(page, 'a', 'share')
+    await page.waitForSelector('input[type="email"]', { timeout: 5000 })
+    await page.type('input[type="email"]', 'bob@dev.local')
+    await page.select('form select', 'manager')
+    await clickText(page, 'button', 'Add')
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('li')].some((li) => /bob@dev\.local/.test(li.textContent) && /manager/.test(li.textContent)),
+      { timeout: 5000 },
+    )
+    ok('a manager can be granted')
+
+    // Only the owner is offered "make owner", and only against somebody else.
+    // The target must already have access, which is what makes the person list
+    // the natural place for the control.
+    check(
+      await page.evaluate(() =>
+        [...document.querySelectorAll('li')].some(
+          (li) => /bob@dev\.local/.test(li.textContent) && /make owner/.test(li.textContent),
+        ),
+      ),
+      'the owner is offered transfer, per person',
+    )
+
+    const ctx = await browser.createBrowserContext()
+    const bob = await ctx.newPage()
+    const bobConsole = watchConsole(bob)
+    try {
+      await bob.goto(`${BASE}/`, { waitUntil: 'networkidle0' })
+      await clickText(bob, 'button', 'Bob')
+      await bob.waitForFunction(
+        () => [...document.querySelectorAll('li')].some((li) => /UI manager doc/.test(li.textContent)),
+        { timeout: 5000 },
+      )
+
+      // The split, on the row itself: share yes, delete no.
+      const row = () =>
+        bob.evaluate(() => {
+          const li = [...document.querySelectorAll('li')].find((e) => /UI manager doc/.test(e.textContent))
+          return [...li.querySelectorAll('button')].map((b) => b.textContent.trim())
+        })
+      const buttons = await row()
+      check(buttons.includes('share'), `a manager's row offers share (got ${JSON.stringify(buttons)})`)
+      check(!buttons.includes('delete'), `and withholds delete (got ${JSON.stringify(buttons)})`)
+
+      // And the screen behind the button actually works for them — the part a
+      // rank check alone cannot promise, since every request on it is a
+      // separate server-side gate that also had to move.
+      await clickText(bob, 'button', 'share')
+      await bob.waitForSelector('input[type="email"]', { timeout: 5000 })
+      check(
+        !(await bob.evaluate(() =>
+          [...document.querySelectorAll('li')].some((li) => /make owner/.test(li.textContent)),
+        )),
+        'but a manager is not offered transfer',
+      )
+
+      // A manager may not remove a peer or the owner, so the only remove
+      // button on the screen is against ranks below them — here, nobody.
+      check(
+        !(await bob.evaluate(() =>
+          [...document.querySelectorAll('li')].some(
+            (li) => /alice@dev\.local/.test(li.textContent) && /remove/.test(li.textContent),
+          ),
+        )),
+        'and cannot remove the owner',
+      )
+
+      await bob.type('input[type="email"]', 'carol@dev.local')
+      await bob.select('form select', 'viewer')
+      await clickText(bob, 'button', 'Add')
+      await bob.waitForFunction(
+        () => [...document.querySelectorAll('li')].some((li) => /carol@dev\.local/.test(li.textContent) && /viewer/.test(li.textContent)),
+        { timeout: 5000 },
+      )
+      ok('a manager can grant access')
 
       const errs = bobConsole.drain()
       check(errs.length === 0, `Bob's page logged nothing${errs.length ? ': ' + errs.join('; ') : ''}`)

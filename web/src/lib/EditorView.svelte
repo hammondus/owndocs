@@ -23,7 +23,7 @@
   import { peerColor } from '../peers.js'
   import { scheduleCompaction } from '../compaction.js'
   import { makeIndexer } from '../searchindex.js'
-  import { canEdit, canComment, visibleToolbar } from '../roles.js'
+  import { canEdit, canComment, canManage, visibleToolbar } from '../roles.js'
 
   let { me, doc, onBack, onShare, onHistory, onRenamed, onOpenDoc, onRichChanged, startWithComments } = $props()
 
@@ -327,7 +327,9 @@
   <button class="linkish" onclick={() => (showComments = !showComments)}>
     comments{openComments ? ` (${openComments})` : ''}
   </button>
-  {#if doc.role === 'owner'}
+  <!-- Sharing is administration, so a manager reaches it too. Deleting stays
+       in the document list, where it is still owner-only. -->
+  {#if canManage(doc.role)}
     <a href="#share" onclick={(e) => { e.preventDefault(); onShare(doc) }}>share</a>
   {/if}
   <a href="#history" onclick={(e) => { e.preventDefault(); onHistory(doc) }}>history</a>
@@ -458,7 +460,7 @@
     {threads}
     {me}
     canComment={mayComment}
-    isOwner={doc.role === 'owner'}
+    canModerate={canManage(doc.role)}
     {makeAnchor}
     {canAnchor}
     {anchorNote}

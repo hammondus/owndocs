@@ -4,12 +4,31 @@
 // canEdit is the one that matters: a commenter who gets an editable grid will
 // type, the provider will send a doc update, and the server will close the
 // socket for a policy violation. Read-only-ness is not cosmetic here.
-const RANK = { viewer: 0, commenter: 1, editor: 2, owner: 3 }
+const RANK = { viewer: 0, commenter: 1, editor: 2, manager: 3, owner: 4 }
 
 const rank = (role) => (role in RANK ? RANK[role] : -1)
 
+// Exported for the share panel, which has to compare two people's roles rather
+// than test one against a fixed bar. Unknown roles rank below viewer, so a
+// client that has not been reloaded since a level was added offers nothing
+// rather than guessing.
+export const rankOf = rank
+
 export const canEdit = (role) => rank(role) >= RANK.editor
 export const canComment = (role) => rank(role) >= RANK.commenter
+
+// canManage is the bar for administering a document rather than writing in it:
+// sharing, links, moderating somebody else's comment, removing a version label,
+// and later overriding sheet protection. `manager` exists so none of those
+// belong to one person who may be on leave — see DESIGN-DECISIONS.md,
+// *Ownership: one owner, one deputy rank*.
+//
+// isOwner is separate and deliberately not a rank helper, because the two
+// things above this bar are not "more privileged", they are *irreversible*:
+// deleting the document, and transferring it. Anything gated on those should
+// read `doc.role === 'owner'` at the call site so it is obvious which of the
+// two rules it is using.
+export const canManage = (role) => rank(role) >= RANK.manager
 
 // Which toolbar entries one person sees on one document. Two filters, and they
 // are different in kind — worth keeping straight, because only one of them is

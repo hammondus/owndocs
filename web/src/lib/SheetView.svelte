@@ -30,6 +30,7 @@
   import DocTitle from './DocTitle.svelte'
   import { listThreads, cellAnchor, cellKey, anchorKey } from '../comments.js'
   import { canEdit, canComment, canManage } from '../roles.js'
+  import { load as loadPrefs, save as savePrefs } from '../prefs.js'
   import { runScript } from '../sheet/sandbox.js'
   import { handleCall } from '../sheet/scriptapi.js'
   import { allowTriggers, summariseEdit } from '../sheet/triggers.js'
@@ -57,6 +58,21 @@
   // A change that did not reach the server. Sticky: see the banner below.
   let problem = $state('')
   let peerCount = $state(1)
+
+  // Why the last thing you tried did nothing. Deliberately NOT the `problem`
+  // banner: that one says "Not saved", is an alarm, and stays until dismissed.
+  // A protection refusal is routine and expected — nothing is wrong — and
+  // borrowing the alarm would teach people to ignore the banner that matters.
+  //
+  // Self-replacing rather than accumulating, so holding a key down produces one
+  // line rather than a wall of them.
+  let notice = $state('')
+  let noticeTimer = 0
+  function refuse(msg) {
+    notice = msg
+    clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => (notice = ''), 4000)
+  }
 
   // Selection: anchor (r,c) to head (r2,c2). A single cell has both equal.
   let sel = $state({ r: 0, c: 0, r2: 0, c2: 0 })
@@ -155,6 +171,8 @@
       scheduleDraw()
     })
     publishSelection()
+
+    lockTint = loadPrefs().lockTint !== false
 
     unobserve = workbook.onChange(() => {
       revision++
@@ -393,11 +411,17 @@
 
     // Cell backgrounds first, so the selection tint and gridlines sit on
     // top of them rather than being painted over.
+    // The unlocked tint is a *default* ground, painted only where the cell has
+    // no background of its own — so a colour applied deliberately always wins,
+    // and the tint never fights formatting. Drawn only on a protected sheet,
+    // because "which cells are inputs" is not a question until then.
+    const tinting = lockTint && !readOnly && model.isProtected()
     for (let r = r0; r <= r1 && r < R; r++) {
       for (let c = c0; c <= c1 && c < C; c++) {
-        const bg = bgPreview && inRect(bgPreview.rect, r, c)
+        const own = bgPreview && inRect(bgPreview.rect, r, c)
           ? bgPreview.value
           : model.formatOf(r, c)?.bg
+        const bg = own || (tinting && model.isUnlocked(r, c) ? paint.cellUnlocked : null)
         if (!bg) continue
         ctx.fillStyle = bg
         ctx.fillRect(screenX(c), screenY(r), colX[c + 1] - colX[c], rowY[r + 1] - rowY[r])
@@ -751,6 +775,13 @@
 
   async function startEdit(initial) {
     if (readOnly) return
+    // Checked here rather than at commit: opening an editor on a cell that
+    // cannot accept the value is a promise the sheet will not keep, and the
+    // person finds out only after typing it.
+    if (!model.canWrite(sel.r, sel.c)) {
+      refuse(`${cellName} is protected. ${protectionHint()}`)
+      return
+    }
     edit = { r: sel.r, c: sel.c, value: initial ?? model.getInput(sel.r, sel.c) }
     // tick() waits until Svelte has rendered the overlay input; only then
     // can it be focused.
@@ -764,7 +795,7 @@
     pointSpan = pointAt = focusedInput = null
     pointing = false
     if (!edit) return
-    model.setCell(edit.r, edit.c, edit.value)
+    attempt(() => model.setCell(edit.r, edit.c, edit.value))
     edit = null
     if (dr !== 0 || dc !== 0) setSelection(sel.r + dr, sel.c + dc, false)
     containerEl.focus({ preventScroll: true })
@@ -782,6 +813,13 @@
   function clearSelection() {
     if (readOnly) return
     const s = selRect()
+    // Checked up front rather than per cell: these setCell calls share one
+    // transaction and Yjs commits what already happened when an exception goes
+    // through, so a mixed selection would end up half cleared.
+    if (!model.canWriteRect(s)) {
+      refuse(`Part of this selection is protected. ${protectionHint()}`)
+      return
+    }
     model.tx(() => {
       for (let r = s.r1; r <= Math.min(s.r2, model.rowCount() - 1); r++) {
         for (let c = s.c1; c <= Math.min(s.c2, model.colCount() - 1); c++) {
@@ -854,6 +892,10 @@
     // Drop it just right of the selection, where the data is still visible.
     const x = HEADER_W + layout.colX[Math.min(s.c2 + 1, layout.C - 1)] + 12
     const y = HEADER_H + layout.rowY[s.r1]
+    if (!model.canRestructure()) {
+      refuse(`This sheet is protected, so a chart cannot be added to it.`)
+      return
+    }
     const chart = model.addChart(s, { x, y })
     if (chart) selectedChart = chart.id
     scheduleDraw()
@@ -934,9 +976,11 @@
   function applyFormatTo(target, patch) {
     if (readOnly) return
     const s = target.rect
-    if (target.kind === 'col') model.setColFormat(s.c1, s.c2, patch)
-    else if (target.kind === 'row') model.setRowFormat(s.r1, s.r2, patch)
-    else model.setFormat(s, patch)
+    attempt(() => {
+      if (target.kind === 'col') model.setColFormat(s.c1, s.c2, patch)
+      else if (target.kind === 'row') model.setRowFormat(s.r1, s.r2, patch)
+      else model.setFormat(s, patch)
+    })
     scheduleDraw()
   }
 
@@ -983,6 +1027,127 @@
 
   const inRect = (s, r, c) => r >= s.r1 && r <= s.r2 && c >= s.c1 && c <= s.c2
 
+  // ---- protection ----------------------------------------------------------
+  //
+  // The model is the guard and throws; these say the same thing without
+  // throwing, so the interface can refuse *before* the attempt and explain.
+  // The two must agree — `sheet_test.mjs` pins the model side, and every check
+  // here goes through the same `canWrite` the guard uses rather than
+  // re-deriving the rule.
+  //
+  // Selection is never restricted. A protected cell must stay selectable: it is
+  // how you read a formula, copy it, and see it in the formula bar, and a range
+  // routinely spans locked and unlocked cells. Protection is about writes.
+
+  let sheetProtected = $derived.by(() => {
+    revision
+    return !!(model && model.isProtected())
+  })
+
+  let overrideOn = $derived.by(() => {
+    revision
+    return !!(workbook && workbook.overrideProtection)
+  })
+
+  // Whether the selected cell takes a value — what the cell editor asks.
+  let mayWriteHere = $derived.by(() => {
+    revision
+    return !model || model.canWrite(sel.r, sel.c)
+  })
+
+  // Whether the whole selection does — what the toolbar asks, since format and
+  // exactness apply to the block and the model refuses a mixed one wholesale.
+  let mayWriteSel = $derived.by(() => {
+    revision
+    return !model || model.canWriteRect(selRect())
+  })
+
+  // Marking cells unlocked and turning protection on are changes *to* the
+  // protection, so they are gated by role rather than by the guard — a manager
+  // and above, matching the server's bar for administering a document. There is
+  // no server-side place to enforce this, for the same reason the rest of the
+  // feature is client-side; it is guard rails on a shared convention.
+  let mayProtect = $derived(canManage(doc.role))
+
+  // The tint on unlocked cells: a reading preference, so it can be turned off
+  // for a clean print. Read once at mount and kept here, because the sheet is
+  // the only place it applies and the only place it is set.
+  let lockTint = $state(true)
+
+  function setLockTint(on) {
+    lockTint = on
+    const prefs = { ...loadPrefs(), lockTint: on }
+    savePrefs(prefs)
+    scheduleDraw()
+  }
+
+  function toggleProtected() {
+    model.setProtected(!sheetProtected)
+    // Turning protection ON while the override is on would be a sheet that
+    // says protected and behaves unprotected — the invisible bypass this
+    // feature exists to avoid. So the override drops with it.
+    if (!sheetProtected) workbook.setOverrideProtection(false)
+    revision++
+    scheduleDraw()
+  }
+
+  function toggleOverride() {
+    workbook.setOverrideProtection(!overrideOn)
+    revision++
+    scheduleDraw()
+  }
+
+  // Mark the selection as an input, or lock it back. A column or row header
+  // selection marks the whole column or row, which is how "these two columns
+  // are the inputs" becomes two entries rather than one per cell — the same
+  // rule exactness already follows.
+  function setUnlocked(on) {
+    const s = selRect()
+    if (sel.kind === 'col') model.setColUnlocked(s.c1, s.c2, on || null)
+    else if (sel.kind === 'row') model.setRowUnlocked(s.r1, s.r2, on || null)
+    else model.setUnlocked(s, on || null)
+    revision++
+    scheduleDraw()
+  }
+
+  // Whether the selection is currently marked unlocked, for the button's
+  // pressed state. The active cell answers for the block, as it does for bold.
+  let activeUnlocked = $derived.by(() => {
+    revision
+    return !!(model && model.isUnlocked(sel.r, sel.c))
+  })
+
+  // Every model write from this view goes through here.
+  //
+  // Belt and braces on purpose, and the braces are the point: the controls
+  // below disable themselves and the cell editor refuses to open, so in normal
+  // use nothing reaches this catch. A path that gets *missed* then produces an
+  // explanation in the status line instead of an uncaught exception that takes
+  // the grid down — which is the failure mode a throwing guard would otherwise
+  // have traded for a silent one.
+  //
+  // The message comes from the model, which names the cell; what is added here
+  // is what to do about it, and that depends on who is asking.
+  // What to do about a refusal, which depends on who is asking. One function
+  // because the same sentence is needed at the cell editor and in `attempt`,
+  // and two copies of a message drift.
+  const protectionHint = () =>
+    mayProtect
+      ? 'Unprotect the sheet, or switch on “edit protected cells”.'
+      : 'It is a formula, not an input — ask a manager of this document.'
+
+  function attempt(fn) {
+    try {
+      fn()
+      return true
+    } catch (err) {
+      if (err?.name !== 'ProtectedError') throw err
+      refuse(`${err.message}. ${protectionHint()}`)
+      scheduleDraw()
+      return false
+    }
+  }
+
   // The active cell's look drives the toolbar's pressed states.
   let activeFormat = $derived.by(() => {
     revision
@@ -1015,9 +1180,11 @@
     if (readOnly) return
     const s = selRect()
     const on = activeExact ? null : true
-    if (sel.kind === 'col') model.setColExact(s.c1, s.c2, on)
-    else if (sel.kind === 'row') model.setRowExact(s.r1, s.r2, on)
-    else model.setExact(s, on)
+    attempt(() => {
+      if (sel.kind === 'col') model.setColExact(s.c1, s.c2, on)
+      else if (sel.kind === 'row') model.setRowExact(s.r1, s.r2, on)
+      else model.setExact(s, on)
+    })
     scheduleDraw()
   }
 
@@ -1071,7 +1238,15 @@
 
   function removeSheet(id) {
     const tab = tabs.find((t) => t.id === id)
+    // Checked before the confirm, not after: asking somebody to agree to
+    // something and then refusing it is worse than not asking.
+    if (workbook.sheet(id).isProtected() && !workbook.overrideProtection) {
+      refuse(`“${tab.name}” is protected. Unprotect it before deleting it.`)
+      return
+    }
     if (!confirm(`Delete "${tab.name}"? Formulas pointing at it will show #REF!.`)) return
+    // No `attempt` wrapper: the only refusal this call has is the one already
+    // checked above, and false here means something else entirely.
     if (!workbook.removeSheet(id)) alert('A workbook needs at least one sheet.')
   }
 
@@ -1155,13 +1330,15 @@
     if (!inputs || !inputs.length) return
 
     const s = selRect()
-    model.writeRect(s.r1, s.c1, inputs, {
-      rows: s.r2 - s.r1 + 1,
-      cols: s.c2 - s.c1 + 1,
-      origin,
-      formats,
-      clear: cutRegion,
-    })
+    attempt(() =>
+      model.writeRect(s.r1, s.c1, inputs, {
+        rows: s.r2 - s.r1 + 1,
+        cols: s.c2 - s.c1 + 1,
+        origin,
+        formats,
+        clear: cutRegion,
+      }),
+    )
     cutRegion = null
     // Select what was pasted, as every spreadsheet does.
     const h = Math.max(inputs.length, s.r2 - s.r1 + 1)
@@ -1333,7 +1510,7 @@
     // replaceable, by a later click or by an arrow key, until somebody types.
     pointing = false
     if (chartDrag) {
-      if (chartDrag.patch) model.updateChart(chartDrag.id, chartDrag.patch)
+      if (chartDrag.patch) attempt(() => model.updateChart(chartDrag.id, chartDrag.patch))
       chartDrag = null
       scheduleDraw()
       return
@@ -1347,7 +1524,7 @@
       const { src, dest } = filling
       filling = null
       if (dest.r1 !== src.r1 || dest.r2 !== src.r2 || dest.c1 !== src.c1 || dest.c2 !== src.c2) {
-        model.fill(src, dest)
+        attempt(() => model.fill(src, dest))
         sel = { r: dest.r1, c: dest.c1, r2: dest.r2, c2: dest.c2 }
         publishSelection()
       }
@@ -1384,7 +1561,7 @@
       e.preventDefault()
       if (readOnly) return
       const s = selRect()
-      if (s.r2 > s.r1) model.fill({ ...s, r2: s.r1 }, s)
+      if (s.r2 > s.r1) attempt(() => model.fill({ ...s, r2: s.r1 }, s))
       return
     }
     if (e.key === 'Escape' && cutRegion) {
@@ -1464,20 +1641,20 @@
 
   function insertRowsAt(after) {
     const s = selRect()
-    model.insertRows(after ? s.r2 + 1 : s.r1, s.r2 - s.r1 + 1)
+    attempt(() => model.insertRows(after ? s.r2 + 1 : s.r1, s.r2 - s.r1 + 1))
   }
   function insertColsAt(after) {
     const s = selRect()
-    model.insertCols(after ? s.c2 + 1 : s.c1, s.c2 - s.c1 + 1)
+    attempt(() => model.insertCols(after ? s.c2 + 1 : s.c1, s.c2 - s.c1 + 1))
   }
   function deleteSelRows() {
     const s = selRect()
-    model.deleteRows(s.r1, s.r2 - s.r1 + 1)
+    attempt(() => model.deleteRows(s.r1, s.r2 - s.r1 + 1))
     setSelection(Math.min(s.r1, model.rowCount() - 1), sel.c, false)
   }
   function deleteSelCols() {
     const s = selRect()
-    model.deleteCols(s.c1, s.c2 - s.c1 + 1)
+    attempt(() => model.deleteCols(s.c1, s.c2 - s.c1 + 1))
     setSelection(sel.r, Math.min(s.c1, model.colCount() - 1), false)
   }
 
@@ -1633,32 +1810,72 @@
   </div>
 {/if}
 
+{#if notice}
+  <!-- A status line, not the "Not saved" banner and not an alert. A protection
+       refusal is routine: nothing is wrong, nothing was lost, and the sheet is
+       telling you why the last thing you tried did nothing. It replaces itself
+       and fades on its own, so holding a key down does not build a wall. -->
+  <p class="notice" role="status">{notice}</p>
+{/if}
+
 {#if !readOnly}
+  <div class="toolbar protect">
+    <!-- Marking cells and turning protection on are changes *to* the
+         protection, so they are gated by role — manager and above, matching
+         the bar for administering the document. An editor sees the state and
+         the tint toggle, which is what they need to work inside it. -->
+    {#if mayProtect}
+      <button class:on={sheetProtected} onclick={toggleProtected}
+        title="Protect this sheet: every cell becomes read-only except the ones marked as inputs. Guard rails against a mistake, not a permission — anyone who can edit the document can still reach the data.">
+        {sheetProtected ? '🔒 protected' : '🔓 unprotected'}
+      </button>
+      <button onclick={() => setUnlocked(!activeUnlocked)} class:on={activeUnlocked}
+        title="Mark the selection as an input, so it stays editable while the sheet is protected. A column or row header selection marks the whole column or row.">
+        {activeUnlocked ? 'input ✓' : 'mark input'}
+      </button>
+    {/if}
+    {#if sheetProtected}
+      {#if mayProtect}
+        <!-- Deliberate, visible and temporary — never remembered across a
+             reload. An override you have forgotten about is the permanent
+             invisible bypass this feature exists to avoid. -->
+        <button class:warn={overrideOn} onclick={toggleOverride}
+          title="Edit protected cells for now. Off by default and never remembered, so what you see is what a colleague sees unless you have deliberately said otherwise.">
+          {overrideOn ? '⚠ editing protected cells' : 'edit protected cells'}
+        </button>
+      {/if}
+      <label class="tint" title="Tint the cells you may edit. A reading preference — yours only, and never saved in the document. Turn it off for a clean print.">
+        <input type="checkbox" checked={lockTint} onchange={(e) => setLockTint(e.target.checked)} />
+        tint inputs
+      </label>
+    {/if}
+  </div>
+
   <div class="toolbar">
-    <button onclick={() => insertRowsAt(false)} title="Insert row above">+row ↑</button>
-    <button onclick={() => insertRowsAt(true)} title="Insert row below">+row ↓</button>
-    <button onclick={deleteSelRows} title="Delete selected rows">−row</button>
-    <button onclick={() => insertColsAt(false)} title="Insert column left">+col ←</button>
-    <button onclick={() => insertColsAt(true)} title="Insert column right">+col →</button>
-    <button onclick={deleteSelCols} title="Delete selected columns">−col</button>
+    <button disabled={sheetProtected && !overrideOn} onclick={() => insertRowsAt(false)} title="Insert row above">+row ↑</button>
+    <button disabled={sheetProtected && !overrideOn} onclick={() => insertRowsAt(true)} title="Insert row below">+row ↓</button>
+    <button disabled={sheetProtected && !overrideOn} onclick={deleteSelRows} title="Delete selected rows">−row</button>
+    <button disabled={sheetProtected && !overrideOn} onclick={() => insertColsAt(false)} title="Insert column left">+col ←</button>
+    <button disabled={sheetProtected && !overrideOn} onclick={() => insertColsAt(true)} title="Insert column right">+col →</button>
+    <button disabled={sheetProtected && !overrideOn} onclick={deleteSelCols} title="Delete selected columns">−col</button>
   </div>
 
   <div class="toolbar">
     <!-- class:on gives the button a pressed look when the active cell
          already has that format. -->
-    <button class:on={activeFormat.b} onclick={() => toggle('b')} title="Bold (applies to the selection)"><b>B</b></button>
-    <button class:on={activeFormat.i} onclick={() => toggle('i')} title="Italic"><i>I</i></button>
+    <button disabled={!mayWriteSel} class:on={activeFormat.b} onclick={() => toggle('b')} title="Bold (applies to the selection)"><b>B</b></button>
+    <button disabled={!mayWriteSel} class:on={activeFormat.i} onclick={() => toggle('i')} title="Italic"><i>I</i></button>
     <span class="sep"></span>
-    <button class:on={activeFormat.a === 'l'} onclick={() => setAlign('l')} title="Align left">⇤</button>
-    <button class:on={activeFormat.a === 'c'} onclick={() => setAlign('c')} title="Align centre">⇔</button>
-    <button class:on={activeFormat.a === 'r'} onclick={() => setAlign('r')} title="Align right">⇥</button>
+    <button disabled={!mayWriteSel} class:on={activeFormat.a === 'l'} onclick={() => setAlign('l')} title="Align left">⇤</button>
+    <button disabled={!mayWriteSel} class:on={activeFormat.a === 'c'} onclick={() => setAlign('c')} title="Align centre">⇔</button>
+    <button disabled={!mayWriteSel} class:on={activeFormat.a === 'r'} onclick={() => setAlign('r')} title="Align right">⇥</button>
     <span class="sep"></span>
-    <select class="numfmt" value={activeFormat.n || 'auto'} onchange={setNumberFormat} title="Number format">
+    <select class="numfmt" disabled={!mayWriteSel} value={activeFormat.n || 'auto'} onchange={setNumberFormat} title="Number format">
       {#each NUMBER_FORMATS as nf (nf.id)}
         <option value={nf.id}>{nf.label}</option>
       {/each}
     </select>
-    <button class:on={activeExact} onclick={toggleExact}
+    <button disabled={!mayWriteSel} class:on={activeExact} onclick={toggleExact}
       title="Exact arithmetic — compute these cells as decimals rather than doubles, so digits past 9,007,199,254,740,991 and sums like 0.1+0.2 come out right. Slower, and it spreads to any formula that reads them.">±0</button>
     <span class="sep"></span>
     <!-- Native colour inputs: no custom picker to build or maintain. The
@@ -1670,18 +1887,18 @@
         oninput={(e) => previewColour('c', e.target.value)}
         onchange={(e) => commitColour('c', e.target.value)} />
     </label>
-    <button onclick={() => applyFormat({ c: null })} title="Clear text colour">×</button>
+    <button disabled={!mayWriteSel} onclick={() => applyFormat({ c: null })} title="Clear text colour">×</button>
     <label title="Background colour">
       ▉<input type="color" value={activeFormat.bg || '#ffffff'}
         onfocus={() => startColourPick('bg')}
         oninput={(e) => previewColour('bg', e.target.value)}
         onchange={(e) => commitColour('bg', e.target.value)} />
     </label>
-    <button onclick={() => applyFormat({ bg: null })} title="Clear background">×</button>
+    <button disabled={!mayWriteSel} onclick={() => applyFormat({ bg: null })} title="Clear background">×</button>
     <span class="sep"></span>
-    <button onclick={() => { model.clearFormat(selRect()); scheduleDraw() }} title="Clear all formatting">clear</button>
+    <button disabled={!mayWriteSel} onclick={() => { attempt(() => model.clearFormat(selRect())); scheduleDraw() }} title="Clear all formatting">clear</button>
     <span class="sep"></span>
-    <button onclick={insertChart} title="Chart the selected range">📊 chart</button>
+    <button disabled={sheetProtected && !overrideOn} onclick={insertChart} title="Chart the selected range">📊 chart</button>
     <button onclick={downloadCsv} title="Download this sheet as CSV">↓ csv</button>
     <button onclick={() => (showFunctions = !showFunctions)} title="What a formula can contain">ƒx formulas</button>
     <button onclick={() => (showScripts = !showScripts)} title="Scripts">⚙ scripts</button>
@@ -1726,8 +1943,8 @@
     onfocus={() => { focusedInput = formulaInputEl }}
     oninput={onFormulaBarInput}
     onkeydown={onInputKeyDown}
-    readonly={readOnly}
-    placeholder={readOnly ? '' : 'value or =formula'}
+    readonly={readOnly || !mayWriteHere}
+    placeholder={readOnly ? '' : mayWriteHere ? 'value or =formula' : 'protected'}
   />
 </div>
 
@@ -1789,7 +2006,7 @@
           <select
             value={chart.type}
             onmousedown={(e) => e.stopPropagation()}
-            onchange={(e) => model.updateChart(chart.id, { type: e.target.value })}
+            onchange={(e) => attempt(() => model.updateChart(chart.id, { type: e.target.value }))}
           >
             {#each CHART_TYPES as t (t.id)}<option value={t.id}>{t.label}</option>{/each}
           </select>
@@ -1798,7 +2015,7 @@
             placeholder="Chart title"
             value={chart.title}
             onmousedown={(e) => e.stopPropagation()}
-            onchange={(e) => model.updateChart(chart.id, { title: e.target.value })}
+            onchange={(e) => attempt(() => model.updateChart(chart.id, { title: e.target.value }))}
           />
           <!-- stopPropagation on the input itself, not a wrapping label:
                the strip is a drag handle, and mousedown must not start a
@@ -1809,11 +2026,11 @@
             title="First row holds the series names"
             checked={chart.headers !== false}
             onmousedown={(e) => e.stopPropagation()}
-            onchange={(e) => model.updateChart(chart.id, { headers: e.target.checked })}
+            onchange={(e) => attempt(() => model.updateChart(chart.id, { headers: e.target.checked }))}
           />
           <button
             onmousedown={(e) => e.stopPropagation()}
-            onclick={() => { model.removeChart(chart.id); selectedChart = null }}
+            onclick={() => { if (attempt(() => model.removeChart(chart.id))) selectedChart = null }}
             title="Delete chart"
           >×</button>
         {:else}
@@ -1926,6 +2143,39 @@
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .problem :global(button) { margin-left: auto; }
+  /* Quiet by design, and nothing like .problem above. That one is an alarm
+     about work that did not reach the server; this says the sheet declined to
+     do something and is still perfectly healthy. Same reason it carries no
+     dismiss button: it goes on its own. */
+  .notice {
+    margin: 0 0 6px;
+    padding: 4px 10px;
+    font-size: 0.85rem;
+    border-radius: var(--r);
+    border-left: 3px solid var(--signal);
+    background: var(--signal-tint);
+  }
+  /* The protection strip reads as a state readout rather than another row of
+     actions, so it sits quieter than the toolbars under it. */
+  .toolbar.protect {
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 4px;
+    margin-bottom: 4px;
+  }
+  .toolbar.protect .tint {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    opacity: 0.75;
+    cursor: pointer;
+  }
+  /* The override is on and you should be able to tell without reading. */
+  .toolbar button.warn {
+    border-color: var(--danger);
+    color: var(--danger);
+    font-weight: 600;
+  }
   .toolbar {
     display: flex;
     gap: 0.25rem;

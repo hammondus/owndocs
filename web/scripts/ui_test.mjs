@@ -1779,6 +1779,107 @@ try {
   // all — the first attempt failed because by the time a mousedown handler
   // runs the browser has already moved focus to the grid, so asking
   // `document.activeElement` which input holds the caret answers "grid".
+  // Sheet protection in a browser. The model sweep in sheet_test.mjs proves the
+  // guard refuses, exhaustively and per mutator — this asserts the far smaller
+  // thing only a browser can: that the controls in front of it are not dead.
+  // Protection is nothing but refusals, so a refusal with no visible response
+  // is indistinguishable from a broken feature, which is what this file exists
+  // to catch.
+  await step('a protected sheet refuses edits and says why', async () => {
+    if (await page.$('[aria-label="Back to documents"]')) {
+      await clickSel(page, '[aria-label="Back to documents"]')
+    }
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.type('input[placeholder="new document title"]', 'UI protected sheet')
+    await page.select('select', 'sheet')
+    await clickText(page, 'button', 'Create')
+    await page.waitForSelector('canvas', { timeout: 5000 })
+
+    const grid = async () => page.$eval('.grid', (el) => {
+      const b = el.getBoundingClientRect()
+      return { x: b.x, y: b.y }
+    })
+    const cellAt = async (r, c) => {
+      const b = await grid()
+      return { x: b.x + 48 + c * 100 + 50, y: b.y + 24 + r * 24 + 12 }
+    }
+    const bar = () => page.$eval('.formula-bar input', (e) => e.value)
+    const enabled = (label) =>
+      page.evaluate((l) => {
+        const b = [...document.querySelectorAll('button')].find((e) => e.textContent.trim() === l)
+        return b ? !b.disabled : null
+      }, label)
+
+    // A formula in A1 over an input in B1, typed into an empty sheet so the
+    // formula bar has nothing to insert into.
+    const b1 = await cellAt(0, 1)
+    await page.mouse.click(b1.x, b1.y)
+    await page.keyboard.type('21')
+    await page.keyboard.press('Enter')
+    const a1 = await cellAt(0, 0)
+    await page.mouse.click(a1.x, a1.y)
+    await page.keyboard.type('=B1*2')
+    await page.keyboard.press('Enter')
+
+    // Mark column B as the input from its header, then protect the sheet.
+    const bHeader = await cellAt(-1, 1)
+    await page.mouse.click(bHeader.x, bHeader.y)
+    await clickText(page, 'button', 'mark input')
+    await clickText(page, 'button', 'unprotected')
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('button')].some((b) => /🔒 protected/.test(b.textContent)),
+      { timeout: 3000 },
+    )
+    ok('a sheet can be protected from the toolbar')
+
+    // Selection is never restricted: you have to be able to select a protected
+    // formula to read it, and the formula bar is how you read it.
+    await page.mouse.click((await cellAt(0, 0)).x, (await cellAt(0, 0)).y)
+    await page.waitForFunction(
+      () => document.querySelector('.cell-name').textContent.trim() === 'A1',
+      { timeout: 3000 },
+    )
+    check(await bar() === '=B1*2', `a protected cell stays selectable and readable (bar: ${await bar()})`)
+    check(await page.$eval('.formula-bar input', (e) => e.readOnly), 'but its formula bar is read-only')
+
+    // Structural work is blocked outright, and the buttons say so rather than
+    // waiting to be pressed and then refusing. Bold is disabled because the
+    // selected cell is protected; the row buttons because the sheet is.
+    check(await enabled('+row ↑') === false, 'row insertion is disabled while protected')
+    check(await enabled('B') === false, 'and so is bold, with the formula cell selected')
+
+    // Typing into it changes nothing and explains why, in the status line
+    // rather than the "Not saved" alarm.
+    await page.keyboard.type('999')
+    await page.waitForSelector('.notice', { timeout: 3000 })
+    const msg = await page.$eval('.notice', (e) => e.textContent.trim())
+    check(/A1 is protected/.test(msg), `a refusal explains rather than doing nothing (${JSON.stringify(msg)})`)
+    check(await bar() === '=B1*2', 'and the cell is unchanged')
+
+    // Selecting the input column re-enables what applies to it, which is the
+    // gate half of the feature — a sheet where nothing is ever enabled would
+    // pass every assertion above.
+    await page.mouse.click((await cellAt(0, 1)).x, (await cellAt(0, 1)).y)
+    await page.waitForFunction(
+      () => document.querySelector('.cell-name').textContent.trim() === 'B1',
+      { timeout: 3000 },
+    )
+    check(await enabled('B') === true, 'bold comes back on the unlocked input cell')
+    check(!(await page.$eval('.formula-bar input', (e) => e.readOnly)), 'and its formula bar is writable')
+
+    // The override is visible while it is on — never remembered, never quiet.
+    await clickText(page, 'button', 'edit protected cells')
+    await page.waitForFunction(() => document.querySelector('button.warn') !== null, { timeout: 3000 })
+    ok('the override is visibly on while it is on')
+    await page.mouse.click((await cellAt(0, 0)).x, (await cellAt(0, 0)).y)
+    await page.waitForFunction(
+      () => document.querySelector('.cell-name').textContent.trim() === 'A1',
+      { timeout: 3000 },
+    )
+    check(await enabled('+row ↑') === true, 'and it lifts the structural block too')
+    check(!(await page.$eval('.formula-bar input', (e) => e.readOnly)), 'and opens the protected cell')
+  })
+
   await step('a formula can be written by pointing at cells', async () => {
     if (await page.$('[aria-label="Back to documents"]')) {
       await clickSel(page, '[aria-label="Back to documents"]')

@@ -68,6 +68,17 @@
      the commented ranges in the editor and the corner markers on the grid. */
   --marker-comment: #f9a825;
 
+  /* "You may type here": the ground under an unlocked cell on a protected
+     sheet. Pinned in both schemes for the same reason the comment marker is —
+     it is a mark on the paper rather than part of the interface — and mixed
+     with transparent so a cell's own background wins simply by being painted
+     over it, and so the text on top stays readable either way.
+
+     Green rather than the signal colour, which is the selection: the two are
+     routinely on screen at once, and a tint that matched the selection would
+     say "selected" in a place where it means "editable". */
+  --cell-unlocked: color-mix(in srgb, #2e9e5b 14%, transparent);
+
   /* System stacks only. No font files to ship, so no assets, no licensing and
      nothing to load before text can paint — the same rule the reading
      preferences follow, and for the same reason. Personality comes from size,
@@ -289,6 +300,21 @@ button {
 }
 button:hover { background: var(--surface-2); }
 button:active { background: var(--line); }
+
+/* A disabled control has to look disabled. The rules above set `color: inherit`
+   and an explicit background, which between them replace the browser's own
+   greying — so without this a disabled button is pixel-identical to a live one,
+   and a control that looks live and does nothing is the failure three of the
+   incidents in DESIGN-DECISIONS.md are about. The hover rule has to be undone
+   too, or the button still lights up under the pointer.
+
+   Not new with sheet protection: `disabled` was already used in the reading
+   panel and on the invite form, where it has been invisible all along. */
+button:disabled, select:disabled, input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+button:disabled:hover { background: var(--surface); }
 
 /* The one button per screen that does the thing you came for. */
 button.primary {

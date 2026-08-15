@@ -29,6 +29,10 @@ const TOKENS = {
   onSignal: '--on-signal',
   danger: '--danger',
   comment: '--marker-comment',
+  // The ground under an unlocked cell on a protected sheet. A default the
+  // cell's own background overrides, so the colour cannot drift from the
+  // editability the way a hand-applied one does.
+  cellUnlocked: '--cell-unlocked',
   // Ink for a cell the author gave a background to. Pinned dark in both
   // schemes, and shared with the document highlight grounds it is named for —
   // see canvasColors() below for why a cell background is treated as paper.

@@ -3920,7 +3920,7 @@ Isolation removes the reason to abuse the demo, not the ability to waste it:
 - **Its own container**, with memory and CPU limits and no persistent volume,
   so a restart is also a wipe.
 
-## Sheet protection (model built; UI not built)
+## Sheet protection
 
 ### Locked by default, and you unlock the inputs
 
@@ -4094,12 +4094,83 @@ check the whole block up front. The test that catches it puts the *unlocked*
 cell first — with the locked cell first the write refuses before touching
 anything and the bug hides completely.
 
-What is left is the UI: the protect toggle and mark-unlocked gesture, the tint
-drawn from the map, the manager-only override, and the reading preference that
-turns the tint off for printing. Every `model.insertRows(...)`-style call in
-`SheetView.svelte` is currently unguarded and will throw once anything can turn
-protection on — that is the first thing the UI pass has to close, and it is why
-this one shipped with no way to turn it on.
+### What the UI pass built
+
+Landed 2026-08-15. The question it answers is what happens when somebody goes to
+a protected cell, and the answer starts by separating two things that get
+conflated: **selection is never restricted.** A protected cell has to stay
+selectable — it is how you read the formula, copy it, and see it in the formula
+bar — and a range routinely spans locked and unlocked cells. Protection is about
+writes, so the refusal belongs at the moment of edit intent, not at the moment
+of arrival.
+
+**Three tiers, in the order somebody meets them.**
+
+- **The tint, before anything is attempted.** Unlocked cells are painted from
+  the lock map, so the sheet says where you may type before you try. It is a
+  *default* ground the cell's own background overrides, so it never fights
+  formatting, and it is drawn only on a protected sheet and only for somebody
+  who can edit — a viewer may not type anywhere, so a tint saying "you may type
+  here" would be a lie told in colour. Green rather than the signal colour,
+  which is the selection: the two are routinely on screen together, and a tint
+  matching the selection would say "selected" where it means "editable".
+- **The editor does not open.** `startEdit` asks `canWrite` and refuses, so
+  there is no keystroke to discard and no half-typed value to explain away.
+  Opening an editor on a cell that cannot accept the value is a promise the
+  sheet will not keep.
+- **A status line saying why.** Deliberately not the `problem` banner: that one
+  says "Not saved", is an alarm about work that did not reach the server, and
+  stays until dismissed. A protection refusal is routine and nothing is wrong,
+  and borrowing the alarm would train people to ignore the banner that matters.
+  It replaces itself and fades, so holding a key down produces one line rather
+  than a wall.
+
+**Every model write from the view goes through one `attempt` wrapper**, which
+catches `ProtectedError` and routes it to that status line. Belt and braces, and
+the braces are the point: the controls disable themselves and the editor refuses
+to open, so nothing should reach the catch — but a path that gets *missed* then
+produces an explanation instead of an uncaught exception taking the grid down,
+which is the failure a throwing guard would otherwise have traded for a silent
+one.
+
+**Controls disable rather than hide.** Hiding makes the toolbar reflow as the
+selection moves, which is worse than a greyed control saying "this exists, but
+not here". This differs from `visibleToolbar`'s commenter rule on purpose: there
+hiding is a *boundary*, because a toolbar button is a programmatic dispatch that
+goes past `readOnly` and gets the socket closed. Here it is guard rails.
+
+That change needed a fix underneath it. `button` in `app.css` sets `color:
+inherit` and an explicit background, which between them replace the browser's
+own greying — so a disabled button was pixel-identical to a live one. Seventeen
+disabled controls would have been seventeen dead ones. `:disabled` now carries
+opacity and a cursor, and the hover rule is undone with it. Not new with
+protection: `disabled` was already used on the reading panel and the invite
+form, invisibly, since each shipped.
+
+**A mixed selection refuses wholesale**, matching the model. Partial application
+means asking for one thing and silently getting half, which is the defect found
+in the script API during the model pass.
+
+**The override is a button that shows it is on**, never a remembered setting,
+and turning protection *on* clears it — a sheet that says protected and behaves
+unprotected is the invisible bypass this feature exists to avoid.
+
+**The tint toggle sits in the sheet, not in the reading panel.** It is a reading
+preference in substance and is stored with the others in `docs:reading`, and it
+was drafted into `ReadingPrefs` first. That was wrong twice over: the panel is
+not reachable from a sheet, so the control would have been absent where it is
+needed, and it is full of markdown-only settings, so adding a sheet row there
+puts a live control among ones that do nothing. Printing happens from the sheet;
+the toggle belongs there.
+
+**What only a browser can show** is in `ui_test.mjs`: protection is nothing but
+refusals, so a refusal with no visible response is indistinguishable from a
+broken feature. It asserts the label toggles, a refusal produces a visible
+notice naming the cell, the structural and format buttons are disabled, they
+come *back* on the unlocked input cell — a sheet where nothing is ever enabled
+would pass every other assertion — and the override shows itself and lifts both
+blocks. The exhaustive per-mutator work stays in `sheet_test.mjs`, where it does
+not depend on canvas coordinates.
 
 ## Ownership: one owner, one deputy rank
 

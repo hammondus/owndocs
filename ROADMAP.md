@@ -135,30 +135,6 @@ Known and accepted, to be judged in use:
 - Indexing happens on open and 15s after the last edit, so an entry can lag
 - Text over 400,000 characters is indexed truncated rather than rejected
 
-## Sheet protection
-
-Decided 2026-08-13. Accident prevention, not authorisation — see *Sheet
-protection* in the design doc for why the distinction is load-bearing and for
-what the server can and cannot enforce.
-
-- Locked by default; the stored map holds the *unlocked* exceptions, keyed like
-  `fmt` (cell, `r.<rowId>`, `c.<colId>`)
-- A `protected` flag per sheet, in the Yjs doc — sheets are a client-side
-  convention the server has never heard of
-- Unlocked cells are tinted from that attribute, so the colour cannot drift
-  from the editability. A default background a cell's own colour overrides, and
-  a reading preference so it can be turned off
-- Protection applies to the **owner too**, by default. An explicit "edit
-  protected cells" toggle, off by default, is the override — so testing what a
-  colleague sees costs nothing
-- Only an owner may change protection; editors get no override
-- Structural row/column operations are blocked outright while protected
-
-The work is the mutation sweep, not the feature: 27 `this.tx(...)` sites and 23
-public mutators today, plus the script API, undo, and `restoreFrom`. The
-deliverable is a table-driven test that enumerates every public mutator and
-asserts each refuses.
-
 ## Kanban: a third document kind
 
 Boards alongside docs and sheets, riding the same sync, sharing, history and

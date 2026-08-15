@@ -76,6 +76,11 @@ export const DEFAULTS = {
   family: '',
   toc: 'off',
   tocDepth: 3,
+  // The tint on unlocked cells of a protected sheet. On by default, because
+  // its whole job is to say where you may type before you try — but a
+  // reading preference, so it can be turned off for a clean print. It changes
+  // nothing about what may be written, only whether the sheet says so.
+  lockTint: true,
 }
 
 // A family name is user input that ends up in a CSS declaration, so it is

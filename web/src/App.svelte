@@ -10,6 +10,7 @@
   import SheetView from './lib/SheetView.svelte'
   import ShareView from './lib/ShareView.svelte'
   import HistoryView from './lib/HistoryView.svelte'
+  import ScriptsView from './lib/ScriptsView.svelte'
   import NotificationsPanel from './lib/NotificationsPanel.svelte'
   import SearchPanel from './lib/SearchPanel.svelte'
 
@@ -171,6 +172,16 @@
       } catch (err) {
         alert(err.message) // invalid or revoked link; fall through to the list
       }
+    } else if (hash.get('scripts')) {
+      // A whole-window script editor. Its own route rather than a flag on the
+      // editor route, because it is a different view of the same document and
+      // has to survive a refresh — this is a URL people will keep open in a
+      // second window all afternoon.
+      const doc = await findDoc(hash.get('scripts'))
+      if (doc && doc.kind === 'sheet') {
+        route = { view: 'scripts', doc }
+        return
+      }
     } else if (hash.get('doc')) {
       const doc = await findDoc(hash.get('doc'))
       if (doc) {
@@ -247,9 +258,13 @@
   // A sheet, and a sheet's history preview, both show grids and want the
   // window's full width. Only the editor also *fills* the height — the
   // history view has its own two-column layout and scrolls normally.
+  // The scripts window joins both lists: it is a code editor, so it wants the
+  // width, and its whole reason for existing is height the drawer could not
+  // give it.
   let wideView = $derived(route.doc?.kind === 'sheet' &&
-    (route.view === 'editor' || route.view === 'history'))
-  let fillView = $derived(route.doc?.kind === 'sheet' && route.view === 'editor')
+    (route.view === 'editor' || route.view === 'history' || route.view === 'scripts'))
+  let fillView = $derived(route.doc?.kind === 'sheet' &&
+    (route.view === 'editor' || route.view === 'scripts'))
 
   async function signOut() {
     await api('/api/logout', { method: 'POST' })
@@ -337,6 +352,10 @@
     <ShareView doc={route.doc} onBack={showList} />
   {:else if route.view === 'history'}
     <HistoryView doc={route.doc} onBack={() => openDoc(route.doc)} />
+  {:else if route.view === 'scripts'}
+    {#key route.doc.id}
+      <ScriptsView doc={route.doc} onBack={() => openDoc(route.doc)} />
+    {/key}
   {/if}
 </div>
 

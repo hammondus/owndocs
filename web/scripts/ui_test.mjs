@@ -404,6 +404,104 @@ try {
     })
   })
 
+  // ---- scripts ---------------------------------------------------------
+  // The scripts pane is the shape this file is for: a list, an editor and an
+  // output region all inside {#if}s, plus a CodeMirror mounted from an
+  // $effect. None of it is reachable from a unit test, and a throw in any of
+  // it presents as a drawer that opens on nothing.
+  let sheetDocId = null
+
+  await step('the scripts drawer lists scripts beside an editor', async () => {
+    sheetDocId = await page.evaluate(() => location.hash.replace('#doc=', ''))
+    await clickText(page, 'button', '⚙ scripts')
+    await page.waitForSelector('.pane .list', { timeout: 5000 })
+    await clickText(page, 'button', '+ new script')
+    // The new script is a row in the sidebar, not an option in a select.
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('.pane .item')].some((b) => b.textContent.includes('Script 1')),
+      { timeout: 5000 },
+    )
+    await page.waitForSelector('.pane .editor .cm-content', { timeout: 5000 })
+  })
+
+  await step('the editor colours JavaScript, from the same lazy grammar', async () => {
+    // The same assertion the fenced-code-block step makes, and for the same
+    // reason: the grammar is fetched at runtime, so "it highlighted" is the
+    // only proof the load actually resolved.
+    await page.waitForFunction(
+      () => {
+        const content = document.querySelector('.pane .editor .cm-content')
+        if (!content) return false
+        const base = getComputedStyle(content).color
+        return [...content.querySelectorAll('span')].some(
+          (s) => s.textContent.trim() && getComputedStyle(s).color !== base,
+        )
+      },
+      { timeout: 10000 },
+    )
+  })
+
+  await step('an edit is saved on a pause, with no blur and no save button', async () => {
+    await page.click('.pane .editor .cm-content')
+    await page.keyboard.type('\nlog("saved by pause")')
+    // Longer than SAVE_DELAY, and the pane is never blurred: if this only
+    // passes because something else committed the buffer, the timer is dead.
+    await new Promise((r) => setTimeout(r, 1400))
+    // Close and reopen: the pane remounts from the document, so what comes
+    // back is what was actually written rather than what is still on screen.
+    await clickSel(page, '[aria-label="Close scripts"]')
+    await clickText(page, 'button', '⚙ scripts')
+    await page.waitForFunction(
+      () => document.querySelector('.pane .editor .cm-content')?.textContent.includes('saved by pause'),
+      { timeout: 5000 },
+    )
+  })
+
+  await step('an on-edit script is held while the editor is open, and says so', async () => {
+    await clickText(page, 'label', 'run on edit')
+    await page.waitForFunction(
+      () => /auto held/.test(document.body.innerText),
+      { timeout: 5000 },
+    )
+    // Closing the drawer releases it — the hold is a state, not a latch.
+    await clickSel(page, '[aria-label="Close scripts"]')
+    await page.waitForFunction(
+      () => !/auto held/.test(document.body.innerText),
+      { timeout: 5000 },
+    )
+  })
+
+  await step('the standalone #scripts route is a second client on the document', async () => {
+    // Navigated rather than popped out: window.open needs real user
+    // activation, which a dispatched click does not grant, so testing the
+    // button would test Chrome's popup blocker. The route is the part that
+    // has to work — the button only calls it.
+    //
+    // The reload is not ceremony: the app routes on load, so going from
+    // #doc=<id> to #scripts=<id> is a fragment-only change that Chrome treats
+    // as a same-document navigation — no load, no re-route, and the assertion
+    // below would sit on the sheet forever. A popped-out window is a fresh
+    // document and does not have this problem.
+    await page.goto(`${BASE}/#scripts=${sheetDocId}`, { waitUntil: 'networkidle0' })
+    await page.reload({ waitUntil: 'networkidle0' })
+    await page.waitForSelector('.pane.standalone .editor .cm-content', { timeout: 8000 })
+    // It syncs through the relay like any other client, so the script written
+    // in the sheet window is here.
+    await page.waitForFunction(
+      () => document.querySelector('.pane .editor .cm-content')?.textContent.includes('saved by pause'),
+      { timeout: 8000 },
+    )
+    check(await page.$('canvas') === null, 'the scripts window is the editor alone, with no grid')
+  })
+
+  await step('closing a scripts tab falls back to the sheet', async () => {
+    // window.close() is a no-op on a tab the script did not open, which is
+    // exactly the case here — so this asserts the fallback, which is the half
+    // that would otherwise strand someone on a page with no way out.
+    await clickText(page, 'button', 'close')
+    await page.waitForSelector('canvas', { timeout: 8000 })
+  })
+
   await step('open a markdown document', async () => {
     await clickSel(page, '[aria-label="Back to documents"]')
     await page.waitForSelector('input[placeholder="new document title"]')
@@ -1924,26 +2022,33 @@ try {
     await page.keyboard.type('1')
     await page.keyboard.press('Enter')
 
-    // A script bound to onEdit that writes to A1. The code goes in by setting
-    // the textarea and dispatching change, because the panel commits on blur
-    // rather than per keystroke and typing a script is not what is being tested.
+    // A script bound to onEdit that writes to A1. Typed into the editor
+    // rather than poked into a textarea: the pane is CodeMirror now, and there
+    // is no value to set. Select-all first, since a new script arrives holding
+    // the worked example.
     await clickText(page, 'button', '⚙ scripts')
-    // The panel shows a hint and no editor until a script exists, so "new"
-    // comes first and the textarea only then.
-    await page.waitForFunction(
-      () => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'new'),
-      { timeout: 5000 },
-    )
-    await clickText(page, 'button', 'new')
-    await page.waitForFunction(() => document.querySelector('textarea')?.value.length > 0, { timeout: 3000 })
-    await page.$eval(
-      'textarea',
-      (el, code) => {
-        el.value = code
-        el.dispatchEvent(new Event('change', { bubbles: true }))
-      },
-      "await docs.set('A1', [['written by a script']])\n",
-    )
+    // The pane shows a hint and no editor until a script exists, so the script
+    // comes first and the editor only then.
+    await page.waitForSelector('.pane .list', { timeout: 5000 })
+    await clickText(page, 'button', '+ new script')
+    await page.waitForSelector('.pane .editor .cm-content', { timeout: 5000 })
+    // execCommand rather than Mod-A: the modifier is Cmd on macOS and Ctrl
+    // elsewhere, and a headless Chrome that swallows either one leaves the
+    // worked example in place — which does not fail here, it fails four
+    // assertions later complaining about D1, a cell this step never mentions.
+    // Selecting through the DOM is platform-free, and CodeMirror follows a
+    // selection change in its own contenteditable.
+    await page.click('.pane .editor .cm-content')
+    await page.evaluate(() => {
+      document.querySelector('.pane .editor .cm-content').focus()
+      document.execCommand('selectAll')
+    })
+    await page.keyboard.type("await docs.set('A1', [['written by a script']])")
+    // Asserted immediately, because the cost of finding this out later is the
+    // confusing failure described above.
+    const code = await page.$eval('.pane .editor .cm-content', (e) => e.textContent)
+    check(!code.includes('D1') && code.includes("docs.set('A1'"),
+      'the worked example was replaced, not appended to')
     // Addressed through its label: the panel has one checkbox today, and a
     // bare input[type=checkbox] would silently start meaning the tint toggle
     // the moment a sheet is protected below it.
@@ -1954,7 +2059,12 @@ try {
       return true
     })
     check(ticked, 'a script can be set to run on edit')
-    await clickText(page, 'button', 'close')
+    // Closing destroys the editor, which flushes the pending save — so this is
+    // also the assertion that a script typed and immediately put away is the
+    // script that runs. And triggers are held while the pane is open, so the
+    // edit below would do nothing if this were left ajar.
+    await clickSel(page, '[aria-label="Close scripts"]')
+    await page.waitForFunction(() => !document.querySelector('.pane'), { timeout: 3000 })
 
     // Mark B as the input column, then protect: now the script's target is
     // locked and the cell that fires it is not.

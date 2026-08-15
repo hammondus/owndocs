@@ -24,7 +24,7 @@
   import { PEERS, peerColor } from '../peers.js'
   import { scheduleCompaction } from '../compaction.js'
   import { makeIndexer } from '../searchindex.js'
-  import ScriptsPanel from './ScriptsPanel.svelte'
+  import ScriptsPane from './ScriptsPane.svelte'
   import FunctionsPanel from './FunctionsPanel.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
   import DocTitle from './DocTitle.svelte'
@@ -58,6 +58,10 @@
   // A change that did not reach the server. Sticky: see the banner below.
   let problem = $state('')
   let peerCount = $state(1)
+  // Bumped on every awareness change. peerCount only moves when someone joins
+  // or leaves, so anything driven by a *field* of an awareness state — today,
+  // "is a script editor open" — needs its own signal.
+  let awareRev = $state(0)
 
   // Why the last thing you tried did nothing. Raised to the app bar rather than
   // rendered here, because the bar's height is fixed: a message appearing and
@@ -169,6 +173,7 @@
     provider.awareness.setLocalStateField('user', { name: me.name, color: myColor })
     provider.awareness.on('change', () => {
       peerCount = provider.awareness.getStates().size
+      awareRev++
       scheduleDraw()
     })
     publishSelection()
@@ -835,8 +840,64 @@
   // Fires only for edits made by THIS client and not by a script — the
   // model enforces both, so the effect is applied once no matter how many
   // people have the sheet open, and a script can never drive itself.
+  // Open the scripts editor in its own window and close the drawer, so only
+  // one editor is ever live on this document from this browser. Both write the
+  // whole {id, name, code} object, so two open editors are two last-writers.
+  //
+  // A named window means a second click focuses the one already open rather
+  // than stacking another. If the popup is blocked, `open` returns null and
+  // the drawer stays where it was — closing it would leave nothing at all.
+  function popOutScripts() {
+    const w = window.open(
+      `#scripts=${doc.id}`,
+      `owndocs-scripts-${doc.id}`,
+      'width=900,height=700',
+    )
+    if (!w) {
+      refuse('Your browser blocked the scripts window. Allow pop-ups for this site, or open it in a tab.', 10000)
+      return
+    }
+    w.focus()
+    showScripts = false
+  }
+
+  // Is a script editor open anywhere on this document — this window's drawer,
+  // or another window that announced itself through awareness?
+  //
+  // Any client, not just mine, and deliberately: a collaborator's half-written
+  // script runs as *me*, which is the worse version of the same hazard. The
+  // cost is that someone leaving the panel open holds my triggers, which is
+  // why the toolbar says so rather than the automation just going quiet.
+  let scriptsOpenSomewhere = $derived.by(() => {
+    if (showScripts) return true
+    // Not `peerCount`: a peer opening the scripts window changes a *field*,
+    // not the number of peers, so the count is unchanged and assigning the
+    // same primitive back to it wakes nothing. awareRev is bumped on every
+    // awareness change, which is the signal this actually needs.
+    void awareRev
+    if (!provider) return false
+    for (const s of provider.awareness.getStates().values()) {
+      if (s?.editingScripts) return true
+    }
+    return false
+  })
+
+  // Worth saying only when there is something to hold. A document with no
+  // on-edit script has nothing suspended, and a label about it would be noise
+  // on the toolbar of every sheet that has ever had a script opened.
+  let triggersHeld = $derived.by(() => {
+    if (!scriptsOpenSomewhere || !workbook) return false
+    void revision // scripts changing is a model change
+    return workbook.listScripts().some((s) => s.trigger === 'onEdit')
+  })
+
   async function runTriggers({ sheetId, keys }) {
     if (readOnly || triggerBusy) return
+    // Held while an editor is open: autosave lands on a pause, so without this
+    // a script caught mid-thought would fire on the next cell you typed in.
+    // Resumes by itself when the editor closes; nothing is queued, because the
+    // edit that would have triggered it is long past by then.
+    if (scriptsOpenSomewhere) return
     const scripts = workbook.listScripts().filter((s) => s.trigger === 'onEdit')
     if (!scripts.length) return
     // Ask only when a trigger would actually fire, so a document with no
@@ -1906,7 +1967,15 @@
     <button disabled={sheetProtected && !overrideOn} onclick={insertChart} title="Chart the selected range">📊 chart</button>
     <button onclick={downloadCsv} title="Download this sheet as CSV">↓ csv</button>
     <button onclick={() => (showFunctions = !showFunctions)} title="What a formula can contain">ƒx formulas</button>
-    <button onclick={() => (showScripts = !showScripts)} title="Scripts">⚙ scripts</button>
+    <!-- The held state is shown, not silent. An on-edit script that quietly
+         stops running looks exactly like one that is broken, and the person
+         who would debug that is the person who left the editor open. -->
+    <button
+      onclick={() => (showScripts = !showScripts)}
+      title={triggersHeld
+        ? 'Scripts — on-edit triggers are held while a script editor is open'
+        : 'Scripts'}
+    >⚙ scripts{triggersHeld ? ' · auto held' : ''}</button>
   </div>
 {/if}
 
@@ -1915,7 +1984,7 @@
 {/if}
 
 {#if showScripts && workbook}
-  <ScriptsPanel {workbook} {readOnly} onClose={() => (showScripts = false)} />
+  <ScriptsPane {workbook} {readOnly} onClose={() => (showScripts = false)} onPopOut={popOutScripts} />
 {/if}
 
 {#if showComments}

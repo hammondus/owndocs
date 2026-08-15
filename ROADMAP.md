@@ -292,6 +292,11 @@ test fails until you do, in both directions.
 
 - Runner scheduling: `cmd/runner` is invoked once per document per script and
   leaves scheduling to cron. Give it a schedule of its own, and edit-watching.
+- Editor affordances the CodeMirror move now makes cheap: completion of the
+  `docs` API, and marking a syntax error before ▶ rather than after.
+  `@codemirror/autocomplete` and `@codemirror/lint` are already in the tree,
+  but only transitively — either would have to be declared first, which is the
+  decision, not the wiring. Not started; the editor is deliberately not an IDE.
 
 ---
 

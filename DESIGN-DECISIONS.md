@@ -2324,6 +2324,62 @@ Other decisions here:
 - Deleting a row or column removes its formats, so a later id occupying
   that position cannot inherit a ghost.
 
+### Plain cells round in decimal, not binary
+
+`0.1+0.2-0.3` is `5.55e-17` and `0.1+0.2=0.3` is FALSE. Both are correct IEEE
+754 and neither is defensible to a user, who typed three decimal numbers and
+expects a decimal answer. The formatter already hid the first-order version of
+this — `fmtNum` trims to 13 significant digits, so `0.1+0.2` has always *read*
+as `0.3` — but a formatter can only fix what it can see. It cannot fix a
+result whose magnitude is the artifact, and it cannot fix a comparison at all.
+
+So `+`, `-` and `*` on plain cells now operate on the operands' decimal images
+and demote once (`decimalOp`, `engine.js`). `fromNumber` recovers each double's
+shortest round-trip decimal — which is exactly what the cell displays — the
+operation happens in `Dec`, and the result converts back to a double.
+`0.1+0.2` becomes the very same double as a typed `0.3`, so the noise is gone
+from the *value*, and the comparison follows for free.
+
+- **This is not the exact path and does not widen it.** The result is a double
+  and still rounds at every step, so a plain cell keeps every limit it had —
+  the 2^53 integer ceiling included. Only the *rounding* is decimal rather than
+  binary. The change lives strictly after the `isDec` branch returns in both
+  `binop` and `sumOf`, so an exact value cannot reach it: verified by diffing
+  every exact-column result across the change, which is unchanged to the digit.
+- **Rejected: snapping near-zero results to zero**, which is what Excel does on
+  the final add/subtract. There is no threshold that works. Compare the result
+  against `ε(|a|+|b|)` and `0.1+0.2-0.3` collapses correctly, but `0.5-0.4-0.1`
+  does not — at the last step the operands are ~0.1 while the error was
+  manufactured earlier from ~0.5, so a last-operation rule cannot see the
+  history that produced the error it is hiding. Widening the constant to catch
+  it starts zeroing genuine one-ULP differences. This is the wall Excel hit;
+  their own guidance still tells users to wrap things in `ROUND`.
+- **No tolerance means small values are safe.** `1e-20 + 2e-20` is `3e-20`, not
+  zero, because nothing is being compared against a threshold — the arithmetic
+  is simply decimal. A snap rule has to special-case this; this does not.
+- **`/` is deliberately left on doubles.** `decDiv` has a 34-significant-digit
+  policy, so routing division would round in decimal and then again in binary
+  for no visible gain.
+- **`SUM` folds in `Dec` and demotes once**, rather than per step. Strictly
+  more accurate than the operator case, since a long column compounds its
+  error where a single operator only makes it once. `AVERAGE` inherits this.
+- **The honest cost: `+` is no longer IEEE addition.**
+  `1-0.9999999999999999` returns `1e-16`, the decimal difference of what the
+  two cells show, rather than `1.1102230246251565e-16`, the binary difference
+  of what they store. For a grid whose users read decimal, agreeing with the
+  decimal is the better answer, but it is a real semantic change and not a
+  rendering trick.
+- **What it cannot fix**, and should not: a value that never had an exact
+  decimal. `1/3*3-1` is `-1e-16` and `SQRT(3)*SQRT(3)-3` is `-4e-16`, because
+  the error is in the operand, not in the operation, and no downstream rounding
+  invents the digits back. That boundary is the reason the exact flag still
+  exists. (`SQRT(2)*SQRT(2)-2` does land on `0`, but by a tie-to-even
+  coincidence in the demotion, not by design — do not read it as a guarantee.)
+- **Cost: ~500ns against ~60ns** for the raw operator, so 100k chained
+  additions go from 6ms to 52ms; ~8µs at extreme exponents, where the BigInt
+  runs to several hundred digits. Both are far under a frame at any cell count
+  this grid renders, which is why there is no magnitude guard.
+
 ### Exact arithmetic is opt-in, per cell, and spreads through formulas
 
 A double is exact for integers only to 2^53-1 (`9007199254740991`, about
@@ -2375,11 +2431,21 @@ functions without an exact implementation have to demote.
   *string* and groups and rounds it losslessly, so the formats mostly just
   stop coercing to `Number`. Scientific notation is computed from the
   digits directly, since a value past ~1e308 has no double to go through.
-- **One visible divergence, and it is the point.** `ROUND(2326.95, 1)` is
-  `2327` in an exact cell and `2326.9` in a plain one — the double stored
-  for `2326.95` is `2326.9499…`, genuinely below the halfway point.
-  Around 4% of two-decimal values sit on the wrong side of a half like
-  this.
+- **`ROUND` agrees across both paths, and that took work.** It is tempting
+  to expect a divergence here — the double stored for `2326.95` really is
+  `2326.9499…`, genuinely below the halfway point, and around 4% of
+  two-decimal values sit on the wrong side of a half like that. But the
+  double path rounds by shifting the point in *string* form
+  (`Number("2326.95e1")`), and that string is the shortest round-trip
+  decimal, which is the number the user typed rather than the binary
+  approximation of it. So `ROUND(2326.95, 1)` is `2327` in a plain cell too,
+  and `ROUND(2.675, 2)` is `2.68` — Excel's answers, not naive binary ones.
+  The paths part only where the double cannot hold the value at all: past
+  2^53, where an exact `12345678901234567890` keeps digits the double lost
+  on entry, and past ~1e21, where the string form goes exponential and the
+  double path returns its input unrounded. That is the ordinary integer
+  ceiling showing through, not a difference in rounding rule, and
+  `sheet_test.mjs` pins both halves so the claim cannot rot again.
 - Values leaving the sheet demote to doubles: charts (a pixel cannot
   express 34 digits, and treating exact cells as non-numeric would punch
   holes in a series) and the script API (scripts compute in JS numbers,
@@ -2417,7 +2483,10 @@ the marker clears the moment it does, which is what makes the markers a
 to-do list instead of permanent decoration.
 
 - **Literals only, deliberately.** This catches lossy *storage*, not lossy
-  *arithmetic*: `0.1` stores perfectly and it is `0.1 + 0.2` that drifts.
+  *arithmetic*: `0.1` stores perfectly, and it is a chain like `1/3*3` that
+  drifts. (`0.1 + 0.2` was the example here until plain cells began rounding
+  in decimal — see above — which removed that whole class. What is left is
+  drift from operands with no exact decimal, which is narrower but real.)
   Catching the second means evaluating the whole dependency graph a second
   time with every input promoted — and *recursively*, since promoting a
   neighbour's already-computed double would hide the very error being looked
@@ -2429,11 +2498,12 @@ to-do list instead of permanent decoration.
   string**, not the value. Comparing values flags every non-terminating
   division, because exact `1/3` has 34 digits and the double has 13.
   Comparing what the cell *shows* also behaves correctly per format for
-  free: `0.1+0.2` stays quiet under `auto` (both read `0.3`) and fires
-  under `plain`, where the noise is actually visible.
+  free: `1/3*3` stays quiet under `auto` (both read `1`) and fires under
+  `plain`, where the noise is actually visible.
 - **Detection does not auto-enable exactness.** It would change results
-  under the user — `ROUND(2326.95, 1)` above is a deliberate divergence, not
-  a bug fix — and because exactness spreads, one auto-promoted cell quietly
+  under the user — a long integer stops being rounded to the double's 17
+  digits, and every total downstream of it moves — and because exactness
+  spreads, one auto-promoted cell quietly
   makes a whole downstream column exact. The marker keeps the opt-in
   property intact while removing the only real failure mode it had. A
   document-level policy ("literals that do not round-trip are created
@@ -2856,6 +2926,68 @@ The split that makes it testable, and that the Go runner will reuse:
   currency and `"=SUM(A1:A2)"` becomes a formula. One rule for humans and
   scripts.
 
+### The scripts editor: two panes, and a window of its own
+
+A `<select>` of script names above a fixed-height `<textarea>` stopped
+scaling at about three scripts: you could not see what existed without
+opening the list, and the editor was as tall as a drawer above a grid can
+be. It is now a sidebar of scripts beside an editor that fills the pane,
+and the same pane can be opened as a whole window.
+
+- **One component, two mountings.** `ScriptsPane.svelte` is the drawer and
+  the window both; `standalone` picks a height and two buttons. The
+  alternative — a compact drawer and a separate full editor — is two
+  implementations of the same surface, and the second one to get a fix is
+  the one nobody is looking at.
+- **The window is a second *client*, not a second view.** `#scripts=<id>`
+  routes to `ScriptsView`, which opens its own `Y.Doc` and `Provider`
+  exactly as `SheetView` does. That is why this needed no new machinery:
+  two windows of your own are the case two collaborators already exercise,
+  and the relay has handled it since the beginning. No `BroadcastChannel`,
+  no shared worker, no cross-window model. It also means the sheet window
+  can be closed without taking the editor with it.
+- **A route rather than a flag on the editor route**, because it must
+  survive a refresh — this is a URL people keep open in a second window all
+  afternoon. Note the app routes on *load*: changing the fragment on a live
+  page does not re-route. Nothing in the UI does that (a pop-out is a fresh
+  document), but a test that navigates by hash has to force a reload, and
+  `ui_test.mjs` says so where it does.
+- **Popping out closes the drawer**, so only one editor from this browser is
+  ever live on a document. Scripts are whole `{id, name, code}` objects in a
+  Y.Map, so two open editors are two last-writers racing. The window is
+  `window.open`ed with a *name*, so a second click focuses the one already
+  open instead of stacking another; a blocked popup leaves the drawer where
+  it was and says why, rather than closing it and showing nothing.
+- **CodeMirror, and the JavaScript grammar was already paid for.** The old
+  comment said a JS mode "is another dependency". It is not:
+  `@codemirror/language-data` is already a declared dep and already a table
+  of lazy imports — it is what highlights a ```js block in a *document*.
+  Asking it for JavaScript costs one dynamic import the first time a script
+  is opened and nothing for anyone who never opens one; the build confirms
+  it as its own 17 kB chunk. The grammar is reached through that table
+  rather than by importing `@codemirror/lang-javascript` directly, which is
+  only in the tree transitively — depending on a hoisted transitive is how a
+  working build breaks on someone else's npm. The highlight *style* is
+  `editor.js`'s exported `codeHighlight`, so a keyword is not two colours in
+  one app.
+- **Not `y-codemirror.next`,** which the markdown editor uses. A script is a
+  whole object in a Y.Map, so there is no `Y.Text` to bind carets to. Giving
+  each script one would change the storage format to buy live co-editing of
+  twenty lines of automation. Scripts still sync; it is per-save rather than
+  per-keystroke.
+- **Saved on a pause (800ms), not on blur.** Blur is fine in a drawer and
+  useless in a window you never leave. Blur still saves, and so does
+  destroy, and so does ▶ run — that last one deliberately, because running
+  what the last pause happened to save rather than what is on screen is an
+  hour lost before anyone suspects the editor.
+- **An arriving change never overwrites unsaved typing.** The mount effect
+  re-runs on *any* document change, including one the pane itself just made:
+  ticking "run on edit" writes the script object, which wakes the effect,
+  which pushed the last saved code back over what was being typed. It
+  presented as a script that ran the worked example instead of the code on
+  screen — a sandbox bug, apparently, until it wasn't. Metadata edits now
+  flush first, and the effect skips a dirty buffer.
+
 ### On-edit triggers
 
 The decisive argument, which the original "no triggers" position missed:
@@ -2896,6 +3028,20 @@ three are enforced in the model rather than left to the caller:
   the UndoManager's tracked set.
 - **Bursts coalesce.** A short debounce turns ten quick edits into one run
   carrying every changed cell, and one trigger runs at a time.
+- **Held while a script editor is open.** Autosave lands on a typing pause,
+  so without this a script caught mid-thought fires on the next cell you
+  type in. "Open" means anywhere on the document, including another window:
+  the scripts window publishes `editingScripts` through *awareness*, which
+  the sheet window already listens to. Any client, not just yours, and
+  deliberately — a collaborator's half-written script would run as **you**,
+  which is the worse version of the same hazard. The cost is that someone
+  leaving the pane open holds your triggers, which is exactly why the
+  toolbar says `auto held` rather than the automation just going quiet: an
+  on-edit script that silently stops looks identical to a broken one.
+  Watched through a dedicated `awareRev` counter, not `peerCount` — a peer
+  opening the editor changes a *field*, not the number of peers, so the
+  count is unchanged and assigning the same primitive back to it wakes
+  nothing.
 
 The event a script receives is the sheet name, the bounding range of the
 change and a cell count — derived from the changed keys, skipping any

@@ -904,7 +904,10 @@ const livePreview = ViewPlugin.fromClass(
 // The colours are custom properties so the light/dark pair sits in app.css
 // with the rest of the app's colours, rather than being compiled into an
 // injected stylesheet where no one would look for them.
-const codeHighlight = HighlightStyle.define([
+// Exported so the script editor colours JavaScript exactly as a ```js block in
+// a document does. One highlight style, or the same keyword is two colours in
+// one app depending on which surface you are looking at.
+export const codeHighlight = HighlightStyle.define([
   { tag: [tags.keyword, tags.controlKeyword, tags.moduleKeyword, tags.definitionKeyword, tags.operatorKeyword, tags.modifier], color: 'var(--tok-keyword)' },
   { tag: [tags.string, tags.special(tags.string), tags.regexp, tags.character], color: 'var(--tok-string)' },
   { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: 'var(--tok-comment)', fontStyle: 'italic' },

@@ -51,8 +51,28 @@ eq(calc('"a"&"b"&1'), 'ab1', 'concat coerces numbers')
 eq(calc('1<2'), true, 'comparison')
 eq(calc('"A"="a"'), true, 'string equality is case-insensitive')
 eq(calc('1="1"'), false, 'number never equals text')
-eq(calc('0.1+0.2'), 0.30000000000000004, 'raw float math')
-eq(fmtNum(0.1 + 0.2), '0.3', 'display formatting hides float noise')
+// `+ - *` operate on the operands' decimal images and demote once, so the
+// noise is gone from the value, not just from the rendering. These pin the
+// user-visible half of that: a total that reads right, and one that compares
+// right — the second is the case a formatter could never have reached.
+eq(calc('0.1+0.2'), 0.3, 'decimal-rounded addition: the same double as a typed 0.3')
+eq(calc('0.1+0.2=0.3'), true, 'so the comparison a spreadsheet user expects holds')
+eq(calc('0.1+0.2-0.3'), 0, 'and cancellation lands on zero, not 5.55e-17')
+eq(calc('0.5-0.4-0.1'), 0, 'including the chained case a last-operation fixup misses')
+eq(calc('1.333+1.225-1.333-1.225'), 0, 'and the one Excel still needs ROUND for')
+eq(calc('0.1*3'), 0.3, '* too, not just the additive ops')
+eq(calc('SUM(0.1,0.2,-0.3)'), 0, 'SUM folds in Dec and demotes once')
+// Small values are untouched, because nothing here is a tolerance: the
+// arithmetic is decimal, so a genuinely tiny result stays tiny.
+eq(calc('0.00000000000000000001+0.00000000000000000002'), 3e-20, 'a real small number is not snapped to zero')
+eq(calc('1-0.9999999999999999'), 1e-16, 'and a real one-ULP gap survives as its decimal difference')
+eq(fmtNum(0.1 + 0.2), '0.3', 'display formatting still hides noise from wherever it survives')
+// The boundary. A value that never had an exact decimal to begin with — the
+// result of `/` or SQRT — carries real error, and no amount of decimal
+// rounding downstream invents the digits back. This is the honest answer, and
+// the reason the exact flag still exists.
+eq(calc('1/3*3-1'), -1e-16, 'error in a non-terminating value survives, as it should')
+eq(calc('SQRT(3)*SQRT(3)-3'), -4e-16, 'and so does error from an irrational one')
 eq(calc('1/0'), '#DIV/0!', 'divide by zero')
 eq(calc('"x"*2'), '#VALUE!', 'text in arithmetic')
 eq(calc('FOO(1)'), '#NAME?', 'unknown function')
@@ -679,6 +699,29 @@ for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A
 }
 
 {
+  // ROUND across both paths. The doc used to claim a rounding-rule divergence
+  // here; there is none, because the double path shifts the point in string
+  // form and that string is the decimal the user typed. Pinned so the claim
+  // cannot drift back: the halves agree on every typable half-way case, and
+  // differ only where a double cannot hold the value at all.
+  const m = newModel()
+  m.setColExact(0, 0, true) // A exact, B plain
+  const both = (row, lit, f) => {
+    m.setCell(row, 0, lit); m.setCell(row, 1, lit)
+    m.setCell(row, 2, f.replace(/#/g, 'A' + (row + 1)))
+    m.setCell(row, 3, f.replace(/#/g, 'B' + (row + 1)))
+    return [m.display(row, 2).text, m.display(row, 3).text]
+  }
+  eq(both(0, '2326.95', '=ROUND(#,1)'), ['2327', '2327'], 'ROUND agrees on the classic binary-half case')
+  eq(both(1, '2.675', '=ROUND(#,2)'), ['2.68', '2.68'], 'and on the other one everyone quotes')
+  eq(both(2, '8.835', '=ROUND(#,2)'), ['8.84', '8.84'], 'and on a third, in case two were luck')
+  eq(both(3, '-2.5', '=ROUND(#)'), ['-3', '-3'], 'half away from zero, both paths')
+  // Where they legitimately part: the double never held these digits.
+  eq(both(4, '12345678901234567890', '=ROUND(#,-1)'),
+    ['12345678901234567890', '12345678901234567000'], 'past 2^53 they differ, on storage not rounding')
+}
+
+{
   const m = newModel()
   m.setColExact(0, 0, true)
   m.setCell(0, 0, '0.1')
@@ -686,7 +729,10 @@ for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A
   m.setCell(2, 0, '=SUM(A1:A2)')
   m.setCell(3, 0, '=A1+A2=0.3')
   eq(m.display(2, 0).text, '0.3', 'a column marked exact covers cells created later')
-  eq(m.display(3, 0).text, 'TRUE', '0.1+0.2 really is 0.3, which doubles deny')
+  // Plain cells now agree with this one (`+` rounds in decimal), so the case
+  // no longer distinguishes the two paths. Kept because exact must not be the
+  // path that regresses: whatever doubles manage, exact has to match.
+  eq(m.display(3, 0).text, 'TRUE', '0.1+0.2 really is 0.3 in an exact column too')
   eq(m.isExact(5, 0), true, 'and rows that do not exist yet')
   m.setExact({ r1: 1, c1: 0, r2: 1, c2: 0 }, false)
   eq(m.isExact(1, 0), false, 'one cell can opt out of an exact column')

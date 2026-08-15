@@ -463,6 +463,36 @@ export function evaluate(ast, ctx) {
   }
 }
 
+// The additive and multiplicative operators, done on the operands' decimal
+// images rather than on their bits.
+//
+// A plain cell holds a double, but that double is a binary approximation of a
+// decimal someone typed. `fromNumber` recovers the shortest round-trip form —
+// which is exactly what the cell shows — so operating there and demoting once
+// makes `0.1+0.2` the very same double as a typed `0.3`. The noise leaves the
+// *value* instead of being hidden by the formatter, which is what fixes the
+// two cases a user actually notices: `0.1+0.2-0.3` is 0, not 5.55e-17, and
+// `=A1+A2=0.3` is TRUE.
+//
+// This is not the exact path and does not widen it. The result is a double and
+// still rounds at every step, so a plain cell keeps every limit it had — the
+// 2^53 integer ceiling included. Only the rounding is decimal instead of
+// binary. `/` is left alone deliberately: decDiv has a 34-digit policy, so
+// routing it would round twice for no visible gain.
+//
+// Costs ~500ns against ~60ns for the raw operator, and up to ~8us at extreme
+// exponents where the BigInt runs to hundreds of digits. Both are far below a
+// frame at any cell count this grid renders.
+const DEC_OPS = { '+': decAdd, '-': decSub, '*': decMul }
+
+// Returns null when there is no decimal to work with (a non-finite operand),
+// which is the caller's cue to fall back to the raw operator.
+function decimalOp(op, a, b) {
+  const x = fromNumber(a), y = fromNumber(b)
+  if (!x || !y) return null
+  return decToNumber(DEC_OPS[op](x, y))
+}
+
 function binop(ast, ctx) {
   const l = evaluate(ast.l, ctx)
   if (isErr(l)) return l
@@ -506,6 +536,11 @@ function binop(ast, ctx) {
   const a = toNum(l), b = toNum(r)
   if (isErr(a)) return a
   if (isErr(b)) return b
+  // Below here both operands are doubles: an exact operand returned above.
+  if (op in DEC_OPS) {
+    const d = decimalOp(op, a, b)
+    if (d !== null) return d
+  }
   switch (op) {
     case '+': return a + b
     case '-': return a - b
@@ -611,6 +646,13 @@ function sumOf(ns) {
     const ds = ns.map(toExact)
     if (ds.every((d) => d && !isErr(d))) return ds.reduce(decAdd, DEC_ZERO)
   }
+  // A fold of plain doubles goes through Dec as well, on the same reasoning as
+  // `+` — and with more to gain, since a column compounds its per-step error
+  // where a single operator only makes it once. One demotion at the end, so
+  // SUM over doubles is now the correctly rounded decimal total rather than a
+  // running binary one. Still a double, and still the double path.
+  const xs = ns.map((v) => fromNumber(toNum(v)))
+  if (xs.every(Boolean)) return decToNumber(xs.reduce(decAdd, DEC_ZERO))
   return ns.reduce((a, b) => toNum(a) + toNum(b), 0)
 }
 
@@ -685,10 +727,17 @@ export const FUNCTIONS = {
     const d0 = args.length === 2 ? toNum(args[1]) : 0
     if (isErr(d0)) return d0
     // An exact value needs none of the string juggling below: it is
-    // already a decimal, so rounding is arithmetic on its digits. Note
-    // this can differ visibly from the double path — 2326.95 is exactly
-    // half here and rounds up, while the double stored for it is
-    // 2326.9499… and rounds down. That divergence IS the feature.
+    // already a decimal, so rounding is arithmetic on its digits.
+    //
+    // The two paths agree on every half-way case a person can type —
+    // ROUND(2326.95,1) is 2327 both ways — because the double path rounds
+    // from the shortest round-trip string, which is the decimal the user
+    // meant, not the binary 2326.9499… underneath it. They part company only
+    // where the double genuinely cannot hold the value: past 2^53 (an exact
+    // 12345678901234567890 keeps its last digits, a double lost them on the
+    // way in) and past ~1e21, where the string form goes exponential and the
+    // double path bails out below. Both are the ordinary integer ceiling, not
+    // a difference in rounding rule.
     if (isDec(args[0])) return decRound(args[0], Math.trunc(d0))
     const x = toNum(args[0])
     if (isErr(x)) return x

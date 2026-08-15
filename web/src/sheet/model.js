@@ -13,11 +13,14 @@
 //   dims  / s.<id>.dims   Y.Map keyed "w.<colId>" / "h.<rowId>" -> px size
 //   fmt   / s.<id>.fmt    Y.Map keyed "rowId.colId" (cell), "c.<colId>",
 //                         "r.<rowId>" -> format record (see format.js)
+//   lock  / s.<id>.lock   Y.Map: the key "protected" holds the sheet flag,
+//                         and every other key is keyed like fmt and marks an
+//                         UNLOCKED exception (see *Sheet protection*)
 //   objects / s.<id>.objects  Y.Map keyed object id -> chart spec
 // and workbook-level:
 //   scripts:     Y.Map keyed script id -> {id, name, code}
 import * as Y from 'yjs'
-import { parseFormula, mapRefs, collectRefs, serialize, evaluate, isErr, ERR, fmtNum } from './engine.js'
+import { parseFormula, mapRefs, collectRefs, serialize, evaluate, isErr, ERR, fmtNum, colName } from './engine.js'
 import { formatNumber, resolveFormat, mergeFormat, parseTypedNumber } from './format.js'
 import { isDec, parseDec, fromNumber, decToNumber, decToString, decAdd, decCmp, decDiv } from './exact.js'
 import { formatDate, isDateFormat } from './dates.js'
@@ -56,12 +59,41 @@ function numberFormatOf(f) {
 
 const sameNumberFormat = (a, b) => a.n === b.n && (a.cur || '') === (b.cur || '')
 
+// A1 names for refusal messages. "B4 is protected" sends you to the cell;
+// "the sheet is protected" sends you looking for which part of it.
+const cellName = (r, c) => colName(c) + (r + 1)
+const rectName = (rect) =>
+  rect.r1 === rect.r2 && rect.c1 === rect.c2
+    ? cellName(rect.r1, rect.c1)
+    : `${cellName(rect.r1, rect.c1)}:${cellName(rect.r2, rect.c2)}`
+
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 function newId() {
   let s = ''
   for (let i = 0; i < 8; i++) s += ALPHABET[Math.floor(Math.random() * 36)]
   return s
 }
+
+// Thrown by every mutator that refuses because a sheet is protected. A throw
+// rather than a silent no-op, and that is the whole design: this codebase has
+// three incidents about a control that looked like it worked and did nothing,
+// and a mutator that quietly declines is the same failure with the evidence
+// removed. The UI asks `canWrite` first and explains, so in normal use nothing
+// ever throws; if one does, a call site was missed and it says so out loud.
+//
+// The script API needs no special handling — the sandbox already turns a thrown
+// error into a message the script author reads.
+export class ProtectedError extends Error {
+  constructor(what) {
+    super(`${what} is protected`)
+    this.name = 'ProtectedError'
+  }
+}
+
+// The flag's key inside the lock map. It cannot collide with an exception key:
+// those are "<rowId>.<colId>", "r.<rowId>" or "c.<colId>" and so always contain
+// a dot, and `newId` draws from lowercase alphanumerics only.
+const PROTECTED_KEY = 'protected'
 
 export const DEFAULT_COL_W = 100
 export const DEFAULT_ROW_H = 24
@@ -89,6 +121,16 @@ export class Workbook {
     // the dispatcher ignores it. Yjs reuses the outermost transaction's
     // origin for nested ones, so wrapping a whole API call is enough.
     this.scriptOrigin = Symbol('script')
+    // "Edit protected cells": the deliberate, visible, temporary override.
+    // Deliberately NOT in the document — it is what *this person* may do right
+    // now, not a property of the sheet, and one collaborator turning it on must
+    // not turn it on for everybody. It resets to false on every reload for the
+    // same reason: an override you have forgotten about is the permanent
+    // invisible bypass this feature was designed to avoid.
+    //
+    // Workbook-level rather than per sheet, because the toggle is one control
+    // on one document view and a formula reaches across tabs.
+    this.overrideProtection = false
     this.editListeners = new Set()
     this._pendingEdit = null
     this._editTimer = 0
@@ -173,6 +215,25 @@ export class Workbook {
 
   tx(fn) {
     this.ydoc.transact(fn, this)
+  }
+
+  // ---- protection ---------------------------------------------------------
+
+  // Turning the override on or off is itself a checkpoint, for the same reason
+  // protecting a sheet is — see `_lockChanged`.
+  setOverrideProtection(on) {
+    on = !!on
+    if (on === this.overrideProtection) return
+    this.overrideProtection = on
+    this.undo.clear()
+    this.notify()
+  }
+
+  // Whether any sheet in the workbook is protected. What `restoreFrom` and
+  // `removeSheet` ask, since both act on a sheet wholesale.
+  anyProtected() {
+    if (this.overrideProtection) return false
+    return this.list().some((s) => this.sheet(s.id).isProtected())
   }
 
   // The tab list. Duplicates are dropped rather than repaired: two clients
@@ -284,6 +345,12 @@ export class Workbook {
   // from the tab order rather than emptied, matching removeSheet: undo
   // stays cheap and nothing is destroyed that a later restore might want.
   restoreFrom(snapshot) {
+    // A restore is a wholesale replace, so it would go straight through any
+    // per-cell check that is not on its path — which is exactly what this is.
+    // Refused if ANY sheet is protected, not just the ones the snapshot
+    // touches: a restore also replaces the tab order, so a protected sheet can
+    // be unlinked by a restore that never writes a cell of it.
+    if (this.anyProtected()) throw new ProtectedError('this workbook')
     // Every sheet either side knows about: the snapshot's sheets get their
     // contents back, and any sheet created since is left behind when the
     // tab order is replaced.
@@ -305,6 +372,11 @@ export class Workbook {
         // change what the document computes — the one failure this whole
         // feature exists to prevent.
         copyMap(src.exact, dst.exact)
+        // Protection travels with the cells it applies to, by the same
+        // argument as exactness: restoring a sheet to a point before it was
+        // protected must actually unprotect it, or the restored inputs are
+        // locked against the person who just restored them.
+        copyMap(src.lock, dst.lock)
         copyMap(src.objects, dst.objects)
         dst._invalidate()
       }
@@ -313,11 +385,26 @@ export class Workbook {
       this.valueCache.clear()
       this.lossyCache.clear()
     })
+    // A restore can *introduce* protection — the snapshot may be from a point
+    // when a sheet was protected — and it gets there by copying the lock map
+    // wholesale, so `setProtected` never runs and the checkpoint it would have
+    // made never happens. Without this, the stack from before the restore
+    // survives and could be rewound into cells that are protected now.
+    //
+    // Only when the result is protected, so an ordinary restore stays a single
+    // undoable step, which is what the history view promises.
+    if (this.anyProtected()) this.undo.clear()
   }
 
   removeSheet(id) {
     const ids = this.list()
     if (ids.length <= 1) return false
+    // The structural argument at sheet scale: unlinking a protected sheet takes
+    // every protected cell on it out of the tab order at once, and there is no
+    // useful sense in which that is allowed when editing one of them is not.
+    if (!this.overrideProtection && this.sheet(id).isProtected()) {
+      throw new ProtectedError(this.nameOf(id))
+    }
     this.tx(() => {
       if (this.sheetIds.length === 0) {
         for (const s of ids) if (s.id !== id) this.sheetIds.push([s.id])
@@ -353,12 +440,25 @@ export class SheetModel {
     // Folding it in would put "clear formatting" in a position to silently
     // change what a column adds up to.
     this.exact = this.ydoc.getMap(p + 'exact')
+    // Which cells may be written while the sheet is protected, plus the
+    // protection flag itself under PROTECTED_KEY. Keyed exactly like fmt and
+    // exact, so "these two columns are the inputs" is two entries.
+    //
+    // The map holds the *exceptions*, and the default is locked — Excel's shape
+    // and the right way round for the sheets that asked for this, which are
+    // mostly formulas with a short list of inputs. See DESIGN-DECISIONS.md,
+    // *Sheet protection*.
+    this.lock = this.ydoc.getMap(p + 'lock')
     // Charts (and whatever floats over the grid later) keyed by object id.
     // A Map rather than an Array because concurrent inserts of different
     // ids never conflict, and nothing here needs an order.
     this.objects = this.ydoc.getMap(p + 'objects')
     this.indexesStale = true
 
+    // `lock` is deliberately absent from the undo scope. Protection is not an
+    // edit, it is a checkpoint on edits — and an undo that could unprotect a
+    // sheet would be a way through the guard rather than a thing the guard
+    // covers. Changing it clears the stack instead; see `_lockChanged`.
     workbook.undo.addToScope([this.rows, this.cols, this.cells, this.dims, this.fmt, this.exact, this.objects])
 
     const structural = () => { this._invalidate(); workbook.notify() }
@@ -377,6 +477,9 @@ export class SheetModel {
     // computing exactly has a different result to recompute, and so does
     // everything downstream of it.
     this.exact.observe(contents)
+    // Protection changes what may be written and how a cell is tinted, never
+    // what anything computes — so this is a repaint, like fmt, not a recompute.
+    this.lock.observe(() => workbook.notify())
     this.objects.observe(() => workbook.notify())
   }
 
@@ -541,6 +644,7 @@ export class SheetModel {
   }
 
   setExact(rect, on) {
+    this._guardRect(rect)
     this.tx(() => {
       this.ensureSize(rect.r2, rect.c2)
       this._index()
@@ -554,6 +658,7 @@ export class SheetModel {
   }
 
   setColExact(c1, c2, on) {
+    this._guardCols(c1, c2)
     this.tx(() => {
       this.ensureSize(0, c2)
       this._index()
@@ -564,6 +669,7 @@ export class SheetModel {
   }
 
   setRowExact(r1, r2, on) {
+    this._guardRows(r1, r2)
     this.tx(() => {
       this.ensureSize(r2, 0)
       this._index()
@@ -571,6 +677,199 @@ export class SheetModel {
         if (this.rowIds[r]) this._setExactKey('r.' + this.rowIds[r], on)
       }
     })
+  }
+
+  // ---- protection ---------------------------------------------------------
+  //
+  // Not a security boundary, and it must never be described as one. `ws.go`
+  // checks the role on a document write and then stores opaque bytes; the
+  // server never looks inside an update, so it cannot tell which cells one
+  // touched. Anyone with editor access and a browser console can write whatever
+  // they like. What is real and server-enforced is that a viewer or commenter
+  // cannot write at all. This layer stops the accident, and an accident is not
+  // committed through devtools.
+
+  isProtected() {
+    return !!this.lock.get(PROTECTED_KEY)
+  }
+
+  // Neither this nor the setUnlocked family is guarded, and that is deliberate
+  // rather than an omission: these ARE the protection. A guard that covered
+  // them would be a lock with the key inside it, and there would be no way to
+  // turn protection off. What gates them is role — manager and above — which
+  // lives in the UI, because there is no server-side place to put it for the
+  // same reason the rest of this is client-side.
+  setProtected(on) {
+    on = !!on
+    if (on === this.isProtected()) return
+    this.tx(() => {
+      if (on) this.lock.set(PROTECTED_KEY, 1)
+      else this.lock.delete(PROTECTED_KEY)
+    })
+    this._lockChanged()
+  }
+
+  // Cell over row over column, the same precedence formats and exactness use,
+  // so one cell can be locked inside an otherwise unlocked column.
+  isUnlocked(r, c) {
+    this._index()
+    const rid = this.rowIds[r], cid = this.colIds[c]
+    if (rid && cid) return this._isUnlockedById(rid, cid)
+    // Past the materialised grid there is no cell record to consult, but a row
+    // or column default still describes what a cell created there will be —
+    // and a paste routinely lands beyond the last materialised row.
+    if (rid) {
+      const row = this.lock.get('r.' + rid)
+      if (row !== undefined) return !!row
+    }
+    return cid ? !!this.lock.get('c.' + cid) : false
+  }
+
+  // An explicit false on the cell has to beat an inherited true, so this tests
+  // for presence rather than truthiness at each level — a cell can be locked
+  // back inside an unlocked column.
+  _isUnlockedById(rid, cid) {
+    const own = this.lock.get(rid + '.' + cid)
+    if (own !== undefined) return !!own
+    const row = this.lock.get('r.' + rid)
+    if (row !== undefined) return !!row
+    return !!this.lock.get('c.' + cid)
+  }
+
+  // `on` is true, false, or null to clear the entry and fall back to whatever
+  // the row or column says. Stored as 1/0 like `exact`, to keep the payload
+  // small — every marked cell crosses the wire.
+  _setLockKey(key, on) {
+    if (on === null || on === undefined) this.lock.delete(key)
+    else this.lock.set(key, on ? 1 : 0)
+  }
+
+  setUnlocked(rect, on) {
+    this.tx(() => {
+      this.ensureSize(rect.r2, rect.c2)
+      this._index()
+      for (let r = rect.r1; r <= rect.r2; r++) {
+        for (let c = rect.c1; c <= rect.c2; c++) {
+          const rid = this.rowIds[r], cid = this.colIds[c]
+          if (rid && cid) this._setLockKey(rid + '.' + cid, on)
+        }
+      }
+    })
+    this._lockChanged()
+  }
+
+  setColUnlocked(c1, c2, on) {
+    this.tx(() => {
+      this.ensureSize(0, c2)
+      this._index()
+      for (let c = c1; c <= c2; c++) {
+        if (this.colIds[c]) this._setLockKey('c.' + this.colIds[c], on)
+      }
+    })
+    this._lockChanged()
+  }
+
+  setRowUnlocked(r1, r2, on) {
+    this.tx(() => {
+      this.ensureSize(r2, 0)
+      this._index()
+      for (let r = r1; r <= r2; r++) {
+        if (this.rowIds[r]) this._setLockKey('r.' + this.rowIds[r], on)
+      }
+    })
+    this._lockChanged()
+  }
+
+  // Any change to what is protected clears the undo stack, and this is the
+  // answer to "an undo that restores a protected cell is a write to one".
+  //
+  // The guard cannot reach an undo: `Y.UndoManager` reverts a StackItem
+  // straight onto the Yjs types, so no model method runs and there is nowhere
+  // to put a check. Inspecting a stack item is not a way out either — it holds
+  // DeleteSets keyed by client, not the cell keys a check would need.
+  //
+  // Clearing closes the hole completely instead of narrowing it: an entry can
+  // only have been created by a mutator that was allowed at the time, so if the
+  // rules have not changed since, no entry can write anywhere it should not.
+  // Changing the rules is exactly when we clear.
+  //
+  // The cost, stated because it is real: the stack is workbook-wide, so
+  // protecting one sheet drops undo history for edits made to another. That is
+  // the price of an airtight answer over a partial one, and protecting a sheet
+  // is a deliberate act at a natural stopping point.
+  _lockChanged() {
+    this.wb.undo.clear()
+  }
+
+  // ---- the guard ----------------------------------------------------------
+  //
+  // Every public mutator that writes cell content, formatting, exactness or a
+  // chart consults one of these. `sheet_test.mjs` enumerates the prototype and
+  // fails on any public method it cannot find in either the guarded list or the
+  // exempt one, so the next mutator added has to be classified rather than
+  // quietly let through.
+
+  // Whether this sheet accepts writes at all. Everything else is a refinement.
+  _unguarded() {
+    return this.wb.overrideProtection || !this.isProtected()
+  }
+
+  canWrite(r, c) {
+    return this._unguarded() || this.isUnlocked(r, c)
+  }
+
+  // A rect is writable only if every cell in it is. Cheap in the case that
+  // matters: on a protected sheet the default is locked, so the first cell
+  // usually decides it, and on an unprotected sheet there is no scan at all.
+  canWriteRect(rect) {
+    if (this._unguarded()) return true
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      for (let c = rect.c1; c <= rect.c2; c++) {
+        if (!this.isUnlocked(r, c)) return false
+      }
+    }
+    return true
+  }
+
+  // What is governed by the sheet rather than by any one cell: structural
+  // row/column work, and charts.
+  //
+  // Inserting or deleting a row takes protected cells with it — or shifts them
+  // out from under the formulas that name them — so structural work is blocked
+  // outright while the sheet is protected, unlocked exceptions notwithstanding.
+  // A chart is an overlay: it reads a data range and writes to none of it, so
+  // guarding it against that range would describe the wrong relationship. It
+  // belongs to the sheet, and the sheet's flag is what decides.
+  //
+  // The override lifts both: with "edit protected cells" on you have said you
+  // know what you are doing, and refusing then would be a rule with no reason
+  // left behind it.
+  canRestructure() {
+    return this._unguarded()
+  }
+
+  // The three throwing forms. `what` names the cell or range in the message,
+  // because "the sheet is protected" sends you looking for which part of it.
+  _guardCell(r, c) {
+    if (!this.canWrite(r, c)) throw new ProtectedError(cellName(r, c))
+  }
+
+  _guardRect(rect) {
+    if (!this.canWriteRect(rect)) throw new ProtectedError(rectName(rect))
+  }
+
+  _guardSheet() {
+    if (!this.canRestructure()) throw new ProtectedError(this.wb.nameOf(this.id))
+  }
+
+  // Column and row defaults reach every cell in the span, including rows nobody
+  // has created yet, so the whole materialised extent has to be writable.
+  _guardCols(c1, c2) {
+    this._guardRect({ r1: 0, c1, r2: Math.max(0, this.rows.length - 1), c2 })
+  }
+
+  _guardRows(r1, r2) {
+    this._guardRect({ r1, c1: 0, r2, c2: Math.max(0, this.cols.length - 1) })
   }
 
   // ---- precision warnings -------------------------------------------------
@@ -631,6 +930,7 @@ export class SheetModel {
   // Apply a format patch to every cell in a rect. A key set to null (or
   // false) is removed, which is how the toolbar toggles bold off.
   setFormat(rect, patch) {
+    this._guardRect(rect)
     this.tx(() => {
       this.ensureSize(rect.r2, rect.c2)
       this._index()
@@ -647,6 +947,7 @@ export class SheetModel {
   // is one entry that also covers rows nobody has created yet — writing a
   // record per cell would cover neither.
   setColFormat(c1, c2, patch) {
+    this._guardCols(c1, c2)
     this.tx(() => {
       this.ensureSize(0, c2)
       this._index()
@@ -657,6 +958,7 @@ export class SheetModel {
   }
 
   setRowFormat(r1, r2, patch) {
+    this._guardRows(r1, r2)
     this.tx(() => {
       this.ensureSize(r2, 0)
       this._index()
@@ -670,6 +972,7 @@ export class SheetModel {
   // fully cover it — otherwise "clear formatting" would visibly do nothing
   // on a cell whose look came from its column.
   clearFormat(rect) {
+    this._guardRect(rect)
     this.tx(() => {
       this._index()
       for (let r = rect.r1; r <= rect.r2; r++) {
@@ -703,6 +1006,7 @@ export class SheetModel {
   // it extends the chart and moving data around never silently re-points
   // it at the wrong cells — the same reason formulas store ids.
   addChart(rect, spec = {}) {
+    this._guardSheet()
     this._index()
     const r1 = this.rowIds[rect.r1], r2 = this.rowIds[rect.r2]
     const c1 = this.colIds[rect.c1], c2 = this.colIds[rect.c2]
@@ -722,6 +1026,7 @@ export class SheetModel {
   }
 
   updateChart(id, patch) {
+    this._guardSheet()
     const cur = this.objects.get(id)
     if (!cur) return
     // Whole-object replace: per-chart last-writer-wins. Charts are edited
@@ -731,6 +1036,7 @@ export class SheetModel {
   }
 
   removeChart(id) {
+    this._guardSheet()
     this.tx(() => this.objects.delete(id))
   }
 
@@ -824,6 +1130,7 @@ export class SheetModel {
   // everything else is stored verbatim. Refs beyond the materialized grid
   // materialize it (=Z100 on an empty sheet must mean something durable).
   setCell(r, c, text) {
+    this._guardCell(r, c)
     text = String(text)
     if (text === '') {
       this._index()
@@ -1115,6 +1422,13 @@ export class SheetModel {
     if (!h || !w) return
     const nr = Math.max(rows || 0, h)
     const nc = Math.max(cols || 0, w)
+    // Guarded against the region actually written, which is not the argument:
+    // `rows`/`cols` can tile the block out past the values supplied, and
+    // `clear` wipes a separate rect. Both are writes, so both are checked, and
+    // checked BEFORE the transaction opens so a refusal leaves nothing half
+    // applied.
+    this._guardRect({ r1: r, c1: c, r2: r + nr - 1, c2: c + nc - 1 })
+    if (clear) this._guardRect(clear)
     this.tx(() => {
       // Grow once for the whole rectangle before writing anything. Without
       // this, `setCell` grows the sheet a row at a time and each growth
@@ -1164,6 +1478,18 @@ export class SheetModel {
     const up = dest.r1 < src.r1
     const right = dest.c2 > src.c2
     const left = dest.c1 < src.c1
+    // Only the part of `dest` outside `src` is written — the source cells are
+    // read. Guarding the whole of `dest` would refuse the ordinary case of
+    // dragging a locked formula down into unlocked rows, which is a thing this
+    // feature exists to *allow*.
+    if (!this._unguarded()) {
+      const inSrc = (r, c) => r >= src.r1 && r <= src.r2 && c >= src.c1 && c <= src.c2
+      for (let r = dest.r1; r <= dest.r2; r++) {
+        for (let c = dest.c1; c <= dest.c2; c++) {
+          if (!inSrc(r, c) && !this.isUnlocked(r, c)) throw new ProtectedError(cellName(r, c))
+        }
+      }
+    }
     this.tx(() => {
       if (down || up) {
         for (let c = src.c1; c <= src.c2; c++) {
@@ -1392,6 +1718,7 @@ export class SheetModel {
   // ---- structure ----------------------------------------------------------
 
   insertRows(at, n = 1) {
+    this._guardSheet()
     this.tx(() => {
       this.ensureSize(at - 1, 0)
       this.rows.insert(Math.min(at, this.rows.length), Array.from({ length: n }, newId))
@@ -1400,6 +1727,7 @@ export class SheetModel {
   }
 
   insertCols(at, n = 1) {
+    this._guardSheet()
     this.tx(() => {
       this.ensureSize(0, at - 1)
       this.cols.insert(Math.min(at, this.cols.length), Array.from({ length: n }, newId))
@@ -1408,6 +1736,7 @@ export class SheetModel {
   }
 
   deleteRows(at, n = 1) {
+    this._guardSheet()
     this._index()
     const ids = this.rowIds.slice(at, at + n)
     if (ids.length === 0) return
@@ -1422,15 +1751,25 @@ export class SheetModel {
       for (const key of [...this.fmt.keys()]) {
         if (ids.includes(key.split('.')[0])) this.fmt.delete(key)
       }
+      // Unlocked exceptions go with the cells they named. Left behind, they
+      // would be dead keys that a new row reusing the id — ids are random, so
+      // never in practice — could inherit. The real reason is smaller and
+      // certain: the map is what the tint is drawn from, and a growing pile of
+      // keys for rows that no longer exist crosses the wire on every sync.
+      for (const key of [...this.lock.keys()]) {
+        if (ids.includes(key.split('.')[0])) this.lock.delete(key)
+      }
       for (const id of ids) {
         this.dims.delete('h.' + id)
         this.fmt.delete('r.' + id)
+        this.lock.delete('r.' + id)
       }
     })
     this._invalidate()
   }
 
   deleteCols(at, n = 1) {
+    this._guardSheet()
     this._index()
     const ids = this.colIds.slice(at, at + n)
     if (ids.length === 0) return
@@ -1443,9 +1782,13 @@ export class SheetModel {
       for (const key of [...this.fmt.keys()]) {
         if (ids.includes(key.split('.')[1])) this.fmt.delete(key)
       }
+      for (const key of [...this.lock.keys()]) {
+        if (ids.includes(key.split('.')[1])) this.lock.delete(key)
+      }
       for (const id of ids) {
         this.dims.delete('w.' + id)
         this.fmt.delete('c.' + id)
+        this.lock.delete('c.' + id)
       }
     })
     this._invalidate()

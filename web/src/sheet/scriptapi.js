@@ -56,6 +56,26 @@ function target(wb, args, what = 'range') {
   return { m: resolveSheet(wb, rect, args?.sheet), rect }
 }
 
+// Protection, checked for the WHOLE block before anything is written.
+//
+// The model guards each mutator before it opens its transaction, so a single
+// call is all-or-nothing. These two handlers wrap a loop of setCell in one
+// transaction of their own, and Yjs commits what already happened when the
+// throw goes through — so without this, a script writing a block across a
+// locked boundary left half of it applied.
+//
+// Reports the first blocked cell rather than the range: the script author is
+// looking for which cell stopped them, and naming the whole block makes them
+// hunt for it.
+function requireWritable(m, rect) {
+  if (m.canWriteRect(rect)) return
+  for (let r = rect.r1; r <= rect.r2; r++) {
+    for (let c = rect.c1; c <= rect.c2; c++) {
+      if (!m.canWrite(r, c)) throw new ScriptError(`${formatA1(r, c)} is protected`)
+    }
+  }
+}
+
 // A 2D array of values, whatever the caller passed: a bare value becomes
 // one cell, a flat array becomes one row.
 function grid(values) {
@@ -106,6 +126,7 @@ export const METHODS = {
     if (!rows.length) return 0
     const cells = rows.length * rows[0].length
     if (cells > MAX_CELLS) throw new ScriptError(`too many cells in one write (${cells})`)
+    requireWritable(m, { r1: rect.r1, c1: rect.c1, r2: rect.r1 + rows.length - 1, c2: rect.c1 + rows[0].length - 1 })
     m.tx(() => {
       for (let i = 0; i < rows.length; i++) {
         for (let j = 0; j < rows[i].length; j++) {
@@ -128,6 +149,7 @@ export const METHODS = {
 
   clear(wb, args) {
     const { m, rect } = target(wb, args)
+    requireWritable(m, rect)
     m.tx(() => {
       for (let r = rect.r1; r <= rect.r2; r++) {
         for (let c = rect.c1; c <= rect.c2; c++) m.setCell(r, c, '')

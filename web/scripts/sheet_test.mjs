@@ -1927,6 +1927,284 @@ eq([canEdit(''), canEdit(undefined), canComment('nonsense')], [false, false, fal
     'the readout and the formula it stands in for are denominated alike')
 }
 
+// ---- sheet protection -----------------------------------------------------
+//
+// The deliverable here is not the feature, it is this sweep. Every write path
+// has to consult the guard and missing one is a silent hole, so the lists below
+// are checked against the prototype by reflection: a public method that appears
+// in neither fails the run, which is what makes the next mutator safe to add.
+//
+// See DESIGN-DECISIONS.md, *Sheet protection*.
+
+const ok = (what) => console.log('ok:', what)
+const fail = (what, detail) => { failures++; console.error(`FAIL: ${what}${detail ? '\n  ' + detail : ''}`) }
+
+function throws(fn, re, what) {
+  try {
+    fn()
+  } catch (e) {
+    return re.test(e.message) ? ok(what) : fail(what, `threw ${JSON.stringify(e.message)}, wanted ${re}`)
+  }
+  fail(what, 'did not throw')
+}
+
+function noThrow(fn, what) {
+  try { fn(); ok(what) } catch (e) { fail(what, `threw ${JSON.stringify(e.message)}`) }
+}
+
+// A sheet with content, one unlocked input column (B), and protection on.
+function protectedSheet() {
+  const wb = new Workbook(new Y.Doc())
+  const m = wb.sheet(FIRST_SHEET)
+  m.setCell(0, 0, '=B1*2')
+  m.setCell(0, 1, '10')
+  m.setCell(3, 3, 'corner') // materialises out to D4, so spans have extent
+  m.setColUnlocked(1, 1, true)
+  m.setProtected(true)
+  return { wb, m }
+}
+
+{
+  const { m } = protectedSheet()
+  eq(m.isProtected(), true, 'a sheet reports itself protected')
+  eq([m.isUnlocked(0, 0), m.isUnlocked(0, 1)], [false, true], 'locked by default, unlocked by exception')
+  eq([m.canWrite(0, 0), m.canWrite(0, 1)], [false, true], 'and canWrite agrees')
+  // Beyond the materialised grid the column default still decides — a paste
+  // routinely lands past the last row.
+  eq(m.canWrite(500, 1), true, 'a column exception reaches rows that do not exist yet')
+  eq(m.canWrite(500, 0), false, 'and a locked column still refuses there')
+
+  // Cell beats row beats column, so one cell can be locked back inside an
+  // unlocked column.
+  m.setUnlocked({ r1: 2, c1: 1, r2: 2, c2: 1 }, false)
+  eq(m.canWrite(2, 1), false, 'a cell can be locked back inside an unlocked column')
+}
+
+// The sweep. Each entry is a call that must be refused on the protected sheet
+// above, and — for the ones that have an unlocked target — a call that must be
+// allowed, so the guard is shown to be a gate rather than a wall.
+const GUARDED = {
+  setCell: (m) => m.setCell(0, 0, 'x'),
+  setCellShifted: (m) => m.setCellShifted(0, 0, '=Z1', 1, 0),
+  writeRect: (m) => m.writeRect(0, 0, [['x']]),
+  fill: (m) => m.fill({ r1: 0, c1: 0, r2: 0, c2: 0 }, { r1: 0, c1: 0, r2: 4, c2: 0 }),
+  setFormat: (m) => m.setFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }, { b: 1 }),
+  setColFormat: (m) => m.setColFormat(0, 0, { b: 1 }),
+  setRowFormat: (m) => m.setRowFormat(0, 0, { b: 1 }),
+  clearFormat: (m) => m.clearFormat({ r1: 0, c1: 0, r2: 0, c2: 0 }),
+  setExact: (m) => m.setExact({ r1: 0, c1: 0, r2: 0, c2: 0 }, true),
+  setColExact: (m) => m.setColExact(0, 0, true),
+  setRowExact: (m) => m.setRowExact(0, 0, true),
+  addChart: (m) => m.addChart({ r1: 0, c1: 0, r2: 1, c2: 1 }),
+  updateChart: (m) => m.updateChart('nosuch', { title: 'x' }),
+  removeChart: (m) => m.removeChart('nosuch'),
+  insertRows: (m) => m.insertRows(0, 1),
+  insertCols: (m) => m.insertCols(0, 1),
+  deleteRows: (m) => m.deleteRows(0, 1),
+  deleteCols: (m) => m.deleteCols(0, 1),
+}
+
+// Public methods that write nothing a protection rule could be about, each
+// with the reason it is exempt rather than merely absent.
+const EXEMPT = {
+  // Readers.
+  onChange: 'reader', watchRange: 'reader', tx: 'plumbing', rowCount: 'reader',
+  colCount: 'reader', idsAt: 'reader', posOf: 'reader', cellFormat: 'reader',
+  formatOf: 'reader', isExact: 'reader', lossyLiteral: 'reader', charts: 'reader',
+  chartRect: 'reader', getRaw: 'reader', getInput: 'reader', rectFormat: 'reader',
+  usedRect: 'reader', toGrid: 'reader', readRect: 'reader', getValue: 'reader',
+  display: 'reader', stats: 'reader', colWidth: 'reader', rowHeight: 'reader',
+  // The protection API itself. Guarding these would be a lock with the key
+  // inside it: there would be no way to turn protection off. Role is what
+  // gates them, in the UI.
+  isProtected: 'is the protection', setProtected: 'is the protection',
+  isUnlocked: 'is the protection', setUnlocked: 'is the protection',
+  setColUnlocked: 'is the protection', setRowUnlocked: 'is the protection',
+  canWrite: 'is the protection', canWriteRect: 'is the protection',
+  canRestructure: 'is the protection',
+  // Materialising row and column ids is internal bookkeeping that every
+  // guarded writer does on its own behalf. Guarding it would refuse a legal
+  // write into an unlocked cell past the end of the grid.
+  ensureSize: 'internal materialisation',
+  // Appearance, and it cannot destroy a formula. Excel blocks resizing under
+  // protection; this deliberately does not, because the accident this feature
+  // exists to prevent is an overwritten formula, not a narrow column.
+  setColWidth: 'appearance only',
+}
+
+{
+  const names = Object.getOwnPropertyNames(SheetModel.prototype)
+    .filter((n) => n !== 'constructor' && !n.startsWith('_'))
+    .filter((n) => typeof Object.getOwnPropertyDescriptor(SheetModel.prototype, n).value === 'function')
+  const unclassified = names.filter((n) => !(n in GUARDED) && !(n in EXEMPT))
+  eq(unclassified, [], 'every public SheetModel method is classified guarded or exempt')
+  const stale = [...Object.keys(GUARDED), ...Object.keys(EXEMPT)].filter((n) => !names.includes(n))
+  eq(stale, [], 'and neither list names a method that no longer exists')
+}
+
+for (const [name, call] of Object.entries(GUARDED)) {
+  const { m } = protectedSheet()
+  const before = m.ydoc.getMap('cells').toJSON()
+  throws(() => call(m), /protected/, `${name} refuses on a protected sheet`)
+  eq(m.ydoc.getMap('cells').toJSON(), before, `${name} wrote nothing`)
+}
+
+{
+  // The gate opens for the unlocked column. Column B is the input column, so
+  // each of these is the same call the sweep just saw refused, aimed one
+  // column right.
+  const { m } = protectedSheet()
+  noThrow(() => m.setCell(0, 1, '42'), 'setCell is allowed in an unlocked cell')
+  noThrow(() => m.setFormat({ r1: 0, c1: 1, r2: 0, c2: 1 }, { b: 1 }), 'so is formatting it')
+  noThrow(() => m.setExact({ r1: 0, c1: 1, r2: 0, c2: 1 }, true), 'and marking it exact')
+  eq(m.getRaw(0, 1), '42', 'and the write landed')
+  // Dragging a locked formula down into unlocked cells is the case that would
+  // break if `fill` guarded the whole destination rather than what it writes.
+  m.setColUnlocked(0, 0, true)
+  m.setUnlocked({ r1: 0, c1: 0, r2: 0, c2: 0 }, false)
+  noThrow(
+    () => m.fill({ r1: 0, c1: 0, r2: 0, c2: 0 }, { r1: 0, c1: 0, r2: 3, c2: 0 }),
+    'fill reads a locked source into unlocked targets',
+  )
+}
+
+{
+  // The override: deliberate, visible, and total while it is on.
+  const { wb, m } = protectedSheet()
+  wb.setOverrideProtection(true)
+  noThrow(() => m.setCell(0, 0, 'now allowed'), 'the override lets a protected cell be written')
+  noThrow(() => m.insertRows(0, 1), 'and lifts the structural block too')
+  eq(m.canWrite(0, 0), true, 'canWrite says so as well, so the UI agrees with the guard')
+  wb.setOverrideProtection(false)
+  throws(() => m.setCell(0, 0, 'x'), /protected/, 'and turning it off restores the guard')
+}
+
+{
+  // The message names the cell, because "the sheet is protected" sends you
+  // looking for which part of it.
+  const { m } = protectedSheet()
+  throws(() => m.setCell(3, 2, 'x'), /^C4 is protected$/, 'a refusal names the cell in A1 notation')
+  throws(() => m.setFormat({ r1: 0, c1: 0, r2: 1, c2: 2 }, { b: 1 }), /^A1:C2 is protected$/, 'and a range as a range')
+}
+
+{
+  // Workbook-level: the two paths that act on a sheet wholesale.
+  const { wb } = protectedSheet()
+  const snapshot = new Workbook(new Y.Doc())
+  snapshot.sheet(FIRST_SHEET).setCell(0, 0, 'from the past')
+  throws(() => wb.restoreFrom(snapshot), /protected/, 'restoreFrom refuses onto a protected workbook')
+  // getInput, not getRaw: a stored formula holds row/col *ids*, and reading the
+  // storage form here would assert on ids that are regenerated every run.
+  eq(wb.sheet(FIRST_SHEET).getInput(0, 0), '=B1*2', 'and the sheet is untouched')
+
+  const second = wb.addSheet('Second')
+  throws(() => wb.removeSheet(FIRST_SHEET), /protected/, 'removeSheet refuses a protected sheet')
+  noThrow(() => wb.removeSheet(second), 'but not an unprotected one')
+
+  wb.setOverrideProtection(true)
+  noThrow(() => wb.restoreFrom(snapshot), 'and the override lifts the restore block')
+}
+
+{
+  // Protection travels with a restore, by the same argument exactness does:
+  // restoring to a point before the sheet was protected must actually
+  // unprotect it, or the restored inputs are locked against whoever restored
+  // them.
+  const wb = new Workbook(new Y.Doc())
+  wb.sheet(FIRST_SHEET).setCell(0, 0, 'a')
+  const snapshot = new Workbook(new Y.Doc())
+  snapshot.sheet(FIRST_SHEET).setCell(0, 0, 'a')
+  snapshot.sheet(FIRST_SHEET).setProtected(true)
+  eq(wb.undo.undoStack.length > 0, true, 'there is a stack before the restore')
+  wb.restoreFrom(snapshot)
+  eq(wb.sheet(FIRST_SHEET).isProtected(), true, 'a restore carries protection with it')
+  // The lock map arrives by wholesale copy, so setProtected never runs and the
+  // checkpoint it makes never happens. Without clearing here, the stack from
+  // before the restore would survive and could rewind into cells protected now.
+  eq(wb.undo.undoStack.length, 0, 'and a restore that introduces protection is a checkpoint too')
+}
+
+{
+  // An undo that restores a protected cell would be a write to one, and the
+  // guard cannot reach it: UndoManager reverts straight onto the Yjs types. So
+  // changing what is protected clears the stack.
+  const wb = new Workbook(new Y.Doc())
+  const m = wb.sheet(FIRST_SHEET)
+  m.setCell(0, 0, 'original')
+  m.setCell(0, 0, 'edited')
+  eq(wb.undo.undoStack.length > 0, true, 'an edit is undoable')
+  m.setProtected(true)
+  eq(wb.undo.undoStack.length, 0, 'protecting the sheet drops the stack it could have rewound')
+  wb.undo.undo()
+  eq(m.getRaw(0, 0), 'edited', 'so an undo cannot walk a protected cell backwards')
+  // Turning the override on is a rule change too, and so is the same checkpoint.
+  m.setUnlocked({ r1: 0, c1: 0, r2: 0, c2: 0 }, true)
+  m.setCell(0, 0, 'allowed edit')
+  eq(wb.undo.undoStack.length > 0, true, 'edits after the checkpoint are undoable again')
+  wb.setOverrideProtection(true)
+  eq(wb.undo.undoStack.length, 0, 'and the override is a checkpoint as well')
+}
+
+{
+  // Deleting a row takes its exceptions with it, so the map does not grow a
+  // tail of keys for rows that no longer exist.
+  const wb = new Workbook(new Y.Doc())
+  const m = wb.sheet(FIRST_SHEET)
+  m.setCell(2, 0, 'x')
+  m.setUnlocked({ r1: 1, c1: 0, r2: 1, c2: 0 }, true)
+  m.setRowUnlocked(2, 2, true)
+  const keysBefore = [...m.lock.keys()].length
+  eq(keysBefore, 2, 'two exceptions recorded')
+  m.deleteRows(1, 2)
+  eq([...m.lock.keys()], [], 'and deleting those rows takes both')
+}
+
+{
+  // The script API. A script must be subject to protection or it is exactly
+  // the invisible bypass the override was designed to avoid — and it runs with
+  // the author's intent, not the reader's, which is the case that motivated
+  // this whole feature.
+  // handleCall catches and returns {error}, so a refusal reaches the script as
+  // a catchable error rather than killing the sandbox — the same shape every
+  // other script failure already has.
+  const { wb } = protectedSheet()
+  const err = (name, args) => handleCall(wb, name, args).error ?? null
+  const refuses = (name, args, re, what) => {
+    const e = err(name, args)
+    if (e === null) fail(what, 'was allowed')
+    else if (!re.test(e)) fail(what, `said ${JSON.stringify(e)}, wanted ${re}`)
+    else ok(what)
+  }
+  refuses('set', { range: 'A1', values: [['x']] }, /^A1 is protected$/, 'a script write into a locked cell refuses')
+  eq(err('set', { range: 'B1', values: [['99']] }), null, 'and is allowed into the unlocked input column')
+  refuses('clear', { range: 'A1:B1' }, /^A1 is protected$/, 'clearing across the boundary refuses')
+  refuses('insertRows', { at: 0 }, /protected/, 'and so does restructuring')
+
+  // The block is all-or-nothing, and the ordering here is the whole point:
+  // B1 is the UNLOCKED cell and comes first, C1 is locked and comes second.
+  // Without the up-front check these handlers wrap a loop of setCell in one
+  // transaction, Yjs commits what already happened when the throw goes
+  // through, and B1 is left holding a value from a write that was refused.
+  // Put the locked cell first and the bug hides, which is why it is second.
+  const m = wb.sheet(FIRST_SHEET)
+  const before = m.getRaw(0, 1)
+  refuses('set', { range: 'B1:C1', values: [['written', 'refused']] }, /^C1 is protected$/, 'a block spanning the boundary refuses')
+  eq(m.getRaw(0, 1), before, 'and writes none of it, not even the cell it was allowed')
+}
+
+{
+  // A locked sheet is not a security boundary and this asserts the honest
+  // limit: the guard lives in the model, so a second client writing straight
+  // to the Yjs map is not stopped by it. Stated as a test so nobody later
+  // mistakes the feature for authorisation.
+  const wb = new Workbook(new Y.Doc())
+  const m = wb.sheet(FIRST_SHEET)
+  m.setCell(0, 0, 'formula')
+  m.setProtected(true)
+  m.ydoc.getMap('cells').set('nosuch.key', 'straight past the guard')
+  eq(m.cells.get('nosuch.key'), 'straight past the guard', 'protection is client-side and does not pretend otherwise')
+}
+
 if (failures > 0) {
   console.error(`\n${failures} FAILURES`)
   process.exit(1)

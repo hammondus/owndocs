@@ -3920,7 +3920,7 @@ Isolation removes the reason to abuse the demo, not the ability to waste it:
 - **Its own container**, with memory and CPU limits and no persistent volume,
   so a restart is also a wipe.
 
-## Sheet protection (decided, not built)
+## Sheet protection (model built; UI not built)
 
 ### Locked by default, and you unlock the inputs
 
@@ -4028,9 +4028,78 @@ sheet.
 Answered 2026-08-15 by the `manager` rank, now built — see *Ownership: one
 owner, one deputy rank*. Overriding protection and unprotecting a sheet are
 manager powers, not owner-only ones, so "the owner is away" stops being a wall
-by the time protection ships. The
-"edit protected cells" toggle is offered at manager and above; editors still
-get no override, which is what makes protection hold.
+by the time protection ships. The "edit protected cells" toggle is offered at
+manager and above; editors still get no override, which is what makes
+protection hold.
+
+### What the model pass built
+
+Landed 2026-08-15, deliberately without any UI: nothing can turn protection on
+yet, so it ships inert and reviewable rather than half-wired.
+
+**`lock`, a per-sheet Y.Map keyed exactly like `fmt` and `exact`.** The key
+`protected` holds the sheet flag and every other key marks an *unlocked*
+exception. The flag cannot collide with an exception key: exceptions are
+`<rowId>.<colId>`, `r.<rowId>` or `c.<colId>` and so always contain a dot, and
+`newId` draws from lowercase alphanumerics only. Cell beats row beats column,
+the same precedence formats and exactness already use, tested for *presence*
+rather than truthiness at each level so a cell can be locked back inside an
+unlocked column.
+
+**Mutators throw `ProtectedError` rather than returning quietly.** A silent
+no-op is the same failure as the three dead-control incidents below, with the
+evidence removed. The UI will ask `canWrite` first and explain, so in normal use
+nothing throws; if one does, a call site was missed and it says so. The script
+API needed no special handling — `handleCall` already turns a thrown error into
+`{error}` for the author to catch. Messages name the cell (`B4 is protected`),
+because "the sheet is protected" sends you looking for which part of it.
+
+**The sweep is enumerated by reflection, not by hand.** `sheet_test.mjs` reads
+`SheetModel.prototype` and fails on any public method missing from either the
+guarded list (18) or the exempt list (35, each with its reason). Adding a
+mutator fails the run by name until it is classified — verified by adding one
+and watching it fail, rather than assumed. Two entries in the exempt list are
+worth stating: `ensureSize`, because guarding id materialisation would refuse a
+legal write into an unlocked cell past the end of the grid; and `setColWidth`,
+because the accident this prevents is an overwritten formula, not a narrow
+column. Excel blocks resizing under protection and this deliberately does not.
+
+**Charts are governed by the sheet, not by a cell.** A chart reads a data range
+and writes to none of it, so guarding it against that range would describe the
+wrong relationship. The three chart verbs take the same sheet-scoped guard the
+structural operations do.
+
+**`fill` guards what it writes, not what it is given.** Only the part of `dest`
+outside `src` is written, so guarding the whole destination would refuse
+dragging a locked formula down into unlocked rows — a case this feature exists
+to *allow*, not prevent.
+
+**Undo is answered by clearing the stack, not by inspecting it.** The guard
+cannot reach an undo: `Y.UndoManager` reverts a StackItem straight onto the Yjs
+types, so no model method runs, and a stack item holds DeleteSets keyed by
+client rather than the cell keys a check would need. So any change to what is
+protected — the flag, an exception, the override, or a restore that *introduces*
+protection by copying a lock map wholesale — clears the stack. That closes the
+hole completely instead of narrowing it: an entry can only have been created by
+a mutator allowed at the time, so if the rules have not changed since, no entry
+can write anywhere it should not. The cost is real and accepted: the stack is
+workbook-wide, so protecting one sheet drops undo history for another.
+
+**One bug found in the building, which the guard did not cause but did
+expose.** `handleCall` wraps a whole script call in one Yjs transaction, and the
+`set` and `clear` handlers loop `setCell` inside it. Yjs commits what already
+happened when an exception goes through, so a script writing a block across a
+locked boundary left the allowed half applied and reported failure. Both now
+check the whole block up front. The test that catches it puts the *unlocked*
+cell first — with the locked cell first the write refuses before touching
+anything and the bug hides completely.
+
+What is left is the UI: the protect toggle and mark-unlocked gesture, the tint
+drawn from the map, the manager-only override, and the reading preference that
+turns the tint off for printing. Every `model.insertRows(...)`-style call in
+`SheetView.svelte` is currently unguarded and will throw once anything can turn
+protection on — that is the first thing the UI pass has to close, and it is why
+this one shipped with no way to turn it on.
 
 ## Ownership: one owner, one deputy rank
 

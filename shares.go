@@ -7,9 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"slices"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -22,6 +20,13 @@ type shareEntry struct {
 	Email  string `json:"email"`
 	Name   string `json:"name"`
 	Role   string `json:"role"`
+	// Set when the role above is one a folder grants rather than one made
+	// here. The panel needs it to send you to the folder instead of offering a
+	// remove button that would report success and change nothing — which is
+	// what a share panel that only listed direct grants would do all day once
+	// folders exist. See folders.go, mergeShares.
+	ViaFolder     string `json:"via_folder,omitempty"`
+	ViaFolderName string `json:"via_folder_name,omitempty"`
 }
 
 // GET /api/docs/{id}/shares — collaborator list; visible to any member.
@@ -30,38 +35,44 @@ func handleListShares(db *sql.DB) http.HandlerFunc {
 		if _, ok := requireRole(db, w, r, "viewer"); !ok {
 			return
 		}
+		docID := r.PathValue("id")
 		rows, err := db.Query(`
 			SELECT u.id, u.email, u.name, p.role
 			FROM permissions p JOIN users u ON u.id = p.user_id
-			WHERE p.doc_id = ? ORDER BY u.name`, r.PathValue("id"))
+			WHERE p.doc_id = ? ORDER BY u.name`, docID)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
 		defer rows.Close()
-		shares := []shareEntry{}
+		direct := []shareEntry{}
 		for rows.Next() {
 			var s shareEntry
 			if err := rows.Scan(&s.UserID, &s.Email, &s.Name, &s.Role); err != nil {
 				jsonError(w, http.StatusInternalServerError, "db error")
 				return
 			}
-			shares = append(shares, s)
+			direct = append(direct, s)
 		}
-		// Ordered by rank, most to least, which is the order the share panel
-		// reads in and the order the roles were designed in. `ORDER BY p.role`
-		// was alphabetical, so the list ran commenter, editor, owner, viewer —
-		// coincidence, not meaning, and adding `manager` put it fourth.
-		//
-		// Sorted here rather than with a CASE in the SQL on purpose: a CASE
-		// would be a *third* hand-written copy of the rank order, after
-		// docs_api.go and roles.js, and the one furthest from anything that
-		// would notice it going stale. The query orders by name; this reorders
-		// the small result by the one map that already exists.
-		slices.SortStableFunc(shares, func(a, b shareEntry) int {
-			return roleRank[b.Role] - roleRank[a.Role]
-		})
-		writeJSON(w, http.StatusOK, shares)
+		if err := rows.Err(); err != nil {
+			jsonError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		// Whoever the document's folder lets in is on this list too. Leaving
+		// them off would make the panel state something false — "these four
+		// people can read it" — in the one place people go to check exactly
+		// that.
+		fid, err := docFolder(db, docID)
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		inherited, err := chainMembers(db, fid)
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		writeJSON(w, http.StatusOK, mergeShares(direct, inherited))
 	}
 }
 
@@ -92,14 +103,8 @@ func handleAddShare(db *sql.DB, h *hub, mail *mailer) http.HandlerFunc {
 			jsonError(w, http.StatusForbidden, "you cannot grant a role above your own")
 			return
 		}
-		var uid int64
-		err := db.QueryRow("SELECT id FROM users WHERE email = ?", strings.ToLower(strings.TrimSpace(in.Email))).Scan(&uid)
-		if errors.Is(err, sql.ErrNoRows) {
-			jsonError(w, http.StatusNotFound, "no account with that email — they need to sign up first")
-			return
-		}
-		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "db error")
+		uid, ok := userByEmail(db, w, in.Email)
+		if !ok {
 			return
 		}
 		existing, err := roleFor(db, docID, uid)
@@ -160,11 +165,38 @@ func handleRemoveShare(db *sql.DB, h *hub) http.HandlerFunc {
 			jsonError(w, http.StatusForbidden, "you cannot remove somebody at or above your own level")
 			return
 		}
+		// The effective role above is the right thing to compare ranks against
+		// and the wrong thing to delete by: it may have come from a folder,
+		// where there is no row here to remove. Deleting anyway would return
+		// success, leave the person with access, and give them no way to find
+		// out why — so the direct grant is looked up separately and the refusal
+		// names the folder to go to instead.
+		direct, err := directRoleFor(db, docID, uid)
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		if direct == "" {
+			fid, err := docFolder(db, docID)
+			if err != nil {
+				jsonError(w, http.StatusInternalServerError, "db error")
+				return
+			}
+			if msg, inherited := inheritedRefusal(db, fid, uid); inherited {
+				jsonError(w, http.StatusConflict, msg)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+			return
+		}
 		if _, err := db.Exec("DELETE FROM permissions WHERE doc_id = ? AND user_id = ?", docID, uid); err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
-		h.evictUser(docID, uid)
+		// Not an unconditional eviction any more: withdrawing a grant from
+		// somebody the folder also lets in changes their role rather than
+		// ending it, and recheckAccess is the one that knows the difference.
+		h.recheckAccess(docID)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }
@@ -217,7 +249,11 @@ func handleTransferOwnership(db *sql.DB, h *hub) http.HandlerFunc {
 			return
 		}
 		defer tx.Rollback()
-		if _, err := tx.Exec("UPDATE permissions SET role = 'owner' WHERE doc_id = ? AND user_id = ?", docID, in.UserID); err != nil {
+		// INSERT OR REPLACE, not UPDATE: since folders, the check above passes
+		// for somebody whose access is a folder grant, and they have no row
+		// here to update. An UPDATE would silently affect nothing and the
+		// transaction would commit a document with no owner at all.
+		if _, err := tx.Exec("INSERT OR REPLACE INTO permissions (doc_id, user_id, role) VALUES (?,?,'owner')", docID, in.UserID); err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}

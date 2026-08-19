@@ -33,6 +33,20 @@ func routes(db *sql.DB, h *hub, mail *mailer, staticFS fs.FS, signupOpen, dev bo
 	mux.HandleFunc("PATCH /api/docs/{id}", requireAuth(db, handleUpdateDoc(db)))
 	mux.HandleFunc("DELETE /api/docs/{id}", requireAuth(db, handleDeleteDoc(db, h)))
 
+	// Folders. Shaping the tree needs `manager`; putting a document in one
+	// needs `editor`. Moving is its own verb rather than a PATCH field for
+	// both documents and folders, because a move changes who can read the
+	// thing and a rename does not — see folders.go.
+	mux.HandleFunc("GET /api/folders", requireAuth(db, handleListFolders(db)))
+	mux.HandleFunc("POST /api/folders", requireAuth(db, handleCreateFolder(db)))
+	mux.HandleFunc("PATCH /api/folders/{id}", requireAuth(db, handleUpdateFolder(db)))
+	mux.HandleFunc("DELETE /api/folders/{id}", requireAuth(db, handleDeleteFolder(db)))
+	mux.HandleFunc("POST /api/folders/{id}/move", requireAuth(db, handleMoveFolder(db, h)))
+	mux.HandleFunc("GET /api/folders/{id}/shares", requireAuth(db, handleListFolderShares(db)))
+	mux.HandleFunc("POST /api/folders/{id}/shares", requireAuth(db, handleAddFolderShare(db, h)))
+	mux.HandleFunc("DELETE /api/folders/{id}/shares/{uid}", requireAuth(db, handleRemoveFolderShare(db, h)))
+	mux.HandleFunc("POST /api/docs/{id}/move", requireAuth(db, handleMoveDoc(db, h)))
+
 	mux.HandleFunc("GET /api/docs/{id}/shares", requireAuth(db, handleListShares(db)))
 	mux.HandleFunc("POST /api/docs/{id}/shares", requireAuth(db, handleAddShare(db, h, mail)))
 	mux.HandleFunc("DELETE /api/docs/{id}/shares/{uid}", requireAuth(db, handleRemoveShare(db, h)))

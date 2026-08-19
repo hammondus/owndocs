@@ -14,6 +14,12 @@ Open http://127.0.0.1:8484, sign up, create a document, then open the same
 document in a second browser window to see live sync. Share docs from the
 list or the editor's share link. `-signup=closed` disables new accounts.
 
+Documents can be filed into folders, and a folder carries access: share the
+folder once and everyone on it reaches every document inside, at the role the
+folder grants. The document list has two views — **recent**, the flat list
+newest first, and **folders**, the tree. Moving a document into a folder gives
+that folder's people access to it, so the move control says so.
+
 ## Develop
 
     make test         # go vet + go test + the headless JS suites

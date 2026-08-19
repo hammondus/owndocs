@@ -96,7 +96,9 @@ func ftsQuery(raw string) string {
 // GET /api/search?q=…
 //
 // The index is content-keyed and permissions are applied here, at query time,
-// by the same `permissions` join `handleListDocs` uses. That is what makes a
+// by the same access rule `handleListDocs` uses — visibleDocsSQL, which since
+// folders covers both a grant on the document and a grant on a folder above
+// it. That is what makes a
 // role change take effect on the next search with no reindexing: access is
 // never baked into the index.
 func handleSearch(db *sql.DB) http.HandlerFunc {
@@ -109,16 +111,16 @@ func handleSearch(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		docRows, err := db.Query(`
+		docRows, err := db.Query(visibleDocsSQL+`
 			SELECT d.id, d.title, d.kind,
 			       snippet(doc_search, 1, ?, ?, '…', 14),
 			       doc_search.indexed_at
 			FROM doc_search
-			JOIN documents   d ON d.id = doc_search.doc_id
-			JOIN permissions p ON p.doc_id = d.id AND p.user_id = ?
+			JOIN documents d ON d.id = doc_search.doc_id
+			JOIN visible   v ON v.doc_id = d.id
 			WHERE doc_search MATCH ?
 			ORDER BY rank
-			LIMIT ?`, hlStart, hlEnd, u.ID, q, searchLimit)
+			LIMIT ?`, u.ID, u.ID, hlStart, hlEnd, q, searchLimit)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "search failed")
 			return
@@ -138,7 +140,7 @@ func handleSearch(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		rows, err := db.Query(`
+		rows, err := db.Query(visibleDocsSQL+`
 			SELECT d.id, d.title, d.kind, t.id, c.id, u.name,
 			       snippet(comment_search, 0, ?, ?, '…', 12),
 			       c.created_at, t.resolved_at IS NOT NULL
@@ -146,11 +148,11 @@ func handleSearch(db *sql.DB) http.HandlerFunc {
 			JOIN comments c        ON c.id = comment_search.rowid
 			JOIN comment_threads t ON t.id = c.thread_id
 			JOIN documents d       ON d.id = t.doc_id
-			JOIN permissions p     ON p.doc_id = d.id AND p.user_id = ?
+			JOIN visible v         ON v.doc_id = d.id
 			JOIN users u           ON u.id = c.author_id
 			WHERE comment_search MATCH ?
 			ORDER BY rank
-			LIMIT ?`, hlStart, hlEnd, u.ID, q, searchLimit)
+			LIMIT ?`, u.ID, u.ID, hlStart, hlEnd, q, searchLimit)
 		if err != nil {
 			// A MATCH syntax error should be impossible after ftsQuery, so this
 			// is a real fault rather than bad input, and is reported as one.

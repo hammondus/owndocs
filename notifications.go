@@ -137,7 +137,7 @@ func recordNotifications(q execQuerier, docID string, tid, cid, actorID int64, b
 
 // GET /api/notifications — the inbox, newest first.
 //
-// The join on `permissions` is a boundary, not a filter for tidiness: a
+// The join on visible documents is a boundary, not a filter for tidiness: a
 // notification carries a comment body, and someone whose access to a document
 // was revoked must stop being able to read new — or old — comments on it
 // through their inbox. Revocation therefore takes effect here for free, with
@@ -145,15 +145,15 @@ func recordNotifications(q execQuerier, docID string, tid, cid, actorID int64, b
 func handleListNotifications(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
-		rows, err := db.Query(`
+		rows, err := db.Query(visibleDocsSQL+`
 			SELECT n.id, n.kind, n.doc_id, d.title, n.thread_id, a.name, c.body, n.created_at, n.read_at
 			FROM notifications n
 			JOIN documents d ON d.id = n.doc_id
 			JOIN users a ON a.id = n.actor_id
 			JOIN comments c ON c.id = n.comment_id
-			JOIN permissions p ON p.doc_id = n.doc_id AND p.user_id = n.user_id
+			JOIN visible v ON v.doc_id = n.doc_id
 			WHERE n.user_id = ?
-			ORDER BY n.id DESC LIMIT 100`, u.ID)
+			ORDER BY n.id DESC LIMIT 100`, u.ID, u.ID, u.ID)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return

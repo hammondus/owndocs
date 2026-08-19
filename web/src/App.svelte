@@ -9,6 +9,7 @@
   import EditorView from './lib/EditorView.svelte'
   import SheetView from './lib/SheetView.svelte'
   import ShareView from './lib/ShareView.svelte'
+  import FolderShareView from './lib/FolderShareView.svelte'
   import HistoryView from './lib/HistoryView.svelte'
   import ScriptsView from './lib/ScriptsView.svelte'
   import NotificationsPanel from './lib/NotificationsPanel.svelte'
@@ -245,6 +246,13 @@
     route = { view: 'share', doc }
   }
 
+  // Its own route rather than a mode on ShareView: a folder has no share links
+  // and no owner to transfer to, so two thirds of that panel would be hidden
+  // by a flag. See FolderShareView for why neither exists.
+  function openFolderShare(folder) {
+    route = { view: 'folder-share', folder }
+  }
+
   function openHistory(doc) {
     route = { view: 'history', doc }
   }
@@ -333,7 +341,7 @@
          the sign-up form, which is the only thing that can spend it. -->
     <AuthView onSignedIn={signedIn} invite={inviteToken} />
   {:else if route.view === 'list'}
-    <DocList {me} onOpen={openDoc} onShare={openShare} />
+    <DocList {me} onOpen={openDoc} onShare={openShare} onShareFolder={openFolderShare} />
   {:else if route.view === 'editor'}
     <!-- #key destroys and recreates the editor when the doc changes, so a
          stale CodeMirror/provider from the previous doc can never leak. -->
@@ -350,6 +358,8 @@
     {/key}
   {:else if route.view === 'share'}
     <ShareView doc={route.doc} onBack={showList} />
+  {:else if route.view === 'folder-share'}
+    <FolderShareView folder={route.folder} onBack={showList} />
   {:else if route.view === 'history'}
     <HistoryView doc={route.doc} onBack={() => openDoc(route.doc)} />
   {:else if route.view === 'scripts'}

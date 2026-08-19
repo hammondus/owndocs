@@ -2155,16 +2155,30 @@ try {
     // The outline has to be on screen *while* the range is being drawn, which
     // means a half-typed formula has to be readable. Sampled off the canvas,
     // since that is where it is drawn.
-    const refColourOnScreen = () =>
-      page.evaluate(() => {
-        const cv = document.querySelector('canvas')
-        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data
-        for (let i = 0; i < d.length; i += 4) {
-          // #8e44ad, the first reference colour.
-          if (Math.abs(d[i] - 142) < 12 && Math.abs(d[i + 1] - 68) < 12 && Math.abs(d[i + 2] - 173) < 12) return true
-        }
-        return false
-      })
+    //
+    // Polled rather than sampled once, and that is the difference between a
+    // test and a coin toss: every DOM wait above returns when a *value*
+    // changes, while the grid repaints on the next animation frame. A single
+    // read after the value lands is a race the suite lost roughly two runs in
+    // three. The assertion is unchanged — the colour must appear — it is only
+    // given the frame it takes to be painted.
+    const refColourOnScreen = async () => {
+      const sample = () =>
+        page.evaluate(() => {
+          const cv = document.querySelector('canvas')
+          const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data
+          for (let i = 0; i < d.length; i += 4) {
+            // #8e44ad, the first reference colour.
+            if (Math.abs(d[i] - 142) < 12 && Math.abs(d[i + 1] - 68) < 12 && Math.abs(d[i + 2] - 173) < 12) return true
+          }
+          return false
+        })
+      for (let i = 0; i < 30; i++) {
+        if (await sample()) return true
+        await page.evaluate(() => new Promise(requestAnimationFrame))
+      }
+      return false
+    }
     check(await refColourOnScreen(), 'and the cells it refers to are outlined before it is finished')
 
     await page.focus('.formula-bar input')
@@ -2357,6 +2371,172 @@ try {
       'snippet markers are rendered, not shown')
     check(await page.$('.panel mark') !== null, 'the matched term is highlighted')
     await clickText(page, 'button', 'close')
+  })
+
+  // ---- folders -------------------------------------------------------------
+  // The folder tree is a recursive component drawn inside {#if} blocks, which
+  // is the exact shape of the three incidents this file exists to catch: a
+  // throw in there presents as a dead control, not a crash. Every assertion
+  // below is really two — the thing happened, and nothing was logged doing it.
+
+  await step('back to the list, and make a folder', async () => {
+    await page.goto(BASE, { waitUntil: 'networkidle0' })
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await clickText(page, 'button', 'new folder')
+    // An inline input, not a prompt(): a native modal would block the page and
+    // hang this suite rather than failing it.
+    await page.waitForSelector('input[placeholder="folder name"]', { timeout: 5000 })
+    await page.type('input[placeholder="folder name"]', 'Engineering')
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(
+      () => /Engineering/.test(document.body.innerText),
+      { timeout: 5000 },
+    )
+  })
+
+  await step('a subfolder nests inside it', async () => {
+    // The second "new folder" button belongs to the folder row, not the app
+    // bar — the tree's own control, which only a manager sees.
+    await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('button')].filter(
+        (b) => b.textContent.trim() === 'new folder',
+      )
+      buttons[buttons.length - 1].click()
+    })
+    await page.waitForSelector('input[placeholder="folder name"]', { timeout: 5000 })
+    await page.type('input[placeholder="folder name"]', 'Runbooks')
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(
+      () => /Runbooks/.test(document.body.innerText),
+      { timeout: 5000 },
+    )
+  })
+
+  await step('a folder collapses and reopens without losing what is under it', async () => {
+    // Scoped to the tree, never to document.body.innerText: the create form's
+    // folder picker lists every folder by path, so a whole-page text search
+    // for "Runbooks" is true whether the tree draws it or not. That is what
+    // this assertion got wrong on its first run.
+    const inTree = (name) =>
+      page.evaluate(
+        (name) =>
+          [...document.querySelectorAll('div')].some(
+            (d) => d.className.includes('head') && d.textContent.includes(name),
+          ),
+        name,
+      )
+
+    const twist = await page.$('button[aria-expanded="true"]')
+    check(twist !== null, 'the tree draws a disclosure control')
+    await twist.click()
+    await page.waitForFunction(
+      () =>
+        ![...document.querySelectorAll('div')].some(
+          (d) => d.className.includes('head') && d.textContent.includes('Runbooks'),
+        ),
+      { timeout: 5000 },
+    )
+    ok('collapsing hides the subfolder')
+    await (await page.$('button[aria-expanded="false"]')).click()
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll('div')].some(
+          (d) => d.className.includes('head') && d.textContent.includes('Runbooks'),
+        ),
+      { timeout: 5000 },
+    )
+    check(await inTree('Runbooks'), 'and reopening brings it back')
+  })
+
+  await step('a document moves into a folder', async () => {
+    // Back to the flat list, where the sheet made earlier is sitting unfiled.
+    await clickText(page, 'button', 'recent')
+    await page.evaluate(() => {
+      const row = [...document.querySelectorAll('li')].find((li) =>
+        li.textContent.includes('UI test sheet'),
+      )
+      ;[...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'move').click()
+    })
+    await page.waitForFunction(
+      () => /everyone in the destination folder gets access/i.test(document.body.innerText),
+      { timeout: 5000 },
+    )
+    ok('the move control says who the move lets in')
+    // Scoped to the row being moved. The create form at the top of the page
+    // carries its own folder picker with the same options, and it comes first
+    // in document order — so an unscoped querySelectorAll('select') sets the
+    // wrong control and the move never happens. That is what this step got
+    // wrong on its first run, and it failed silently, which is the point.
+    const picked = await page.evaluate(() => {
+      const row = [...document.querySelectorAll('li')].find((li) =>
+        li.textContent.includes('UI test sheet'),
+      )
+      const sel = row?.querySelector('select')
+      if (!sel) return null
+      const opt = [...sel.options].find((o) => o.textContent.includes('Engineering / Runbooks'))
+      if (!opt) return null
+      sel.value = opt.value
+      sel.dispatchEvent(new Event('change', { bubbles: true }))
+      return opt.textContent
+    })
+    check(picked === 'Engineering / Runbooks', 'the picker labels a subfolder with its path')
+    // It now lists inside Runbooks. Asserted against the tree's own structure:
+    // the row has to be a descendant of that folder's contents, which is the
+    // only claim worth making and the only one a text search cannot fake.
+    await clickText(page, 'button', 'folders')
+    await page.waitForFunction(
+      () => {
+        const head = [...document.querySelectorAll('div')].find(
+          (d) => d.className.includes('head') && d.textContent.includes('Runbooks'),
+        )
+        return head?.parentElement?.textContent.includes('UI test sheet')
+      },
+      { timeout: 5000 },
+    )
+  })
+
+  await step('a folder holding something refuses to be deleted', async () => {
+    const clicked = await page.evaluate(() => {
+      const row = [...document.querySelectorAll('div')].find(
+        (d) => d.className.includes('head') && d.textContent.includes('Runbooks'),
+      )
+      if (!row) return false
+      const btn = [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'delete')
+      if (!btn) return false
+      btn.click()
+      return true
+    })
+    check(clicked, "the folder row offers its manager a delete")
+    await page.waitForFunction(
+      () => /deleting a folder never deletes documents/i.test(document.body.innerText),
+      { timeout: 5000 },
+    )
+    ok('and it refuses, saying why rather than doing nothing')
+  }, {
+    // Chrome logs every failed response, and the refusal *is* a failed
+    // response — 409, deliberately, because "the folder is not empty" is a
+    // conflict and not a bug. Expected here rather than silenced, so the day
+    // it stops arriving this step fails.
+    expect: /409/,
+  })
+
+  await step('the folder sharing panel opens', async () => {
+    await page.evaluate(() => {
+      const row = [...document.querySelectorAll('div')].find(
+        (d) => d.className.includes('head') && d.textContent.includes('Engineering'),
+      )
+      ;[...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'share').click()
+    })
+    await page.waitForFunction(
+      () => /Everyone here reaches every document in this folder/i.test(document.body.innerText),
+      { timeout: 5000 },
+    )
+    // No share links and no transfer here, and both absences are deliberate —
+    // see FolderShareView. Asserted so that copying the document panel over
+    // later would fail loudly.
+    const text = await page.evaluate(() => document.body.innerText)
+    check(!/Share links/i.test(text), 'a folder offers no bearer links')
+    check(!/make owner/i.test(text), 'and no transfer, because a folder has no owner')
   })
 
 } finally {

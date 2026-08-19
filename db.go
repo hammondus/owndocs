@@ -342,6 +342,52 @@ ALTER TABLE permissions_v11 RENAME TO permissions;
 ALTER TABLE documents DROP COLUMN owner_id;
 `
 
+// Schema v12: folders. A document lives in at most one folder, and a folder
+// grants access to everything beneath it. See DESIGN-DECISIONS.md, *Folders*.
+//
+// Single-parent on purpose. Drive allowed a file in several folders and
+// withdrew it in 2020, because "where is this?" stops having an answer and so
+// does "who can see it". One parent makes both questions a walk up a chain.
+//
+// `folder_permissions` mirrors `permissions` and stops one rank short: there is
+// no folder `owner`. Ownership is per-document and singular — the one row
+// `handleCreateDoc` writes, moved only by transfer — so a folder that granted
+// `owner` would hand everyone in it the power to delete documents they did not
+// create. `manager` is the top of the folder ladder, and it is enough: it is
+// already the bar for administering a document.
+//
+// A folder therefore has no owner, which is why it needs none: the only
+// destructive thing you can do to a folder is delete it, and deleting is
+// refused while anything is inside. `mayModify` then keeps two managers of the
+// same folder from removing each other, exactly as it does on a document.
+//
+// documents.folder_id is nullable and ON DELETE RESTRICT by omission — SQLite
+// defaults to NO ACTION, which refuses the delete. That is the backstop for the
+// handler rule that a folder must be emptied before it goes, and it is worth
+// having in the database because the alternative failure is silent: a cascade
+// here would delete other people's documents.
+const schemaV12 = `
+CREATE TABLE folders (
+	id         TEXT PRIMARY KEY,
+	parent_id  TEXT REFERENCES folders(id),
+	name       TEXT NOT NULL,
+	created_by INTEGER NOT NULL REFERENCES users(id),
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX folders_parent ON folders(parent_id);
+
+CREATE TABLE folder_permissions (
+	folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+	user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	role      TEXT NOT NULL CHECK (role IN ('manager','editor','commenter','viewer')),
+	PRIMARY KEY (folder_id, user_id)
+);
+CREATE INDEX folder_permissions_user ON folder_permissions(user_id);
+
+ALTER TABLE documents ADD COLUMN folder_id TEXT REFERENCES folders(id);
+CREATE INDEX documents_folder ON documents(folder_id);
+`
+
 func openDB(path string) (*sql.DB, error) {
 	// _pragma values apply per-connection; busy_timeout is belt-and-braces
 	// since MaxOpenConns(1) already serializes everything through one
@@ -364,7 +410,7 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
-	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11} {
+	for ver, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7, schemaV8, schemaV9, schemaV10, schemaV11, schemaV12} {
 		if v > ver {
 			continue
 		}

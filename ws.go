@@ -182,6 +182,45 @@ func (h *hub) hasUser(docID string, userID int64) bool {
 	return false
 }
 
+// recheckAccess re-reads the current role of everyone connected to a document
+// and evicts anybody whose role no longer matches the one their socket was
+// opened with. The role is read once, at connect, so closing the socket is what
+// makes a change take effect — evictUser did that job on its own while a grant
+// on the document was the only thing that could change.
+//
+// Folders broke that: one write to `folder_permissions` changes the effective
+// role on every document underneath, and moving a document changes it for two
+// sets of people at once — those the old folder let in, and those the new one
+// does. Naming the affected users at the call site stopped being possible, so
+// this asks the database per connected client instead.
+//
+// The user ids are snapshotted under the room lock and the queries run outside
+// it: a database call while holding it would serialise every room in the
+// process behind one SQLite connection.
+func (h *hub) recheckAccess(docID string) {
+	h.mu.Lock()
+	rm := h.rooms[docID]
+	h.mu.Unlock()
+	if rm == nil {
+		return
+	}
+	rm.mu.Lock()
+	opened := map[int64]string{}
+	for c := range rm.clients {
+		opened[c.userID] = c.role
+	}
+	rm.mu.Unlock()
+	for uid, was := range opened {
+		now, err := roleFor(h.db, docID, uid)
+		// An error evicts too. A reconnect re-reads the role and either works
+		// or fails cleanly; leaving a socket open on an unknown role is the one
+		// outcome with no recovery.
+		if err != nil || now != was {
+			h.evictUser(docID, uid)
+		}
+	}
+}
+
 func (h *hub) evictUser(docID string, userID int64) {
 	h.mu.Lock()
 	rm := h.rooms[docID]

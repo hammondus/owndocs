@@ -4577,7 +4577,260 @@ and drives the split gates through the real screens — a manager's document row
 must offer share and withhold delete, which is exactly the shape of failure a
 unit test cannot see.
 
+## Folders
+
+Decided and built 2026-08-20. Before this the document list was flat: your
+documents were exactly your rows in `permissions`, ordered by `updated_at`.
+There was no root, no path, and no "my files" namespace of any kind.
+
+### Folders grant access, and that is the decision
+
+Three designs were on the table, and they differ by roughly 5× in cost:
+
+- **Private filing.** `folders(user_id, …)` plus a per-user placement row. A
+  folder is a view over the documents you can already reach. No access change,
+  no leak surface, about a day's work — and worth nothing to a team, because
+  everybody files the same documents separately.
+- **Shared structure that grants nothing.** One global tree everybody sees the
+  same way; access stays strictly per document. Keeps `permissions` as the sole
+  source of truth for access, which this file is otherwise emphatic about. But
+  you still share every document one at a time, so it buys tidiness rather than
+  less administration — and a folder *name* becomes visible to anyone holding
+  one document inside it, which for `/Acquisitions/Project Falcon/` is itself a
+  disclosure.
+- **Shared folders that carry access.** Chosen. A grant on a folder reaches
+  everything beneath it.
+
+The second was rejected for a reason that is about time rather than design:
+"put it in the Engineering folder and the team can see it" is the thing people
+actually want, so shipping structure without inheritance means shipping this
+again within a month, on top of a tree that was built assuming it never would.
+
+### Best grant wins, and nothing subtracts
+
+Your role on a document is the **highest-ranked** of the grant on the document
+itself and the grants on every folder above it. There is no way to hold less
+access to a subfolder than to its parent.
+
+The alternative — nearest ancestor wins — buys the ability to carve a
+restricted folder inside a shared one, and costs a great deal more than it
+looks. It makes a grant capable of *removing* access, which means every grant
+needs reading in the context of every grant above it before you can say what it
+does. It also needs a way to say "no access at all", which is a tombstone role
+and a second kind of row. And it contradicts the rule already in force between
+a document grant and a link redemption, where a link only ever raises access
+(`shares.go`, `handleRedeemLink`).
+
+So there is one rule, it is monotone, and it is the same rule everywhere:
+adding a grant can only ever widen. **The cost is real and is not hidden:** you
+cannot make a more private folder inside a shared one. Put it somewhere else.
+
+### One parent
+
+A document is in at most one folder; a folder has at most one parent. Drive
+allowed several parents and withdrew it in 2020, because with more than one
+neither "where is this?" nor "who can see it?" has an answer — and the second
+question is the one that matters here, since the answer is computed by walking
+up.
+
+### Shaping the tree is administration; filling it is editing
+
+- Creating, renaming, moving and deleting a folder: `manager`.
+- Putting a document into a folder, or creating one there: `editor`.
+
+That split decides the one asymmetry in `handleCreateFolder`: a **root** folder
+is anyone's to make and its creator gets a `manager` row, while a **subfolder**
+needs `manager` on the parent and mints no permission row at all — whoever
+administers the parent administers the child, by inheritance.
+
+Writing a creator row on every subfolder was the obvious thing and is wrong. It
+would let an *editor* of a shared folder mint themselves an administrable
+corner inside it and then share that corner outward. Silently widening access
+by adding a level is the mistake this codebase has now made twice (see
+*Ownership*, the two rank-comparison bugs), so the default here is to grant
+nothing and require the higher bar to create.
+
+### No folder owner
+
+`folder_permissions` stops at `manager`. Ownership is per-document and
+singular — the one row `handleCreateDoc` writes, moved only by transfer — so a
+folder that granted `owner` would hand everyone in it the power to delete
+documents they did not create. The CHECK constraint in schema v12 is the
+backstop, exactly as the v5 CHECK on `share_links` is for links.
+
+A folder therefore has no owner, and needs none: the only destructive thing you
+can do to a folder is delete it, and that is refused while anything is inside.
+`mayModify` then keeps two managers of one folder from removing each other,
+just as it does on a document.
+
+### Deleting a folder never deletes documents
+
+`DELETE /api/folders/{id}` refuses with 409 while the folder holds a document or
+a subfolder. This is the one rule in the model that exists to protect somebody
+other than the caller: a folder's managers are not its documents' owners, and
+deleting a document is reserved for its owner because it is irreversible and
+total. A cascade would hand that power to anyone administering a folder the
+document happens to sit in.
+
+The count is over **every** row, not the ones the caller can see. "Empty for
+you" is not empty, and a delete that succeeded on that basis would orphan
+documents belonging to people you cannot enumerate. `documents.folder_id` has
+no `ON DELETE` clause, so SQLite's default of NO ACTION refuses the delete in
+the database too.
+
+### The path is per viewer
+
+A folder you hold no grant on is not named to you. `GET /api/folders` returns
+the folders you hold a grant on plus everything below them, and nulls
+`parent_id` when the parent is not in that set — so the forest you get is
+rooted at your own grants. Two people therefore see the same folder at
+different depths, and that is the design: a grant on `Falcon` must not disclose
+that its parent is called `Acquisitions`.
+
+`GET /api/docs` nulls `folder_id` under the same rule. An opaque id you cannot
+resolve still tells you which documents are filed together, which is a fact
+about somebody else's filing.
+
+Documents whose folder you cannot see land in **Unfiled**, together with
+documents in no folder at all. Two situations, one bucket, deliberately: from
+where you are standing they are the same situation.
+
+### What it cost, and why it was affordable
+
+`roleFor` was the chokepoint. Around thirty access checks reach it through
+`requireRole`, and inheritance went in by turning one `SELECT` into a `UNION
+ALL` of "grant on the document" and "grants on every ancestor folder", reduced
+through `bestRole`. None of those thirty call sites changed.
+
+The four queries that joined `permissions` directly rather than coming through
+`roleFor` are the whole rest of the surface, and they now share one constant,
+`visibleDocsSQL`:
+
+- `handleListDocs` (`docs_api.go`) — uses the role-carrying variant,
+  `grantedFoldersSQL`, since it reports a role per row.
+- `handleSearch`, both queries (`search.go`).
+- `handleListNotifications` (`notifications.go`).
+
+*Ownership: one owner, one deputy rank* predicted this almost exactly: "the
+change groups actually force is confined to `roleFor` becoming a `MAX` over
+several rows; everything downstream already consumes one rank." Folders are
+that change, arriving from a different direction. The prediction held because
+`roleRank` is a total order and `requireRole` is a threshold test, which is why
+that entry argued against capability bags.
+
+### `UNION`, never `UNION ALL`, in the recursive walks
+
+Every recursive CTE here — ancestors, subtree, granted folders — uses plain
+`UNION`. `UNION` drops rows already produced, so a cycle in the folder tree
+ends the walk instead of hanging the request. Cycles are also refused at the
+one endpoint that could create one, `handleMoveFolder`, but a hung request has
+no recovery and a bad `parent_id` is one bad migration away, so this gets two
+defences.
+
+### Three ways this model breaks a share panel, and what closes each
+
+Inheritance turns three previously honest pieces of code into liars. All three
+are the same failure — an action that reports success and changes nothing —
+and that failure is worse than an error, because there is nothing to read.
+
+- **A revoke with no row to revoke.** `handleRemoveShare` was
+  `DELETE FROM permissions`. With folders, the person's access may be a folder
+  grant, so the delete affects nothing and returns 200. It now reads the direct
+  grant separately through `directRoleFor` and refuses with 409 naming the
+  folder to go to instead. The *effective* role is still what `mayModify`
+  compares against — that part was always right.
+- **A share list that omits most of the readers.** `handleListShares` listed
+  rows in `permissions`. It now merges those with `chainMembers`, everyone the
+  document's folder chain lets in, through `mergeShares` — one line per person,
+  carrying the role that actually applies and, when that came from a folder,
+  which folder to go to. Getting this wrong means the panel states "these four
+  people can read it" in the one place people go to check exactly that.
+- **A move that locks you out, or lets you steal.** A folder's manager holds
+  `manager` on every document inside it. Without a guard they could move
+  somebody else's document out of the shared folder into one only they can see.
+  Both `handleMoveDoc` and `handleMoveFolder` therefore write, re-read the
+  caller's own access at the new position, and undo the write if the caller
+  just lost it. An owner's direct row survives any move, so an owner filing
+  their own document is never caught by this.
+
+The guard is a write-then-check rather than a transaction, because the check is
+`folderRoleFor` walking the tree as it now stands. Asking it what the tree
+*would* look like means a second copy of the walk that only the preview uses.
+
+### Live sockets
+
+A role is read once, at connect, so closing the socket is what makes a change
+take effect. `evictUser` did that job while a grant on one document was the
+only thing that could change a role.
+
+Folders broke that: one write to `folder_permissions` changes the effective
+role on every document underneath, and a move changes it for two sets of people
+at once — those the old folder let in, and those the new one does. Naming the
+affected users at the call site stopped being possible. `hub.recheckAccess`
+replaces it: snapshot the connected user ids under the room lock, re-read each
+role outside it, evict anyone whose role no longer matches the one their socket
+was opened with. `recheckUnder` runs it across a folder's whole subtree.
+
+The queries deliberately run outside the room lock. A database call while
+holding it would serialise every room in the process behind the one SQLite
+connection.
+
+### Two verbs, not a PATCH field
+
+Moving is `POST /api/docs/{id}/move` and `POST /api/folders/{id}/move`, not a
+field on the PATCH that renames. A rename changes a property; a move changes
+who can read the thing. Behind one verb they would sit behind one permission
+bar, and these two do not deserve the same one — moving a document needs
+`manager` on it, while renaming one needs `editor`.
+
+### In the UI
+
+The flat "recent" list stays the default and is unchanged. Recency is how
+people find the thing they were working on this morning; the tree is for when
+you are filing rather than resuming. Both views read the same two fetches and
+the arrangement happens in `folders.js`, which is pure and tested in node.
+
+The move control is a labelled picker rather than drag and drop, and it carries
+one line of warning text: **everyone in the destination folder gets access**.
+Filing is the only gesture in the app that hands other people access as a side
+effect, and the destination is the only place that fact is visible.
+
+### Not done
+
+- **The git exporter still writes a flat tree.** `exporter.mjs` names files
+  `<slug>-<id6>.md`. Mirroring the folder path into the repo would make a move
+  show up as a git rename, which is most of the value of having the exporter at
+  all.
+- **Moving a document into a folder notifies nobody.** Everyone in the
+  destination gains access silently. A direct share sends mail; this does not,
+  and the asymmetry is not defensible for long.
+- **No search over folder names,** and no breadcrumb in the editor telling you
+  where the open document is filed.
+
 ## Incidents
+
+- **2026-08-20, a canvas assertion in `ui_test.mjs` was a coin toss.** Found
+  while verifying *Folders*, and unrelated to it: "selecting the finished
+  formula outlines them too" failed roughly two runs in three, then passed
+  twice in a row, on both the folders branch and on `master`. That intermittency
+  is the finding — the step was not testing what it claimed to test, and it was
+  making every other run of the suite unreadable.
+
+  Root cause: **the assertion read the canvas once, immediately after a DOM
+  wait.** `waitForFunction` returns when the formula bar's *value* changes; the
+  grid repaints on the next animation frame. Reading `getImageData` in between
+  samples the previous frame. Every other assertion in the file waits on the
+  DOM, where the value and the render land together, so this is the only place
+  the gap exists — and it is a property of drawing to a canvas, not of this
+  feature.
+
+  Fix: poll for up to 30 animation frames instead of sampling once. The
+  assertion is unchanged — the colour must appear — it is only given the frame
+  it takes to be painted. A genuine regression still fails, one frame slower.
+
+  Worth stating because the shape recurs: **a test that fails intermittently is
+  not a flaky test, it is a test measuring the wrong moment.** Re-running until
+  it passes hides the same defect the third time as the first.
 
 - **2026-08-05, the comments panel threw before it could render.** User
   report: "clicking comments does nothing". `threadLabel` raised
@@ -4703,12 +4956,19 @@ unit test cannot see.
   between `editor` and `owner`, holding every owner power except deleting and
   transferring. See *Ownership: one owner, one deputy rank*. Still open
   underneath it:
-  - **Permission groups.** Deliberately not built. The shape is settled by the
-    rank order — a person's role is `MAX` over their grants — so the change is
-    confined to `roleFor` returning that maximum instead of one row. What is
-    not settled is what a group *is* here: an instance-wide list of people, or
-    something owned per document, and who may edit one. Not worth answering
-    until somebody is re-typing the same share list for the third time.
+  - **Permission groups.** Still not built, and now half-answered from an
+    unexpected direction. *Folders* made `roleFor` a `MAX` over several rows
+    on 2026-08-20, which is the whole structural change this bullet predicted —
+    so a group of *people* is now an additional source of rows into a query
+    that already reduces them, not a change of kind.
+    What folders do **not** answer is the case this bullet was written for.
+    A folder groups documents that belong together; groups would name people
+    who belong together, and the two only coincide when a team's documents all
+    live in one place. Re-typing the same three names onto unrelated documents
+    is still re-typing. What is still not settled is what a group *is* here:
+    an instance-wide list, or something owned per document, and who may edit
+    one. Worth revisiting once folders have been used for a while — they may
+    absorb enough of the need to keep this closed.
 
 - Snapshot-trigger thresholds (currently >100 tail rows or >128 KiB) and the
   1s batch-flush interval: revisit once there's real typing traffic.
@@ -4755,6 +5015,23 @@ unit test cannot see.
     plain document will not style and will not hide. Stripping attributes on
     paste into a plain document is probably right, but it is the first place
     the two types have to know about each other at all.
+- **Folders.** Built 2026-08-20; see the section of that name. Still open
+  underneath it:
+  - **A restricted folder inside a shared one.** Not expressible, by the
+    monotone rule that best-grant-wins. Nobody has asked for it; if somebody
+    does, the honest answer is a sibling folder rather than a tombstone role,
+    and that answer should be written into the UI rather than left to be
+    discovered.
+  - **Notifying the destination.** Moving a document into a folder gives
+    everyone in it access and tells nobody, while a direct share sends mail.
+    The asymmetry is not defensible for long. What needs deciding is whether it
+    is one message per person per move — noisy for a tidy-up that files twenty
+    documents — or a digest, which needs somewhere to accumulate.
+  - **Whether the folder path belongs in the exporter.** Mirroring it would
+    make a move show as a git rename, which is most of the value of the
+    exporter. The cost is that a re-file rewrites paths for every document
+    underneath, so one move becomes a large commit.
+
 - **Is the location hash a real route?** It is written on every navigation and
   read only at startup, so the browser's back and forward buttons change the
   URL without changing the view — the two then disagree until a reload. That

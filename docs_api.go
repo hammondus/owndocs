@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base32"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -17,8 +18,14 @@ type document struct {
 	// of the document, like its title, rather than content inside it — which is
 	// why it rides here and is written over HTTP, not through the Yjs log. See
 	// DESIGN-DECISIONS.md, *Rich documents*.
-	Rich bool   `json:"rich"`
-	Role string `json:"role"`
+	Rich bool `json:"rich"`
+	// The folder this document sits in, or null — either because it sits in
+	// none, or because it sits in one you hold no grant on. The list nulls the
+	// second case out rather than reporting an id you cannot resolve: an
+	// opaque id you cannot look up still tells you which documents are filed
+	// together, and that is a fact about somebody else's filing.
+	FolderID *string `json:"folder_id"`
+	Role     string  `json:"role"`
 	// Unresolved comment threads. Counted per row in the list query rather
 	// than fetched per document by the client, which would be one request per
 	// row — see DESIGN-DECISIONS.md, *Notifications*.
@@ -28,7 +35,11 @@ type document struct {
 
 var docIDEnc = base32.StdEncoding.WithPadding(base32.NoPadding)
 
-func newDocID() string {
+// newID mints an opaque identifier for anything the URL space names: documents
+// and, since folders arrived, folders. One generator rather than two, because
+// two would differ only in the name of the function and in which one somebody
+// forgot to seed properly.
+func newID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		panic(err)
@@ -69,10 +80,53 @@ func mayGrant(actor, role string) bool { return roleRank[role] <= roleRank[actor
 func mayModify(actor, target string) bool { return roleRank[target] < roleRank[actor] }
 
 // roleFor returns the caller's role on a document, or "" for no access.
+//
+// Since folders, a role can arrive two ways: granted on the document, or
+// granted on a folder above it. The best of them wins — access adds, never
+// subtracts — so this is one query returning every candidate and one reduction
+// through bestRole. Ranking in SQL would be a second copy of roleRank.
+//
+// Almost every access check in the codebase reaches this function, which is
+// why inheritance could be added at all without auditing thirty call sites.
+// The four queries that join `permissions` directly rather than coming through
+// here are listed in DESIGN-DECISIONS.md, *Folders*, and all four now use
+// visibleDocsSQL instead.
 func roleFor(db *sql.DB, docID string, userID int64) (string, error) {
+	rows, err := db.Query(`
+		WITH RECURSIVE anc(id) AS (
+			SELECT folder_id FROM documents WHERE id = ?
+			UNION
+			SELECT f.parent_id FROM folders f JOIN anc ON f.id = anc.id
+			WHERE f.parent_id IS NOT NULL
+		)
+		SELECT role FROM permissions WHERE doc_id = ? AND user_id = ?
+		UNION ALL
+		SELECT fp.role FROM folder_permissions fp
+		JOIN anc ON anc.id = fp.folder_id
+		WHERE fp.user_id = ?`, docID, docID, userID, userID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	best := ""
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return "", err
+		}
+		best = bestRole(best, role)
+	}
+	return best, rows.Err()
+}
+
+// directRoleFor is the grant on the document itself, ignoring folders. Used
+// only where a *grant* is being administered rather than access being checked:
+// withdrawing a share has to know whether there is a row here to withdraw, or
+// it reports success and changes nothing.
+func directRoleFor(db *sql.DB, docID string, userID int64) (string, error) {
 	var role string
 	err := db.QueryRow("SELECT role FROM permissions WHERE doc_id = ? AND user_id = ?", docID, userID).Scan(&role)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return role, err
@@ -84,6 +138,11 @@ func handleCreateDoc(db *sql.DB) http.HandlerFunc {
 		var in struct {
 			Title string `json:"title"`
 			Kind  string `json:"kind"`
+			// Optional. Creating straight into a folder needs `editor` on it,
+			// the same bar as moving one in: putting a document where a
+			// folder's members can read it is filling the folder, not shaping
+			// it. See folders.go.
+			FolderID *string `json:"folder_id"`
 		}
 		if !readJSON(w, r, &in) {
 			return
@@ -99,7 +158,22 @@ func handleCreateDoc(db *sql.DB) http.HandlerFunc {
 		if in.Title == "" {
 			in.Title = "Untitled"
 		}
-		id := newDocID()
+		folderID := ""
+		if in.FolderID != nil {
+			folderID = *in.FolderID
+		}
+		if folderID != "" {
+			role, err := folderRoleFor(db, folderID, u.ID)
+			if err != nil {
+				jsonError(w, http.StatusInternalServerError, "db error")
+				return
+			}
+			if role == "" || roleRank[role] < roleRank["editor"] {
+				jsonError(w, http.StatusNotFound, "not found")
+				return
+			}
+		}
+		id := newID()
 		now := time.Now().Unix()
 		tx, err := db.Begin()
 		if err != nil {
@@ -109,8 +183,12 @@ func handleCreateDoc(db *sql.DB) http.HandlerFunc {
 		defer tx.Rollback()
 		// No owner column: the owner is the `permissions` row below, and that is
 		// the only place it is recorded. See schema v11.
-		if _, err := tx.Exec("INSERT INTO documents (id, kind, title, created_at, updated_at) VALUES (?,?,?,?,?)",
-			id, in.Kind, in.Title, now, now); err != nil {
+		var folderArg any
+		if folderID != "" {
+			folderArg = folderID
+		}
+		if _, err := tx.Exec("INSERT INTO documents (id, kind, title, folder_id, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+			id, in.Kind, in.Title, folderArg, now, now); err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
@@ -122,33 +200,62 @@ func handleCreateDoc(db *sql.DB) http.HandlerFunc {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
-		writeJSON(w, http.StatusOK, document{ID: id, Kind: in.Kind, Title: in.Title, Role: "owner", UpdatedAt: now})
+		out := document{ID: id, Kind: in.Kind, Title: in.Title, Role: "owner", UpdatedAt: now}
+		if folderID != "" {
+			out.FolderID = &folderID
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 
 func handleListDocs(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
-		rows, err := db.Query(`
-			SELECT d.id, d.kind, d.title, d.rich, p.role,
+		// Access descends from the folders this user holds a grant on, and is
+		// unioned with the grants made on documents directly. A document
+		// reached both ways arrives twice, at two roles, and is reduced below —
+		// the ordering lives in roleRank and is not restated in SQL.
+		rows, err := db.Query(grantedFoldersSQL+`, access(doc_id, role) AS (
+				SELECT doc_id, role FROM permissions WHERE user_id = ?
+				UNION ALL
+				SELECT d.id, g.role FROM documents d JOIN granted g ON g.id = d.folder_id
+			)
+			SELECT d.id, d.kind, d.title, d.rich,
+			       CASE WHEN d.folder_id IN (SELECT id FROM granted) THEN d.folder_id END,
+			       a.role,
 			       (SELECT COUNT(*) FROM comment_threads t
 			         WHERE t.doc_id = d.id AND t.resolved_at IS NULL) AS open_comments,
 			       d.updated_at
-			FROM documents d JOIN permissions p ON p.doc_id = d.id
-			WHERE p.user_id = ? ORDER BY d.updated_at DESC`, u.ID)
+			FROM access a JOIN documents d ON d.id = a.doc_id
+			ORDER BY d.updated_at DESC`, u.ID, u.ID)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
 		defer rows.Close()
 		docs := []document{}
+		at := map[string]int{}
 		for rows.Next() {
 			var d document
-			if err := rows.Scan(&d.ID, &d.Kind, &d.Title, &d.Rich, &d.Role, &d.OpenComments, &d.UpdatedAt); err != nil {
+			var folderID sql.NullString
+			if err := rows.Scan(&d.ID, &d.Kind, &d.Title, &d.Rich, &folderID, &d.Role, &d.OpenComments, &d.UpdatedAt); err != nil {
 				jsonError(w, http.StatusInternalServerError, "db error")
 				return
 			}
+			if folderID.Valid {
+				f := folderID.String
+				d.FolderID = &f
+			}
+			if i, seen := at[d.ID]; seen {
+				docs[i].Role = bestRole(docs[i].Role, d.Role)
+				continue
+			}
+			at[d.ID] = len(docs)
 			docs = append(docs, d)
+		}
+		if err := rows.Err(); err != nil {
+			jsonError(w, http.StatusInternalServerError, "db error")
+			return
 		}
 		writeJSON(w, http.StatusOK, docs)
 	}

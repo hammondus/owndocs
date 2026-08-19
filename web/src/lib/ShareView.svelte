@@ -71,7 +71,12 @@
   }
 
   async function removePerson(person) {
-    await api(`/api/docs/${doc.id}/shares/${person.user_id}`, { method: 'DELETE' })
+    try {
+      await api(`/api/docs/${doc.id}/shares/${person.user_id}`, { method: 'DELETE' })
+      error = ''
+    } catch (err) {
+      error = err.message
+    }
     await loadPeople()
   }
 
@@ -136,11 +141,20 @@
     {#each people as person (person.user_id)}
       <li>
         {person.name} &lt;{person.email}&gt; — {person.role}
-        <!-- Gated on rank rather than on `!== 'owner'`: a manager may not
-             remove a peer either, and the old test would have offered them a
-             button that only ever returned 403. -->
-        {#if mayModify(person)}
-          <button onclick={() => removePerson(person)}>remove</button>
+        {#if person.via_folder_name}
+          <!-- Their access is a grant on the folder this document sits in, so
+               there is no row here to withdraw and no button offered. Saying
+               where it came from beats a remove that reports success and
+               changes nothing — which is exactly what this panel would do if
+               it listed only direct grants. -->
+          <span class="via">via the folder “{person.via_folder_name}”</span>
+        {:else}
+          <!-- Gated on rank rather than on `!== 'owner'`: a manager may not
+               remove a peer either, and the old test would have offered them a
+               button that only ever returned 403. -->
+          {#if mayModify(person)}
+            <button onclick={() => removePerson(person)}>remove</button>
+          {/if}
         {/if}
         <!-- Transfer is owner-only, and offered per person because the target
              must already have access — which is what makes this list the
@@ -212,5 +226,10 @@
     font-size: 0.8rem;
     opacity: 0.75;
     max-width: 40rem;
+  }
+  .via {
+    font-size: 0.8rem;
+    opacity: 0.75;
+    font-style: italic;
   }
 </style>

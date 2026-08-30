@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -153,7 +154,7 @@ func handleVerifyBundle(db *sql.DB) http.HandlerFunc {
 		var pendData []byte
 		err = tx.QueryRow("SELECT last_seq, data FROM snapshots WHERE doc_id = ? AND state='pending' ORDER BY last_seq DESC LIMIT 1", docID).
 			Scan(&pendSeq, &pendData)
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			jsonError(w, http.StatusNotFound, "no pending snapshot")
 			return
 		}
@@ -165,7 +166,7 @@ func handleVerifyBundle(db *sql.DB) http.HandlerFunc {
 		var a, b []byte
 		var verData []byte
 		err = tx.QueryRow("SELECT data FROM snapshots WHERE doc_id = ? AND state='verified' ORDER BY last_seq DESC LIMIT 1", docID).Scan(&verData)
-		if err != nil && err != sql.ErrNoRows {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}

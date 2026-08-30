@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/xml"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -31,7 +32,7 @@ func TestFaviconIsWellFormedXML(t *testing.T) {
 	dec := xml.NewDecoder(f)
 	for {
 		_, err := dec.Token()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

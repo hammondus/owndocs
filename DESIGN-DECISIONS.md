@@ -4798,9 +4798,10 @@ effect, and the destination is the only place that fact is visible.
 ### Not done
 
 - **The git exporter still writes a flat tree.** `exporter.mjs` names files
-  `<slug>-<id6>.md`. Mirroring the folder path into the repo would make a move
-  show up as a git rename, which is most of the value of having the exporter at
-  all.
+  `<slug>-<id6>.md`, so a document's folder never reaches the repo. Mirroring
+  the path would make a move arrive as a git rename, through the machinery that
+  already makes a *retitle* one. Whether it should is genuinely open, and for a
+  reason that only surfaced on a second reading — see *Open questions*.
 - **Moving a document into a folder notifies nobody.** Everyone in the
   destination gains access silently. A direct share sends mail; this does not,
   and the asymmetry is not defensible for long.
@@ -5028,9 +5029,42 @@ effect, and the destination is the only place that fact is visible.
     is one message per person per move — noisy for a tidy-up that files twenty
     documents — or a digest, which needs somewhere to accumulate.
   - **Whether the folder path belongs in the exporter.** Mirroring it would
-    make a move show as a git rename, which is most of the value of the
-    exporter. The cost is that a re-file rewrites paths for every document
-    underneath, so one move becomes a large commit.
+    make the repo browsable in the shape the app shows, and a move would arrive
+    as a git rename. The machinery is already there and costs nothing new:
+    `exportVersion` diffs the files it wrote last time against the ones it just
+    wrote and deletes the leftovers, which is exactly what makes a retitle a
+    rename today. Only `baseFor` changes.
+
+    An earlier draft of this entry called that "most of the value of the
+    exporter", which overstates it and is corrected here. The value is a
+    durable, diffable, plain-text copy of the content outside the app. The path
+    is convenience.
+
+    **The objection to settle first is that the path is per viewer.** The
+    exporter signs in as one account and reads `/api/folders`, which returns the
+    forest rooted at *that account's* grants with `parent_id` nulled above them
+    — see *The path is per viewer*. So the repo's directory shape becomes a
+    function of the exporter account's permissions rather than of how anybody
+    filed anything. Grant that account a folder further up and every path
+    beneath it moves a level deeper on the next run: a mass rename caused by a
+    permission change, with nothing in the commit connecting the two. That is
+    worse than the cost this entry used to name, because it is silent.
+
+    The answer is operational rather than structural, which is why this is
+    still an open question and not a refusal: **require the exporter's account
+    to hold a grant at each root it mirrors**, say so in the README beside the
+    credentials, and have the exporter log a line for every document whose
+    folder it cannot see. Those land unfiled, and doing that quietly is how the
+    coupling gets rediscovered six months later by somebody reading a diff.
+
+    Two smaller costs, neither a blocker:
+
+    - Sibling folder names are not unique, deliberately, matching document
+      titles. Path segments therefore need the same `-<id6>` suffix documents
+      already carry, and the paths get ugly:
+      `engineering-a1b2c3/runbooks-d4e5f6/deploy-guide-789abc.md`.
+    - Moving a folder rewrites every path beneath it, so one re-file is a large
+      commit. Git copes; the diff does not.
 
 - **Is the location hash a real route?** It is written on every navigation and
   read only at startup, so the browser's back and forward buttons change the

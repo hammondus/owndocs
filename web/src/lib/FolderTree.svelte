@@ -11,7 +11,7 @@
   import { canManage } from '../roles.js'
   import { countDocs } from '../folders.js'
 
-  let { node, depth = 0, collapsed, onToggle, folderActions, docActions } = $props()
+  let { node, depth = 0, collapsed, focus = null, onToggle, folderActions, docActions } = $props()
 
   let renaming = $state(false)
   let addingChild = $state(false)
@@ -26,8 +26,10 @@
   }
 </script>
 
-<li class="folder" style="--depth: {depth}">
-  <div class="head">
+<li class="folder" style="--depth: {depth}" data-folder={node.id}>
+  <!-- `focus` is the folder the list was asked to arrive on. Marked rather
+       than selected: nothing else changes, it is just findable on a long page. -->
+  <div class="head" class:focus={focus === node.id}>
     <button class="twist" onclick={() => onToggle(node.id)} aria-expanded={isOpen}>
       {isOpen ? '▾' : '▸'}
     </button>
@@ -88,6 +90,7 @@
           node={child}
           depth={depth + 1}
           {collapsed}
+          {focus}
           {onToggle}
           {folderActions}
           {docActions}
@@ -127,6 +130,7 @@
   }
   .head:hover { background: var(--surface-2); border-left-color: var(--signal); }
   .head:focus-within { border-left-color: var(--signal); }
+  .head.focus { background: var(--signal-tint); border-left-color: var(--signal); }
 
   .twist {
     border: 0;

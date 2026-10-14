@@ -63,7 +63,7 @@
   // one and overwrite the results for what is currently in the box.
   let showSearch = $state(false)
   let searchQ = $state('')
-  let searchResults = $state({ documents: [], comments: [] })
+  let searchResults = $state({ folders: [], documents: [], comments: [] })
   let searching = $state(false)
   let searchSeq = 0
   let searchTimer = null
@@ -72,7 +72,7 @@
     searchQ = v
     clearTimeout(searchTimer)
     if (v.trim() === '') {
-      searchResults = { documents: [], comments: [] }
+      searchResults = { folders: [], documents: [], comments: [] }
       searching = false
       return
     }
@@ -91,10 +91,17 @@
     } catch (e) {
       if (mine !== searchSeq) return
       console.warn('owndocs: search failed', e)
-      searchResults = { documents: [], comments: [] }
+      searchResults = { folders: [], documents: [], comments: [] }
     } finally {
       if (mine === searchSeq) searching = false
     }
+  }
+
+  // A folder hit lands on the list with that folder in view, the same place a
+  // breadcrumb or a mail link lands.
+  function openSearchFolder(id) {
+    showSearch = false
+    openFolder(id)
   }
 
   async function openSearchDoc(h) {
@@ -189,6 +196,9 @@
         openDoc(doc)
         return
       }
+    } else if (hash.get('folder')) {
+      openFolder(hash.get('folder'))
+      return
     }
     showList()
   }
@@ -234,6 +244,16 @@
   function showList() {
     location.hash = ''
     route = { view: 'list' }
+    loadNotes()
+  }
+
+  // The list, opened on one folder: the breadcrumb, a folder search hit and
+  // the link in a "shared the folder" mail all land here. Its own hash so the
+  // mail link works and a refresh keeps the place. A folder the viewer cannot
+  // see is not an error: the list simply has nothing to scroll to.
+  function openFolder(id) {
+    location.hash = 'folder=' + id
+    route = { view: 'list', folder: id }
     loadNotes()
   }
 
@@ -323,6 +343,7 @@
       results={searchResults}
       {searching}
       onQuery={onSearchQuery}
+      onOpenFolder={openSearchFolder}
       onOpenDoc={openSearchDoc}
       onOpenComment={openSearchComment}
       onClose={() => (showSearch = false)}
@@ -341,18 +362,18 @@
          the sign-up form, which is the only thing that can spend it. -->
     <AuthView onSignedIn={signedIn} invite={inviteToken} />
   {:else if route.view === 'list'}
-    <DocList {me} onOpen={openDoc} onShare={openShare} onShareFolder={openFolderShare} />
+    <DocList {me} focusFolder={route.folder} onOpen={openDoc} onShare={openShare} onShareFolder={openFolderShare} />
   {:else if route.view === 'editor'}
     <!-- #key destroys and recreates the editor when the doc changes, so a
          stale CodeMirror/provider from the previous doc can never leak. -->
     {#key route.doc.id}
       {#if route.doc.kind === 'sheet'}
-        <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} onNotice={notify} />
+        <SheetView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} onOpenFolder={openFolder} onNotice={notify} />
       {:else}
         <!-- onOpenDoc follows a document link, by id. It ends in openDoc like
              any other navigation, so the hash updates and the #key above swaps
              the editor rather than leaving a stale one on the old document. -->
-        <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} onOpenDoc={openDocById} onRichChanged={richChanged}
+        <EditorView {me} doc={route.doc} onBack={showList} onShare={openShare} onHistory={openHistory} onRenamed={renamed} onOpenDoc={openDocById} onOpenFolder={openFolder} onRichChanged={richChanged}
           startWithComments={route.withComments} />
       {/if}
     {/key}

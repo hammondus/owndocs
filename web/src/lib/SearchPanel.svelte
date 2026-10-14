@@ -1,15 +1,18 @@
 <script>
-  // Search results: documents whose text a client has indexed, and comments,
-  // which the server has always held in the clear. See DESIGN-DECISIONS,
-  // *Search*.
+  // Search results: folders by name, documents whose text a client has
+  // indexed, and comments, which the server has always held in the clear. See
+  // DESIGN-DECISIONS, *Search*.
   //
-  // Two lists rather than one ranked list, because FTS5 `rank` is not
-  // comparable across two tables — merging them would mean inventing a score,
-  // and an invented score is a ranking nobody can explain when it puts the
-  // wrong thing first.
-  let { q, results, searching, onQuery, onOpenDoc, onOpenComment, onClose } = $props()
+  // Three lists rather than one ranked list, because FTS5 `rank` is not
+  // comparable across tables — merging them would mean inventing a score, and
+  // an invented score is a ranking nobody can explain when it puts the wrong
+  // thing first. Folders come first because a folder hit is the shortest
+  // list and the broadest landing: it opens everything filed there.
+  let { q, results, searching, onQuery, onOpenFolder, onOpenDoc, onOpenComment, onClose } = $props()
 
-  const hits = $derived((results.documents?.length ?? 0) + (results.comments?.length ?? 0))
+  const hits = $derived(
+    (results.folders?.length ?? 0) + (results.documents?.length ?? 0) + (results.comments?.length ?? 0),
+  )
 
   // The snippet arrives as plain text with control characters around the
   // matched terms — deliberately NOT markup. Splitting on them and rendering
@@ -40,7 +43,7 @@
     <input
       class="q"
       type="search"
-      placeholder="documents and comments"
+      placeholder="folders, documents and comments"
       value={q}
       oninput={(e) => onQuery(e.currentTarget.value)}
     />
@@ -50,8 +53,8 @@
 
   {#if q.trim() === ''}
     <p class="note empty">
-      Documents are searchable once somebody has opened them, and comments
-      always are.
+      Folders are found by name. Documents are searchable once somebody has
+      opened them, and comments always are.
     </p>
   {:else if searching}
     <p class="note empty">Searching…</p>
@@ -62,6 +65,18 @@
     </p>
   {:else}
     <div class="list-scroll">
+      {#if results.folders?.length}
+        <div class="group label">Folders</div>
+        {#each results.folders as f (f.id)}
+          <button class="row" onclick={() => onOpenFolder(f.id)}>
+            <span class="line">
+              {#each f.path as name, i (i)}<span class="what">{name} / </span>{/each}<strong>{f.name}</strong>
+            </span>
+            <span class="meta label">{f.role}</span>
+          </button>
+        {/each}
+      {/if}
+
       {#if results.documents?.length}
         <div class="group label">In documents</div>
         {#each results.documents as d (d.doc_id)}

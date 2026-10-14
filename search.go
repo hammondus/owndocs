@@ -9,6 +9,7 @@ package main
 import (
 	"database/sql"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -49,16 +50,49 @@ type docHit struct {
 	IndexedAt int64  `json:"indexed_at"`
 }
 
-// Two lists rather than one, because they are two kinds of hit and FTS5 `rank`
-// is not comparable across separate tables. Merging them would mean inventing a
-// score, and an invented score is a ranking nobody can explain when it puts the
-// wrong thing first.
+// A folder found by name. Path is what sits above it, outermost first, as far
+// up as the viewer can see — so two folders called "Notes" are tellable apart
+// in the results, as they are in the move picker.
+type folderHit struct {
+	ID   string   `json:"id"`
+	Name string   `json:"name"`
+	Path []string `json:"path"`
+	Role string   `json:"role"`
+}
+
+// Three lists rather than one, because they are three kinds of hit and FTS5
+// `rank` is not comparable across separate tables. Merging them would mean
+// inventing a score, and an invented score is a ranking nobody can explain
+// when it puts the wrong thing first.
 type searchResults struct {
+	Folders   []folderHit `json:"folders"`
 	Documents []docHit    `json:"documents"`
 	Comments  []searchHit `json:"comments"`
 }
 
-// ftsQuery turns what somebody typed into an FTS5 MATCH expression.
+// searchTerms is what somebody typed, as bare words: split on whitespace, and
+// stripped to letters, digits and marks. Everything else is either an FTS5
+// operator or noise the tokenizer would drop anyway. Empty when nothing
+// usable is left, which the caller treats as an empty result rather than an
+// error: a box containing only punctuation is not a failure, it is a box
+// nobody has finished typing in.
+func searchTerms(raw string) []string {
+	var terms []string
+	for field := range strings.FieldsFuncSeq(raw, unicode.IsSpace) {
+		var b strings.Builder
+		for _, r := range field {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) {
+				b.WriteRune(r)
+			}
+		}
+		if t := b.String(); t != "" {
+			terms = append(terms, t)
+		}
+	}
+	return terms
+}
+
+// ftsQuery turns the terms into an FTS5 MATCH expression.
 //
 // This is not optional politeness. MATCH takes a query *language* — bare `AND`,
 // an unbalanced quote, a leading `*` or a stray `:` are all syntax errors, and
@@ -69,28 +103,35 @@ type searchResults struct {
 // Tokens are ANDed (FTS5's default for adjacent terms) and each gets a `*`
 // prefix match, so typing "budg" finds "budget" — the behaviour a person
 // expects from a search box, and the reason this is not simply a LIKE.
-//
-// Returns "" when nothing usable is left, which the caller treats as an empty
-// result rather than an error: a box containing only punctuation is not a
-// failure, it is a box nobody has finished typing in.
-func ftsQuery(raw string) string {
-	var terms []string
-	for _, field := range strings.FieldsFunc(raw, func(r rune) bool {
-		return unicode.IsSpace(r)
-	}) {
-		// Keep letters, digits and marks; everything else is either an FTS5
-		// operator or noise the tokenizer would drop anyway.
-		var b strings.Builder
-		for _, r := range field {
-			if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) {
-				b.WriteRune(r)
+func ftsQuery(terms []string) string {
+	quoted := make([]string, len(terms))
+	for i, t := range terms {
+		quoted[i] = `"` + t + `"*`
+	}
+	return strings.Join(quoted, " ")
+}
+
+// folderHits is the folders the viewer can see whose name contains every
+// term. Not FTS: a person has a few dozen folders, their names are short, and
+// a substring test in Go case-folds Unicode where SQLite's LIKE folds only
+// ASCII. Capped like the other two lists.
+func folderHits(db *sql.DB, userID int64, terms []string) ([]folderHit, error) {
+	folders, err := visibleFolders(db, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := []folderHit{}
+	for _, f := range folders {
+		name := strings.ToLower(f.Name)
+		matches := func(t string) bool { return strings.Contains(name, strings.ToLower(t)) }
+		if !slices.ContainsFunc(terms, func(t string) bool { return !matches(t) }) {
+			out = append(out, folderHit{ID: f.ID, Name: f.Name, Path: folderPath(folders, f.ID), Role: f.Role})
+			if len(out) == searchLimit {
+				break
 			}
 		}
-		if t := b.String(); t != "" {
-			terms = append(terms, `"`+t+`"*`)
-		}
 	}
-	return strings.Join(terms, " ")
+	return out, nil
 }
 
 // GET /api/search?q=…
@@ -104,12 +145,20 @@ func ftsQuery(raw string) string {
 func handleSearch(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
-		q := ftsQuery(r.URL.Query().Get("q"))
-		out := searchResults{Documents: []docHit{}, Comments: []searchHit{}}
+		terms := searchTerms(r.URL.Query().Get("q"))
+		q := ftsQuery(terms)
+		out := searchResults{Folders: []folderHit{}, Documents: []docHit{}, Comments: []searchHit{}}
 		if q == "" {
 			writeJSON(w, http.StatusOK, out)
 			return
 		}
+
+		folders, err := folderHits(db, u.ID, terms)
+		if err != nil {
+			jsonError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		out.Folders = folders
 
 		docRows, err := db.Query(visibleDocsSQL+`
 			SELECT d.id, d.title, d.kind,

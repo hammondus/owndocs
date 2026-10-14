@@ -1,5 +1,5 @@
 // Tree building for the document list. Run from web/: node scripts/folders_test.mjs
-import { buildTree, pickerOptions, countDocs, UNFILED } from '../src/folders.js'
+import { buildTree, pickerOptions, countDocs, pathTo, UNFILED } from '../src/folders.js'
 import { canEdit } from '../src/roles.js'
 
 let failures = 0
@@ -74,6 +74,18 @@ const d = (id, folder_id) => ({ id, title: id, folder_id, role: 'owner' })
     [d('d1', 'a'), d('d2', 'b'), d('d3', 'b')],
   )
   eq(countDocs(roots[0]), 3, 'the count covers the subtree, not just the folder')
+}
+
+// ---- the path above a folder, as far as the viewer can see ---------------
+{
+  const fs = [f('a', 'Alpha', null), f('b', 'Beta', 'a'), f('c', 'Gamma', 'b')]
+  eq(pathTo(fs, 'c').map((x) => x.name), ['Alpha', 'Beta', 'Gamma'], 'the path runs root to leaf, inclusive')
+  eq(pathTo(fs, 'a').map((x) => x.name), ['Alpha'], 'a root is its own path')
+  eq(pathTo(fs, 'nope'), [], 'an unknown folder has no path')
+  // Granted only Beta: the server nulls its parent, so the path starts there
+  // and Alpha's name is never shown.
+  eq(pathTo([f('b', 'Beta', null), f('c', 'Gamma', 'b')], 'c').map((x) => x.name), ['Beta', 'Gamma'],
+    'the path starts at the viewer\'s own grant')
 }
 
 eq(UNFILED, '__unfiled__', 'the unfiled key is exported for the list to key on')

@@ -132,7 +132,7 @@ func directRoleFor(db *sql.DB, docID string, userID int64) (string, error) {
 	return role, err
 }
 
-func handleCreateDoc(db *sql.DB) http.HandlerFunc {
+func handleCreateDoc(db *sql.DB, mail *mailer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
 		var in struct {
@@ -203,6 +203,13 @@ func handleCreateDoc(db *sql.DB) http.HandlerFunc {
 		out := document{ID: id, Kind: in.Kind, Title: in.Title, Role: "owner", UpdatedAt: now}
 		if folderID != "" {
 			out.FolderID = &folderID
+			// A new document in a shared folder is readable by everyone in it
+			// the moment it exists, which is a share for each of them. Told the
+			// way a move into the folder is, as one digest per person per
+			// folder — see mail.go.
+			if newcomers, err := chainUserIDs(db, folderID, u.ID); err == nil {
+				mail.filed(id, folderID, newcomers, u.ID)
+			}
 		}
 		writeJSON(w, http.StatusOK, out)
 	}

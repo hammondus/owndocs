@@ -2539,6 +2539,71 @@ try {
     check(!/make owner/i.test(text), 'and no transfer, because a folder has no owner')
   })
 
+  // The focused folder's row. `focus` is set by a class: directive, so it is
+  // a plain class name and not one of Svelte's hashed ones.
+  const focusedFolder = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('[data-folder] div')]
+        .find((d) => d.className.includes('head') && d.className.includes('focus'))
+        ?.textContent ?? null,
+    )
+
+  await step('the breadcrumb names the folders above the open document, and jumps to one', async () => {
+    // The sheet filed into Engineering / Runbooks earlier. Opened from the
+    // flat list, so the breadcrumb is the only thing on screen saying where
+    // it lives.
+    await page.goto(BASE, { waitUntil: 'networkidle0' })
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await clickText(page, 'button', 'recent')
+    await clickText(page, 'a', 'UI test sheet')
+    await page.waitForSelector('canvas', { timeout: 5000 })
+    await page.waitForFunction(
+      () => document.querySelector('nav[aria-label="Folder"]')?.textContent.includes('Runbooks'),
+      { timeout: 5000 },
+    )
+    const crumbs = await page.evaluate(() =>
+      [...document.querySelectorAll('nav[aria-label="Folder"] button')].map((b) => b.textContent.trim()),
+    )
+    check(crumbs.join(' / ') === 'Engineering / Runbooks', `the path runs root to folder (${crumbs.join(' / ')})`)
+
+    await clickText(page, 'nav[aria-label="Folder"] button', 'Runbooks')
+    await page.waitForFunction(() => location.hash.startsWith('#folder='), { timeout: 5000 })
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll('[data-folder] div')].some(
+          (d) => d.className.includes('head') && d.className.includes('focus'),
+        ),
+      { timeout: 5000 },
+    )
+    check((await focusedFolder())?.includes('Runbooks'), 'the list arrives on that folder, marked')
+    check(await page.evaluate(() => /UI test sheet/.test(document.body.innerText)),
+      'and open, so what is inside is on screen')
+  })
+
+  await step('search finds a folder by name and lands on it', async () => {
+    await page.goto(BASE, { waitUntil: 'networkidle0' })
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await clickText(page, 'button', 'search')
+    await page.waitForSelector('input[type="search"]', { timeout: 3000 })
+    await page.type('input[type="search"]', 'runb')
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('.panel button')].some((b) => /Engineering \/.*Runbooks/.test(b.textContent)),
+      { timeout: 5000 },
+    )
+    ok('a folder hit shows the path above it')
+    await clickText(page, '.panel button', 'Runbooks')
+    await page.waitForFunction(() => location.hash.startsWith('#folder='), { timeout: 5000 })
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll('[data-folder] div')].some(
+          (d) => d.className.includes('head') && d.className.includes('focus'),
+        ),
+      { timeout: 5000 },
+    )
+    check((await focusedFolder())?.includes('Runbooks'), 'and choosing it lands on the folder')
+    check(!(await page.$('input[type="search"]')), 'the search panel closes behind it')
+  })
+
 } finally {
   await browser.close()
   server.kill()

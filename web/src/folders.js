@@ -68,3 +68,16 @@ export function pickerOptions(roots, allowed) {
 export function countDocs(node) {
   return node.docs.length + node.children.reduce((n, c) => n + countDocs(c), 0)
 }
+
+// pathTo lists the folders from the viewer's root down to one, inclusive, as
+// {id, name}. The breadcrumb draws it, and the list expands it when asked to
+// show a folder. The walk stops where the viewer's grants stop: a parent they
+// hold no grant on arrives with a null parent_id, so the path starts there.
+export function pathTo(folders, folderID) {
+  const byID = new Map(folders.map((f) => [f.id, f]))
+  const out = []
+  for (let f = byID.get(folderID); f; f = f.parent_id ? byID.get(f.parent_id) : null) {
+    out.unshift({ id: f.id, name: f.name })
+  }
+  return out
+}

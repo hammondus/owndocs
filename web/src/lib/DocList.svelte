@@ -9,19 +9,23 @@
   // **Folders** is the tree, for when you are filing rather than resuming.
   // Neither is a different query — the server sends folders and documents, and
   // folders.js arranges them.
-  import { onMount } from 'svelte'
+  import { onMount, tick, untrack } from 'svelte'
   // A Set whose *contents* are reactive. A plain Set is tracked by reference,
   // so `collapsed.add(id)` would change nothing on screen — the class of bug
   // that presents as a dead control rather than an error.
   import { SvelteSet } from 'svelte/reactivity'
   import { api } from './api.js'
   import { canEdit } from '../roles.js'
-  import { buildTree, pickerOptions } from '../folders.js'
+  import { buildTree, pickerOptions, pathTo } from '../folders.js'
   import ReadingPrefs from './ReadingPrefs.svelte'
   import FolderTree from './FolderTree.svelte'
   import DocRow from './DocRow.svelte'
 
-  let { me, onOpen, onShare, onShareFolder } = $props()
+  // focusFolder is a folder id to arrive on: the breadcrumb, a search hit and
+  // a mail link all open the list this way. It switches to the tree, opens
+  // every folder above it, and scrolls it into view. Null means the ordinary
+  // list, which is what the back arrow and the wordmark give.
+  let { me, focusFolder = null, onOpen, onShare, onShareFolder } = $props()
 
   let docs = $state([])
   let folders = $state([])
@@ -38,7 +42,21 @@
   const tree = $derived(buildTree(folders, docs))
   const destinations = $derived(pickerOptions(tree.roots, canEdit))
 
-  onMount(load)
+  let loaded = $state(false)
+
+  onMount(async () => {
+    await load()
+    loaded = true
+  })
+
+  // An effect rather than a one-off in onMount, because the list stays mounted
+  // when a search hit lands on a folder from the list itself: only the prop
+  // changes. Untracked inside so a reload of the folders — after a rename,
+  // say — does not scroll the page back to the folder again.
+  $effect(() => {
+    const id = focusFolder
+    if (loaded && id) untrack(() => showFolder(id))
+  })
 
   async function load() {
     // One round trip each, in parallel: the tree needs both and neither
@@ -46,6 +64,17 @@
     const [d, f] = await Promise.all([api('/api/docs'), api('/api/folders')])
     docs = d
     folders = f
+  }
+
+  // Opening every folder above the target is deleting from the closed set,
+  // and the scroll waits a tick so the rows exist to scroll to. A folder the
+  // viewer cannot see has no path, no row, and nothing happens — the list is
+  // still the list.
+  async function showFolder(id) {
+    view = 'folders'
+    for (const f of pathTo(folders, id)) collapsed.delete(f.id)
+    await tick()
+    document.querySelector(`[data-folder="${id}"]`)?.scrollIntoView({ block: 'center' })
   }
 
   async function createDoc(event) {
@@ -338,7 +367,7 @@
       </li>
     {/if}
     {#each tree.roots as node (node.id)}
-      <FolderTree {node} {collapsed} onToggle={toggle} {folderActions} {docActions} />
+      <FolderTree {node} {collapsed} focus={focusFolder} onToggle={toggle} {folderActions} {docActions} />
     {/each}
     {#if tree.unfiled.length}
       <li class="unfiled">

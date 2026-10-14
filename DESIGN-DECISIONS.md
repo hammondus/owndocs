@@ -1974,7 +1974,9 @@ Choices worth recording:
 - **Filenames are `slug(title)-<6-char doc-id>.md`** — same-title docs never
   collide, retitles show up as renames (handled via the state file's
   remembered path). Trailers `Docs-Doc:`/`Docs-Version:` tie each commit
-  back to its source.
+  back to its source. Since 2026-10-14 the file sits under one directory per
+  folder above it, and a move or retitle is a commit of its own — see *The
+  folder path reaches the exporter* under *Folders*.
 - **Git metadata mirrors doc history**: author = whoever pinned (synthetic
   `@docs.invalid` email — users have no public email), author/committer
   dates = pin time. Committer identity is passed with `-c` per invocation;
@@ -3395,14 +3397,17 @@ cannot be marked as spam. That leaves a short list.
 document list, replies to threads you are in. No deployment surface, so it
 ships first and the feature is whole without any mail at all.
 
-**Email covers exactly two events**, because they are the only ones where the
-recipient is by definition *not* in the app to see a badge:
+**Email covers exactly two kinds of event**, because they are the only ones
+where the recipient is by definition *not* in the app to see a badge:
 
 - **You were mentioned.** Someone named you and is waiting.
 - **A document was shared with you.** Today `handleAddShare` grants a role and
   the document silently appears in a list — if the recipient never opens the
   app, they never learn it exists. This is the only event with no in-app place
-  to discover it, and it is not a comment feature at all.
+  to discover it, and it is not a comment feature at all. Since folders, the
+  same event arrives four more ways, and since 2026-10-14 every one of them
+  mails — see *Notifying the destination* under *Folders* for the unit each
+  one uses.
 
 Deliberately *not* emailed: any comment on a document you own (ownership is not
 interest, and an active document is a firehose), thread resolved (that is
@@ -4795,18 +4800,129 @@ one line of warning text: **everyone in the destination folder gets access**.
 Filing is the only gesture in the app that hands other people access as a side
 effect, and the destination is the only place that fact is visible.
 
-### Not done
+### Notifying the destination
 
-- **The git exporter still writes a flat tree.** `exporter.mjs` names files
-  `<slug>-<id6>.md`, so a document's folder never reaches the repo. Mirroring
-  the path would make a move arrive as a git rename, through the machinery that
-  already makes a *retitle* one. Whether it should is genuinely open, and for a
-  reason that only surfaced on a second reading — see *Open questions*.
-- **Moving a document into a folder notifies nobody.** Everyone in the
-  destination gains access silently. A direct share sends mail; this does not,
-  and the asymmetry is not defensible for long.
-- **No search over folder names,** and no breadcrumb in the editor telling you
-  where the open document is filed.
+Decided and built 2026-10-14. The rule is that **gaining access is one event,
+however it happened**, and it mails by the rules a direct share already
+followed. Before this, only a direct document share sent anything; four other
+paths granted access and told nobody — a document created in a shared folder,
+a document moved into one, a folder shared, and a folder moved into another.
+The asymmetry was the complaint, and the fix is to close it rather than to
+argue about which of the five deserves a message.
+
+What was actually decided is the **unit**. A direct share is one document, so
+one message. The folder paths are not:
+
+- **A folder shared or moved** is one message naming the folder. The folder is
+  what was shared; a message per document inside it would bury that under its
+  own contents, and a twenty-document folder would arrive as twenty messages
+  about one act.
+- **Documents filed into a folder** — created there, or moved in — are held
+  for two minutes per (person, folder) and sent as one message listing the
+  titles. A tidy-up that files twenty documents is one message that says so.
+  The hold is in memory, so a restart drops it, which is the same trade the
+  bounded queue already makes and for the same reason: this app does not grow a
+  mail queue pretending to be reliable.
+
+Who is told is worked out **before the write**, in the handler, because
+afterwards everyone in the destination has access and the newcomers can no
+longer be told from the rest. `newToDoc` and `newToFolder` do that; they cost
+a chain walk and a role lookup per member on a rare action, and they run
+whether or not mail is configured, because the alternative is an `if mail !=
+nil` at the call site — the thing the nil-mailer design exists to avoid.
+
+Rules carried over unchanged: never the actor; only a first grant mails, so a
+role change on a folder is bookkeeping as it is on a document; somebody with
+the document open right now is not told about it; and the per-(person,
+document) debounce still applies to each filed document, so a direct share
+followed by a move into a folder is one message, not two. The digest also
+skips anyone who already reached the document another way — a document shared
+with you directly and then filed into your folder is not news.
+
+What a folder mail links to is the document list opened on that folder,
+`#folder=<id>`, which is the route the breadcrumb and a folder search hit use.
+The link, like every other one in these messages, is the plain URL and never a
+bearer token.
+
+**Not an inbox row.** A direct share has never written one — the
+`notifications` table is comment-shaped, with `thread_id` and `comment_id`
+`NOT NULL` — and the folder events match it. Whether "shared with you" belongs
+in the inbox at all is a separate question from this one, and widening the
+table is the cost of answering yes.
+
+### The folder path reaches the exporter
+
+Decided and built 2026-10-14. The repo mirrors the folder tree as the
+exporter's account sees it: a document at `Engineering / Runbooks / Deploy
+guide` lands at `engineering-a1b2c3/runbooks-d4e5f6/deploy-guide-789abc.md`.
+The *Open questions* entry that preceded this is answered as it proposed, and
+the two costs it named are paid as described there:
+
+- **Folder segments carry the same `-<id6>` suffix documents do.** Sibling
+  folder names are not unique, deliberately, matching document titles. Without
+  the suffix two sibling folders called "Notes" would merge into one directory
+  and a rename would be a merge rather than a rename. The paths are uglier;
+  the mapping is exact.
+- **Moving a folder rewrites every path beneath it.** Git copes; the diff is
+  one large commit.
+
+**The path is per viewer, and that is operational rather than structural.**
+`/api/folders` returns the forest rooted at the account's own grants, so the
+directory shape is a function of what the account is granted. Grant it a folder
+higher up and everything beneath moves a level deeper on the next run — a mass
+rename caused by a permission change. The README says so beside the
+credentials: grant the account at each root it should mirror, and leave it
+there. The exporter cannot tell a document filed nowhere from one in a folder
+it cannot see — the server nulls `folder_id` in both cases, by *The path is
+per viewer* — so it logs one line, when the set changes, saying how many
+documents sit at the top level and why that might be. That line is where to
+look when the repo does not match the app.
+
+**A move is a commit of its own.** Before this, a retitle reached the repo only
+at the next pin, folded into that version's commit. That was tolerable when the
+only thing that could change a path was the title; it is not when the path is
+the point. So each pass now checks every exported document's base against the
+one in the state file, moves the files on disk when they differ, and commits
+`<title>: now at <path>` with no content change — which git shows as a rename,
+through the state-file machinery that already made a retitle one. A retitle
+without a pin gets the same commit now. The state file gains `base`; older
+state without it derives the base from the files it listed.
+
+### Breadcrumb and folder search
+
+Built 2026-10-14, and neither needed a decision so much as a route.
+
+**One landing for three arrivals.** The breadcrumb in a document's view bar, a
+folder hit in search, and the link in a folder mail all open the document list
+on one folder: `#folder=<id>` switches the list to the tree, opens every folder
+above the target, marks its row and scrolls to it. Its own hash so the mail
+link works and a refresh keeps the place. A folder the viewer cannot see has
+no row to scroll to, and nothing happens — the list is still the list.
+
+The list stays mounted when a search hit lands on a folder from the list
+itself, so the target is an `$effect` on the prop rather than a one-off in
+`onMount`. Untracked inside, or a reload of the folders after a rename would
+scroll the page back to the folder.
+
+**The breadcrumb fetches the folder list itself**, on mount, and only for a
+document that has a folder. The document row carries a folder id, and the
+names above it live in the folder list, which the editor otherwise has no
+reason to load. One request per document opened. It draws nothing for a
+document whose folder the viewer holds no grant on, because the server nulls
+the id in that case — the breadcrumb cannot name what the list would not.
+
+**Folder search is not FTS.** A person has a few dozen folders and their names
+are short, so the visible folders are read and filtered in Go: every typed
+term must be a case-folded substring of the name. SQLite's `LIKE` folds only
+ASCII; `strings.ToLower` folds Unicode. Each hit carries the path above it, as
+far up as the viewer can see, for the reason the move picker labels by path:
+two folders called "Notes" have to be tellable apart. Folders are the first
+group in the results because a folder hit is the shortest list and the
+broadest landing.
+
+Still not done, and not scheduled: documents are not found *by* their folder's
+name. Searching "runbooks" lists the folder, not everything in it, and the
+folder row is one click from exactly that.
 
 ## Incidents
 
@@ -5023,48 +5139,19 @@ effect, and the destination is the only place that fact is visible.
     does, the honest answer is a sibling folder rather than a tombstone role,
     and that answer should be written into the UI rather than left to be
     discovered.
-  - **Notifying the destination.** Moving a document into a folder gives
-    everyone in it access and tells nobody, while a direct share sends mail.
-    The asymmetry is not defensible for long. What needs deciding is whether it
-    is one message per person per move — noisy for a tidy-up that files twenty
-    documents — or a digest, which needs somewhere to accumulate.
-  - **Whether the folder path belongs in the exporter.** Mirroring it would
-    make the repo browsable in the shape the app shows, and a move would arrive
-    as a git rename. The machinery is already there and costs nothing new:
-    `exportVersion` diffs the files it wrote last time against the ones it just
-    wrote and deletes the leftovers, which is exactly what makes a retitle a
-    rename today. Only `baseFor` changes.
-
-    An earlier draft of this entry called that "most of the value of the
-    exporter", which overstates it and is corrected here. The value is a
-    durable, diffable, plain-text copy of the content outside the app. The path
-    is convenience.
-
-    **The objection to settle first is that the path is per viewer.** The
-    exporter signs in as one account and reads `/api/folders`, which returns the
-    forest rooted at *that account's* grants with `parent_id` nulled above them
-    — see *The path is per viewer*. So the repo's directory shape becomes a
-    function of the exporter account's permissions rather than of how anybody
-    filed anything. Grant that account a folder further up and every path
-    beneath it moves a level deeper on the next run: a mass rename caused by a
-    permission change, with nothing in the commit connecting the two. That is
-    worse than the cost this entry used to name, because it is silent.
-
-    The answer is operational rather than structural, which is why this is
-    still an open question and not a refusal: **require the exporter's account
-    to hold a grant at each root it mirrors**, say so in the README beside the
-    credentials, and have the exporter log a line for every document whose
-    folder it cannot see. Those land unfiled, and doing that quietly is how the
-    coupling gets rediscovered six months later by somebody reading a diff.
-
-    Two smaller costs, neither a blocker:
-
-    - Sibling folder names are not unique, deliberately, matching document
-      titles. Path segments therefore need the same `-<id6>` suffix documents
-      already carry, and the paths get ugly:
-      `engineering-a1b2c3/runbooks-d4e5f6/deploy-guide-789abc.md`.
-    - Moving a folder rewrites every path beneath it, so one re-file is a large
-      commit. Git copes; the diff does not.
+  - ~~**Notifying the destination.**~~ Answered 2026-10-14 — every way of
+    gaining access mails, and the unit is the thing shared: one message for a
+    folder, one digest per (person, folder) for documents filed into it. See
+    *Notifying the destination*. Still open underneath it: whether "shared
+    with you" belongs in the in-app inbox at all. A direct share has never
+    written an inbox row, and the folder events match it.
+  - ~~**Whether the folder path belongs in the exporter.**~~ Answered
+    2026-10-14, as the entry proposed: mirrored, with `-<id6>` on every
+    segment, the exporter's account granted at each root, a log line counting
+    what lands at the top level, and a move committed on its own rather than
+    at the next pin. See *The folder path reaches the exporter*. The
+    per-viewer objection was real and is now a README instruction rather than
+    a refusal.
 
 - **Is the location hash a real route?** It is written on every navigation and
   read only at startup, so the browser's back and forward buttons change the

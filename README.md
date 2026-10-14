@@ -18,7 +18,10 @@ Documents can be filed into folders, and a folder carries access: share the
 folder once and everyone on it reaches every document inside, at the role the
 folder grants. The document list has two views — **recent**, the flat list
 newest first, and **folders**, the tree. Moving a document into a folder gives
-that folder's people access to it, so the move control says so.
+that folder's people access to it, so the move control says so, and when
+notification email is on they are told, the way a direct share tells them. An
+open document shows the folders above it in its bar, and search finds folders
+by name; either lands on the folder in the list.
 
 ## Develop
 
@@ -84,10 +87,20 @@ documents that account has access to. The account needs a real password, so a
 dev quick-login user will not do. Credentials come from the environment rather
 than argv, which is visible in `ps`.
 
+**Grant the account at each root folder it should mirror, and leave it
+there.** The repo mirrors the folder tree as that account sees it, and a
+folder it holds no grant on is not named to it: a document inside one lands at
+the top level, and granting the account a folder higher up moves every path
+beneath it on the next run. The exporter prints how many documents sit at the
+top level when that number changes, which is the line to read when the repo
+does not match the app.
+
 What lands in the repo:
 
-- A document becomes `slug(title)-<6 chars of id>.md`; a sheet becomes a
-  directory of one CSV per tab. Retitles show up as git renames.
+- A document becomes `slug(title)-<6 chars of id>.md` inside one directory per
+  folder above it, each named the same way; a sheet becomes a directory of one
+  CSV per tab. A retitle or a move is a commit of its own, which git shows as
+  a rename.
 - One commit per pinned version, oldest first, authored by whoever pinned it
   and dated when they pinned it. Each carries `Docs-Doc:` and `Docs-Version:`
   trailers tying it back.

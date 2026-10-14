@@ -98,8 +98,19 @@ assert(git('log', '--format=%B', '-1').includes(`Docs-Version:`), 'trailer recor
 runExporter(exporterEnv)
 assert(git('rev-list', '--count', 'HEAD') === '2', 'rerun is idempotent')
 
-// Retitle, pin again: the file is renamed in the next commit.
+// Retitle: the rename is its own commit, with no new content, so the repo
+// mirrors the app without waiting for the next pin.
 await api(`/api/docs/${doc.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Sprint Notes' }) })
+runExporter(exporterEnv)
+assert(fs.readdirSync(REPO).filter((f) => f.endsWith('.md')).join() === `sprint-notes-${doc.id.slice(0, 6)}.md`,
+  'a retitle renames the file before any pin')
+assert(git('rev-list', '--count', 'HEAD') === '3', 'the rename is one commit')
+assert(git('log', '--format=%s', '-1') === `Sprint Notes: now at sprint-notes-${doc.id.slice(0, 6)}`, 'and says where the file went')
+assert(git('show', '--stat', '--format=', '-M', 'HEAD').includes('=>'), 'git sees it as a rename')
+runExporter(exporterEnv)
+assert(git('rev-list', '--count', 'HEAD') === '3', 'a second pass after the rename adds nothing')
+
+// Pin again after the retitle: the pin lands at the new name.
 const ydoc2 = new Y.Doc()
 const p2 = new Provider(ydoc2, doc.id, { wsUrl: `${BASE.replace(/^http/, 'ws')}/ws/${doc.id}`, onSynced: () => (p2.synced = true) })
 await new Promise((resolve, reject) => {
@@ -113,8 +124,44 @@ p2.destroy()
 
 runExporter(exporterEnv)
 const files = fs.readdirSync(REPO).filter((f) => f.endsWith('.md'))
-assert(files.length === 1 && files[0] === `sprint-notes-${doc.id.slice(0, 6)}.md`, `retitle renames the file (${files})`)
-assert(git('rev-list', '--count', 'HEAD') === '3', 'rename+pin is one more commit')
+assert(files.length === 1 && files[0] === `sprint-notes-${doc.id.slice(0, 6)}.md`, `the pin lands at the new name (${files})`)
+assert(git('rev-list', '--count', 'HEAD') === '4', 'the pin is one more commit')
+
+// ---- folders become directories, and a move is a rename -------------------
+
+const eng = await (await postJSON('/api/folders', { name: 'Engineering' })).json()
+const runbooks = await (await postJSON('/api/folders', { name: 'Runbooks', parent_id: eng.id })).json()
+const filed = await (await postJSON('/api/docs', { title: 'Deploy Guide', folder_id: runbooks.id })).json()
+const fdoc = new Y.Doc()
+const fp = new Provider(fdoc, filed.id, { wsUrl: `${BASE.replace(/^http/, 'ws')}/ws/${filed.id}`, onSynced: () => (fp.synced = true) })
+await new Promise((resolve, reject) => {
+  const t = setTimeout(() => reject(new Error('sync timeout')), 8000)
+  const iv = setInterval(() => { if (fp.synced) { clearTimeout(t); clearInterval(iv); resolve() } }, 50)
+})
+fdoc.getText('text').insert(0, '# Deploy\n')
+await sleep(1500)
+await postJSON(`/api/docs/${filed.id}/versions`, { name: 'v1' })
+fp.destroy()
+
+const seg = (f) => `${f.name.toLowerCase()}-${f.id.slice(0, 6)}`
+const inRunbooks = `${seg(eng)}/${seg(runbooks)}/deploy-guide-${filed.id.slice(0, 6)}.md`
+runExporter(exporterEnv)
+assert(fs.existsSync(path.join(REPO, inRunbooks)), `a filed document sits under its folders (${inRunbooks})`)
+
+// Move it up a level, with no new pin: the files move and one commit records it.
+await postJSON(`/api/docs/${filed.id}/move`, { folder_id: eng.id })
+const inEng = `${seg(eng)}/deploy-guide-${filed.id.slice(0, 6)}.md`
+runExporter(exporterEnv)
+assert(fs.existsSync(path.join(REPO, inEng)), 'a moved document moves in the repo')
+assert(!fs.existsSync(path.join(REPO, seg(eng), seg(runbooks))), 'and its old folder, now empty, is gone')
+assert(git('log', '--format=%s', '-1') === `Deploy Guide: now at ${inEng.slice(0, -3)}`, 'the move is a commit of its own')
+assert(git('show', '--stat', '--format=', '-M', 'HEAD').includes('=>'), 'git sees the move as a rename')
+
+// Unfile it entirely: back to the top level.
+await postJSON(`/api/docs/${filed.id}/move`, { folder_id: null })
+const out = runExporter(exporterEnv)
+assert(fs.existsSync(path.join(REPO, `deploy-guide-${filed.id.slice(0, 6)}.md`)), 'an unfiled document returns to the top level')
+assert(/document\(s\) at the top level/.test(out), 'the exporter says how many documents sit at the top level')
 
 // ---- sheets export as a directory of CSVs ---------------------------------
 

@@ -16,6 +16,7 @@
   import FormatPanel from './FormatPanel.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
   import DocTitle from './DocTitle.svelte'
+  import FolderPath from './FolderPath.svelte'
   import ReadingPrefs from './ReadingPrefs.svelte'
   import Toc from './Toc.svelte'
   import { load as loadPrefs } from '../prefs.js'
@@ -25,7 +26,7 @@
   import { makeIndexer } from '../searchindex.js'
   import { canEdit, canComment, canManage, visibleToolbar } from '../roles.js'
 
-  let { me, doc, onBack, onShare, onHistory, onRenamed, onOpenDoc, onRichChanged, startWithComments } = $props()
+  let { me, doc, onBack, onShare, onHistory, onRenamed, onOpenDoc, onOpenFolder, onRichChanged, startWithComments } = $props()
 
   let status = $state('connecting…')
   // A change that did not reach the server. Sticky: see the banner below.
@@ -301,6 +302,7 @@
     aria-label="Back to documents"
     onclick={(e) => { e.preventDefault(); onBack() }}
   >←</a>
+  <FolderPath {doc} {onOpenFolder} />
   <DocTitle {doc} canRename={canEdit(doc.role)} {onRenamed} />
   <span class="label kind">{doc.role}</span>
   <!-- Shown on every document, not only the rich ones. The toolbar changes

@@ -172,7 +172,7 @@ func TestFTSQuery(t *testing.T) {
 		{"café", `"café"*`},
 	}
 	for _, c := range cases {
-		if got := ftsQuery(c.in); got != c.want {
+		if got := ftsQuery(searchTerms(c.in)); got != c.want {
 			t.Errorf("ftsQuery(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
@@ -333,5 +333,45 @@ func TestIndexedAtIsReported(t *testing.T) {
 	}
 	if hits[0].IndexedAt == 0 {
 		t.Fatal("indexed_at not recorded")
+	}
+}
+
+// Folders are found by name, carrying the path above them as far as the
+// viewer can see, and only the viewer's own folders are searched.
+func TestSearchFindsFoldersByName(t *testing.T) {
+	srv, _, _ := testServer(t)
+	alice := apiClient(t, srv, "alice@example.com")
+	bob := apiClient(t, srv, "bob@example.com")
+	eng := createFolder(t, srv, alice, "Engineering", nil)
+	runbooks := createFolder(t, srv, alice, "Runbooks", &eng)
+	createFolder(t, srv, alice, "Deploy notes", &runbooks)
+
+	got := searchAll(t, srv, alice, "run").Folders
+	if len(got) != 1 || got[0].ID != runbooks {
+		t.Fatalf("alice searching 'run' got %+v", got)
+	}
+	if strings.Join(got[0].Path, "/") != "Engineering" {
+		t.Fatalf("path above Runbooks = %v, want [Engineering]", got[0].Path)
+	}
+	// Every term has to match, case-insensitively.
+	if got := searchAll(t, srv, alice, "DEPLOY notes").Folders; len(got) != 1 || got[0].Name != "Deploy notes" {
+		t.Fatalf("two-term search got %+v", got)
+	}
+	if got := searchAll(t, srv, alice, "deploy runbooks").Folders; len(got) != 0 {
+		t.Fatalf("a term matching only the parent should not match the child, got %+v", got)
+	}
+
+	// A stranger sees nothing; somebody granted only the child sees the child
+	// with no path above it, because the parent's name is not theirs to know.
+	if got := searchAll(t, srv, bob, "run").Folders; len(got) != 0 {
+		t.Fatalf("stranger found folders: %+v", got)
+	}
+	shareFolder(t, srv, alice, runbooks, "bob@example.com", "viewer").Body.Close()
+	got = searchAll(t, srv, bob, "run").Folders
+	if len(got) != 1 || len(got[0].Path) != 0 {
+		t.Fatalf("bob, granted only Runbooks, got %+v", got)
+	}
+	if got := searchAll(t, srv, bob, "notes").Folders; len(got) != 1 || strings.Join(got[0].Path, "/") != "Runbooks" {
+		t.Fatalf("bob's path to the grandchild should start at his grant, got %+v", got)
 	}
 }

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"cmp"
 	"database/sql"
 	"fmt"
 	"log"
+	"maps"
 	"mime"
 	"net/smtp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,13 +26,22 @@ import (
 // so call sites stay unconditional and an instance with no relay behaves
 // exactly as it did before this file existed.
 //
-// Exactly two events get an email, because they are the only two where the
+// Two kinds of event get an email, because they are the only ones where the
 // recipient is by definition *not* in the app to see a badge:
 //
 //   - You were mentioned. Somebody named you and is waiting.
-//   - A document was shared with you. Otherwise it silently appears in a list
+//   - You gained access to something. Otherwise it silently appears in a list
 //     that person may never open, which is the one event with no in-app place
 //     to discover it.
+//
+// The second kind arrives five ways, and every one of them mails, by the same
+// rules — a document shared with you directly, a folder shared with you, a
+// document created in or moved into a folder you are in, and a folder moved
+// into one you are in. The unit is the thing that was shared: a folder share
+// is one message naming the folder, not one per document inside it, and
+// documents filed into a folder are held for a couple of minutes and sent as
+// one message per person per folder. See DESIGN-DECISIONS.md, *Notifying the
+// destination*.
 //
 // Never emailed: comments on a document you merely own (ownership is not
 // interest, and an active document is a firehose), a thread being resolved
@@ -48,6 +60,13 @@ type mailConfig struct {
 // every one of them regardless, so nothing is lost by not mailing each.
 const mailDebounce = 5 * time.Minute
 
+// How long documents filed into one folder are held before one message per
+// (person, folder) goes out listing them. Long enough that a tidy-up filing
+// twenty documents is one message; short enough that a single document does
+// not look lost. The hold is in memory, so a restart drops it — the same
+// trade the bounded queue below makes, for the same reason.
+const mailDigestDelay = 2 * time.Minute
+
 // Bounded on purpose. If the relay is down or slow, the right behaviour is to
 // drop notifications with a log line rather than grow memory on a path that
 // unauthenticated users can trigger.
@@ -59,14 +78,28 @@ type mailJob struct {
 	body    string
 }
 
+// folderDigest is one person's pending "documents were added to a folder"
+// message. Keyed by (person, folder) in mailer.pending, and flushed once by
+// the timer started when it was created.
+type folderDigest struct {
+	uid      int64
+	folderID string
+	actors   []string // in first-seen order; a tidy-up is usually one person
+	titles   []string
+}
+
 type mailer struct {
 	cfg mailConfig
 	db  *sql.DB
 	hub *hub
 	q   chan mailJob
 
-	mu     sync.Mutex
-	recent map[string]time.Time // "<uid>:<docID>" -> last send
+	mu      sync.Mutex
+	recent  map[string]time.Time     // debounce key -> last send
+	pending map[string]*folderDigest // "<uid>:folder:<folderID>" -> held digest
+
+	// Zero means mailDigestDelay. A field so tests can shorten the hold.
+	digestDelay time.Duration
 
 	// Injected so tests can capture messages without a relay. Defaults to
 	// smtp.SendMail, which negotiates STARTTLS when the server advertises it.
@@ -156,7 +189,13 @@ func (m *mailer) shouldSend(uid int64, docID string) bool {
 	if m.hub != nil && m.hub.hasUser(docID, uid) {
 		return false
 	}
-	key := fmt.Sprintf("%d:%s", uid, docID)
+	return m.allow(fmt.Sprintf("%d:%s", uid, docID))
+}
+
+// allow is the debounce on its own, for the folder events: a folder has no
+// room, so there is nobody "connected to" it to skip. Each key is a (person,
+// thing) pair and the window is the same one documents use.
+func (m *mailer) allow(key string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
@@ -166,13 +205,13 @@ func (m *mailer) shouldSend(uid int64, docID string) bool {
 	// Swept here rather than on a timer, for the reason the login limiter
 	// gives: there is no lifecycle to own and the work happens only when
 	// something is happening anyway.
-	for k, t := range m.recent {
-		if now.Sub(t) > mailDebounce {
-			delete(m.recent, k)
-		}
-	}
+	maps.DeleteFunc(m.recent, func(_ string, t time.Time) bool { return now.Sub(t) > mailDebounce })
 	m.recent[key] = now
 	return true
+}
+
+func folderKey(uid int64, folderID string) string {
+	return fmt.Sprintf("%d:folder:%s", uid, folderID)
 }
 
 // A person's name and address, or ok=false if they have gone.
@@ -189,11 +228,25 @@ func (m *mailer) docTitle(docID string) string {
 	return t
 }
 
+func (m *mailer) folderName(folderID string) string {
+	var n string
+	if err := m.db.QueryRow("SELECT name FROM folders WHERE id = ?", folderID).Scan(&n); err != nil {
+		return "a folder"
+	}
+	return n
+}
+
 // The link every message carries. Never a share-link token: those are bearer
 // capabilities stored only as SHA-256, and mail is archived, forwarded and
 // indexed. This points at the document and lets ordinary auth do its job.
 func (m *mailer) docURL(docID string) string {
 	return strings.TrimRight(m.cfg.BaseURL, "/") + "/#doc=" + docID
+}
+
+// A folder's link opens the document list with that folder in view — the
+// same route the breadcrumb and a folder search hit use.
+func (m *mailer) folderURL(folderID string) string {
+	return strings.TrimRight(m.cfg.BaseURL, "/") + "/#folder=" + folderID
 }
 
 // mentioned emails the people a comment named. Called after the comment is
@@ -262,6 +315,147 @@ func (m *mailer) shared(docID string, recipient, actorID int64, role string) {
 				name, actor, title, roleVerb(role), m.docURL(docID)),
 		})
 	}()
+}
+
+// folderShared emails somebody a folder was just given to. One message naming
+// the folder, however many documents are inside: the folder is what was
+// shared, and a message per document would bury that under its own contents.
+func (m *mailer) folderShared(folderID string, recipient, actorID int64, role string) {
+	if m == nil || recipient == actorID {
+		return
+	}
+	go func() {
+		if !m.allow(folderKey(recipient, folderID)) {
+			return
+		}
+		actor, _, ok := m.person(actorID)
+		if !ok {
+			return
+		}
+		name, email, ok := m.person(recipient)
+		if !ok || email == "" {
+			return
+		}
+		folder := m.folderName(folderID)
+		m.queue(mailJob{
+			to:      email,
+			subject: fmt.Sprintf("%s shared the folder %q with you", actor, folder),
+			body: fmt.Sprintf(
+				"Hello %s,\n\n%s shared the folder %q with you. You can %s everything in it.\n\nOpen it: %s\n",
+				name, actor, folder, roleVerb(role), m.folderURL(folderID)),
+		})
+	}()
+}
+
+// folderMoved emails the people who can now see a folder because it was moved
+// into one they are in. The recipients are worked out by the handler before
+// the move, since afterwards everyone in the destination has access and the
+// newcomers are no longer tellable from the rest.
+func (m *mailer) folderMoved(folderID, destID string, recipients []int64, actorID int64) {
+	if m == nil || len(recipients) == 0 {
+		return
+	}
+	go func() {
+		actor, _, ok := m.person(actorID)
+		if !ok {
+			return
+		}
+		folder, dest := m.folderName(folderID), m.folderName(destID)
+		for _, uid := range recipients {
+			if uid == actorID || !m.allow(folderKey(uid, folderID)) {
+				continue
+			}
+			name, email, ok := m.person(uid)
+			if !ok || email == "" {
+				continue
+			}
+			role, _ := folderRoleFor(m.db, folderID, uid)
+			m.queue(mailJob{
+				to:      email,
+				subject: fmt.Sprintf("%s moved the folder %q into %q", actor, folder, dest),
+				body: fmt.Sprintf(
+					"Hello %s,\n\n%s moved the folder %q into %q, so you can now %s everything in it.\n\nOpen it: %s\n",
+					name, actor, folder, dest, roleVerb(role), m.folderURL(folderID)),
+			})
+		}
+	}()
+}
+
+// filed records that a document was created in or moved into a folder, for
+// the people in that folder who could not see the document before. Nothing
+// is sent yet: each recipient's pending digest for this folder gains a title,
+// and the first title starts the timer that sends it. See mailDigestDelay.
+//
+// Two rules documents already follow apply per document, at the moment it is
+// filed: somebody with it open right now is not told about it, and a document
+// they were mailed about in the last few minutes — a direct share, say — is
+// not listed again.
+func (m *mailer) filed(docID, folderID string, recipients []int64, actorID int64) {
+	if m == nil || len(recipients) == 0 {
+		return
+	}
+	go func() {
+		actor, _, ok := m.person(actorID)
+		if !ok {
+			return
+		}
+		title := m.docTitle(docID)
+		for _, uid := range recipients {
+			if uid == actorID || !m.shouldSend(uid, docID) {
+				continue
+			}
+			key := folderKey(uid, folderID)
+			m.mu.Lock()
+			d := m.pending[key]
+			if d == nil {
+				if m.pending == nil {
+					m.pending = map[string]*folderDigest{}
+				}
+				d = &folderDigest{uid: uid, folderID: folderID}
+				m.pending[key] = d
+				time.AfterFunc(cmp.Or(m.digestDelay, mailDigestDelay), func() { m.flush(key) })
+			}
+			if !slices.Contains(d.actors, actor) {
+				d.actors = append(d.actors, actor)
+			}
+			d.titles = append(d.titles, title)
+			m.mu.Unlock()
+		}
+	}()
+}
+
+// flush sends one held digest. Called by its timer, once.
+func (m *mailer) flush(key string) {
+	m.mu.Lock()
+	d := m.pending[key]
+	delete(m.pending, key)
+	m.mu.Unlock()
+	if d == nil {
+		return
+	}
+	name, email, ok := m.person(d.uid)
+	if !ok || email == "" {
+		return
+	}
+	folder := m.folderName(d.folderID)
+	role, _ := folderRoleFor(m.db, d.folderID, d.uid)
+	who := d.actors[0]
+	if len(d.actors) > 1 {
+		who += " and others"
+	}
+	var subject string
+	if len(d.titles) == 1 {
+		subject = fmt.Sprintf("%s added %q to the folder %q", who, d.titles[0], folder)
+	} else {
+		subject = fmt.Sprintf("%s added %d documents to the folder %q", who, len(d.titles), folder)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Hello %s,\n\n%s added to the folder %q, which you can %s:\n\n", name, who, folder, roleVerb(role))
+	for _, t := range d.titles {
+		fmt.Fprintf(&b, "  - %s\n", t)
+	}
+	fmt.Fprintf(&b, "\nOpen the folder: %s\n", m.folderURL(d.folderID))
+	m.queue(mailJob{to: email, subject: subject, body: b.String()})
 }
 
 func roleVerb(role string) string {

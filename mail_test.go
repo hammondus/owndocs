@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/smtp"
 	"strings"
 	"testing"
@@ -276,4 +277,142 @@ func TestRoleChangeSendsNothing(t *testing.T) {
 	postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares",
 		map[string]string{"email": "bob@example.com", "role": "editor"}).Body.Close()
 	noMail(t, sent)
+}
+
+// ---- folders: every way of gaining access mails, by the same rules ---------
+
+// A folder shared with you is one message naming the folder, however many
+// documents are inside it.
+func TestFolderSharedWithYouSendsOneMail(t *testing.T) {
+	m, sent := testMailer(t)
+	srv, _, _ := testServerWithMail(t, m)
+
+	alice := apiClient(t, srv, "alice@example.com")
+	apiClient(t, srv, "bob@example.com")
+	fid := createFolder(t, srv, alice, "Runbooks", nil)
+	docIn(t, srv, alice, fid)
+	docIn(t, srv, alice, fid)
+	shareFolder(t, srv, alice, fid, "bob@example.com", "editor").Body.Close()
+
+	msg := waitMail(t, sent)
+	if !strings.Contains(msg, "To: bob@example.com") {
+		t.Fatalf("wrong recipient:\n%s", msg)
+	}
+	if !strings.Contains(msg, `the folder "Runbooks" with you. You can edit everything in it.`) {
+		t.Fatalf("the message does not name the folder and the role:\n%s", msg)
+	}
+	if !strings.Contains(msg, "https://docs.example.com/#folder="+fid) {
+		t.Fatalf("no link to the folder:\n%s", msg)
+	}
+	noMail(t, sent)
+
+	// A role change on a folder somebody already reaches is bookkeeping.
+	shareFolder(t, srv, alice, fid, "bob@example.com", "viewer").Body.Close()
+	noMail(t, sent)
+}
+
+// Documents created in or moved into a folder reach everyone in it as one
+// message per person per folder, listing the titles — a tidy-up that files
+// several documents is one message, not one per document.
+func TestFilingDocumentsIsOneDigestPerFolder(t *testing.T) {
+	m, sent := testMailer(t)
+	m.digestDelay = 50 * time.Millisecond
+	srv, _, _ := testServerWithMail(t, m)
+
+	alice := apiClient(t, srv, "alice@example.com")
+	apiClient(t, srv, "bob@example.com")
+	fid := createFolder(t, srv, alice, "Runbooks", nil)
+	shareFolder(t, srv, alice, fid, "bob@example.com", "commenter").Body.Close()
+	waitMail(t, sent) // the folder share
+
+	// One created in the folder, two moved in.
+	postJSON(t, alice, srv.URL+"/api/docs", map[string]any{"title": "Deploy guide", "folder_id": fid}).Body.Close()
+	for _, title := range []string{"Rollback", "On call"} {
+		res := postJSON(t, alice, srv.URL+"/api/docs", map[string]string{"title": title})
+		var d document
+		json.NewDecoder(res.Body).Decode(&d)
+		res.Body.Close()
+		postJSON(t, alice, srv.URL+"/api/docs/"+d.ID+"/move", map[string]string{"folder_id": fid}).Body.Close()
+	}
+
+	msg := waitMail(t, sent)
+	if !strings.Contains(msg, "To: bob@example.com") {
+		t.Fatalf("wrong recipient:\n%s", msg)
+	}
+	if !strings.Contains(msg, `added 3 documents to the folder "Runbooks"`) {
+		t.Fatalf("three filings were not one message:\n%s", msg)
+	}
+	for _, title := range []string{"Deploy guide", "Rollback", "On call"} {
+		if !strings.Contains(msg, "  - "+title+"\n") {
+			t.Fatalf("the digest does not list %q:\n%s", title, msg)
+		}
+	}
+	if !strings.Contains(msg, "which you can comment on") {
+		t.Fatalf("the message does not say what the folder grants:\n%s", msg)
+	}
+	if !strings.Contains(msg, "https://docs.example.com/#folder="+fid) {
+		t.Fatalf("no link to the folder:\n%s", msg)
+	}
+	// Alice filed them; the owner is never told about their own filing.
+	noMail(t, sent)
+}
+
+// Somebody who could already see the document is not told it moved. A direct
+// share and the folder move are, for them, the same document twice.
+func TestFilingSkipsPeopleWhoAlreadyHadTheDocument(t *testing.T) {
+	m, sent := testMailer(t)
+	m.digestDelay = 50 * time.Millisecond
+	srv, _, _ := testServerWithMail(t, m)
+
+	alice := apiClient(t, srv, "alice@example.com")
+	apiClient(t, srv, "bob@example.com")
+	fid := createFolder(t, srv, alice, "Runbooks", nil)
+	shareFolder(t, srv, alice, fid, "bob@example.com", "viewer").Body.Close()
+	waitMail(t, sent)
+
+	docID := createDoc(t, srv, alice)
+	postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/shares",
+		map[string]string{"email": "bob@example.com", "role": "editor"}).Body.Close()
+	waitMail(t, sent) // the direct share
+
+	postJSON(t, alice, srv.URL+"/api/docs/"+docID+"/move", map[string]string{"folder_id": fid}).Body.Close()
+	noMail(t, sent)
+}
+
+// Moving a folder into another is a share of everything under it with the
+// destination's people — one message each, naming both folders.
+func TestMovingAFolderMailsTheDestinationsPeople(t *testing.T) {
+	m, sent := testMailer(t)
+	srv, _, _ := testServerWithMail(t, m)
+
+	alice := apiClient(t, srv, "alice@example.com")
+	apiClient(t, srv, "bob@example.com")
+	eng := createFolder(t, srv, alice, "Engineering", nil)
+	runbooks := createFolder(t, srv, alice, "Runbooks", nil)
+	shareFolder(t, srv, alice, eng, "bob@example.com", "editor").Body.Close()
+	waitMail(t, sent)
+
+	reqJSON(t, alice, "POST", srv.URL+"/api/folders/"+runbooks+"/move", map[string]string{"parent_id": eng}).Body.Close()
+	msg := waitMail(t, sent)
+	if !strings.Contains(msg, "To: bob@example.com") {
+		t.Fatalf("wrong recipient:\n%s", msg)
+	}
+	if !strings.Contains(msg, `moved the folder "Runbooks" into "Engineering", so you can now edit everything in it`) {
+		t.Fatalf("the message does not say what moved where:\n%s", msg)
+	}
+	if !strings.Contains(msg, "https://docs.example.com/#folder="+runbooks) {
+		t.Fatalf("no link to the moved folder:\n%s", msg)
+	}
+
+	// Moving it back out to the top tells nobody: access was withdrawn, not
+	// granted, and only a grant is news.
+	reqJSON(t, alice, "POST", srv.URL+"/api/folders/"+runbooks+"/move", map[string]any{"parent_id": nil}).Body.Close()
+	noMail(t, sent)
+}
+
+func TestNilMailerIsOffForFolderEventsToo(t *testing.T) {
+	var m *mailer
+	m.folderShared("f", 1, 2, "editor")
+	m.folderMoved("f", "g", []int64{1}, 2)
+	m.filed("d", "f", []int64{1}, 2)
 }

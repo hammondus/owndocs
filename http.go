@@ -29,7 +29,7 @@ func routes(db *sql.DB, h *hub, mail *mailer, staticFS fs.FS, signupOpen, dev bo
 	mux.HandleFunc("GET /api/search", requireAuth(db, handleSearch(db)))
 
 	mux.HandleFunc("GET /api/docs", requireAuth(db, handleListDocs(db)))
-	mux.HandleFunc("POST /api/docs", requireAuth(db, handleCreateDoc(db)))
+	mux.HandleFunc("POST /api/docs", requireAuth(db, handleCreateDoc(db, mail)))
 	mux.HandleFunc("PATCH /api/docs/{id}", requireAuth(db, handleUpdateDoc(db)))
 	mux.HandleFunc("DELETE /api/docs/{id}", requireAuth(db, handleDeleteDoc(db, h)))
 
@@ -41,11 +41,11 @@ func routes(db *sql.DB, h *hub, mail *mailer, staticFS fs.FS, signupOpen, dev bo
 	mux.HandleFunc("POST /api/folders", requireAuth(db, handleCreateFolder(db)))
 	mux.HandleFunc("PATCH /api/folders/{id}", requireAuth(db, handleUpdateFolder(db)))
 	mux.HandleFunc("DELETE /api/folders/{id}", requireAuth(db, handleDeleteFolder(db)))
-	mux.HandleFunc("POST /api/folders/{id}/move", requireAuth(db, handleMoveFolder(db, h)))
+	mux.HandleFunc("POST /api/folders/{id}/move", requireAuth(db, handleMoveFolder(db, h, mail)))
 	mux.HandleFunc("GET /api/folders/{id}/shares", requireAuth(db, handleListFolderShares(db)))
-	mux.HandleFunc("POST /api/folders/{id}/shares", requireAuth(db, handleAddFolderShare(db, h)))
+	mux.HandleFunc("POST /api/folders/{id}/shares", requireAuth(db, handleAddFolderShare(db, h, mail)))
 	mux.HandleFunc("DELETE /api/folders/{id}/shares/{uid}", requireAuth(db, handleRemoveFolderShare(db, h)))
-	mux.HandleFunc("POST /api/docs/{id}/move", requireAuth(db, handleMoveDoc(db, h)))
+	mux.HandleFunc("POST /api/docs/{id}/move", requireAuth(db, handleMoveDoc(db, h, mail)))
 
 	mux.HandleFunc("GET /api/docs/{id}/shares", requireAuth(db, handleListShares(db)))
 	mux.HandleFunc("POST /api/docs/{id}/shares", requireAuth(db, handleAddShare(db, h, mail)))

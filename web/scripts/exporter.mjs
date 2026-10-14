@@ -7,6 +7,13 @@
 // markdown text. The server never learns git exists; document content stays
 // opaque to it, as everywhere else.
 //
+// The repo mirrors the folder tree as the exporter's account sees it. That
+// is the one thing to know before granting it anything: the path is per
+// viewer, so a document whose folder the account cannot see lands at the top
+// level, and granting the account a folder higher up moves every path under
+// it. Grant the account at each root it should mirror, and leave it there.
+// See DESIGN-DECISIONS.md, *The folder path reaches the exporter*.
+//
 // Usage:
 //   DOCS_EMAIL=... DOCS_PASSWORD=... node scripts/exporter.mjs <server-url> <repo-dir> [--once] [--interval=60]
 //
@@ -95,12 +102,83 @@ function readState() {
 const slugify = (s) =>
   s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60)
 
-// Base name: slugged title plus a short doc-id suffix, so two documents
-// with the same title never collide and a retitle is a visible rename in
-// git. A doc becomes `<base>.md`; a sheet becomes a `<base>/` directory of
-// one CSV per tab, since CSV has no concept of multiple sheets.
+// The folders the exporter's account can see, by id, refreshed each pass.
+let folderIndex = new Map()
+
+// The directory a document lives in: one segment per folder above it, as far
+// up as the account can see. Each segment is slugged name plus id suffix, the
+// same shape as a document's base name and for the same reason — sibling
+// folders may share a name, and a rename must be a rename rather than a merge.
+function dirFor(doc) {
+  const segs = []
+  for (let f = folderIndex.get(doc.folder_id); f; f = f.parent_id ? folderIndex.get(f.parent_id) : null) {
+    segs.unshift(`${slugify(f.name) || 'folder'}-${f.id.slice(0, 6)}`)
+  }
+  return segs.join('/')
+}
+
+// Base name: the directory, then slugged title plus a short doc-id suffix, so
+// two documents with the same title never collide and a retitle or a move is
+// a visible rename in git. A doc becomes `<base>.md`; a sheet becomes a
+// `<base>/` directory of one CSV per tab, since CSV has no concept of
+// multiple sheets.
 function baseFor(doc) {
-  return `${slugify(doc.title) || 'untitled'}-${doc.id.slice(0, 6)}`
+  const name = `${slugify(doc.title) || 'untitled'}-${doc.id.slice(0, 6)}`
+  const dir = dirFor(doc)
+  return dir ? `${dir}/${name}` : name
+}
+
+// Where a document's files were last written, from the state file. Newer
+// state records it; older state only listed the files, and the base is what
+// they have in common.
+function previousBase(st) {
+  if (st.base !== undefined) return st.base
+  const first = st.files?.[0] ?? st.path
+  if (!first) return undefined
+  return first.endsWith('.md') ? first.slice(0, -3) : path.dirname(first)
+}
+
+// Remove the directories a set of removed files emptied, so a moved document
+// does not leave its old folder behind as an empty tree.
+function pruneEmptyDirs(removed) {
+  for (const old of removed) {
+    for (let dir = path.dirname(path.join(REPO, old)); dir !== REPO; dir = path.dirname(dir)) {
+      if (!fs.existsSync(dir) || fs.readdirSync(dir).length > 0) break
+      fs.rmdirSync(dir)
+    }
+  }
+}
+
+function writeState(state) {
+  fs.writeFileSync(path.join(REPO, STATE_FILE), JSON.stringify(state, null, 2) + '\n')
+}
+
+// A document whose base changed since it was last written — moved to another
+// folder, or retitled — gets its files moved and one commit saying so, with
+// no new content. Without this a move would reach the repo only at the next
+// pin, and "the tree mirrors the folders" would be true only eventually.
+function relocate(doc, state) {
+  const st = state[doc.id]
+  const from = previousBase(st)
+  const to = baseFor(doc)
+  if (from === undefined || from === to) return
+  const files = st.files || [st.path]
+  const moved = []
+  for (const old of files) {
+    const next = to + old.slice(from.length)
+    const abs = path.join(REPO, next)
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    if (fs.existsSync(path.join(REPO, old))) fs.renameSync(path.join(REPO, old), abs)
+    moved.push(next)
+  }
+  pruneEmptyDirs(files)
+  st.files = moved
+  st.base = to
+  delete st.path
+  writeState(state)
+  git(['add', '-A'])
+  git(['commit', '-q', '-m', `${doc.title}: now at ${to}`, '-m', `Docs-Doc: ${doc.id}`])
+  console.log(`moved ${from} -> ${to}`)
 }
 
 async function docAtSeq(docID, seq) {
@@ -139,6 +217,7 @@ async function filesForVersion(doc, seq) {
 
 async function exportVersion(doc, v, state) {
   const files = await filesForVersion(doc, v.seq)
+  const base = baseFor(doc)
   const st = state[doc.id] || (state[doc.id] = {})
 
   // Older state recorded a single `path`; treat it as a one-file list.
@@ -160,15 +239,13 @@ async function exportVersion(doc, v, state) {
   }
   // Prune directories the removals emptied, so a deleted sheet's folder
   // doesn't linger.
-  for (const old of previous) {
-    const dir = path.dirname(path.join(REPO, old))
-    if (dir !== REPO && fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir)
-  }
+  pruneEmptyDirs(previous)
 
   st.files = files.map((f) => f.path)
+  st.base = base
   delete st.path
   st.last_version_id = v.id
-  fs.writeFileSync(path.join(REPO, STATE_FILE), JSON.stringify(state, null, 2) + '\n')
+  writeState(state)
 
   // Author = whoever pinned the version; commit dates = when they pinned it,
   // so git log reads as the document's own timeline.
@@ -182,10 +259,27 @@ async function exportVersion(doc, v, state) {
   console.log(`committed ${files.length} file(s) for ${baseFor(doc)} @ seq ${v.seq} ("${v.name}")`)
 }
 
+// The top-level documents of the last pass, so the line about them is
+// printed when the set changes rather than once a minute.
+let lastTopLevel = ''
+
 async function pass() {
   const docs = await (await api('/api/docs')).json() // docs as .md, sheets as CSV directories
+  folderIndex = new Map((await (await api('/api/folders')).json()).map((f) => [f.id, f]))
+  // The server nulls folder_id on a document whose folder this account cannot
+  // see, so from here those are indistinguishable from documents filed
+  // nowhere. Both land at the top level, and this is the line to read when a
+  // document is not where the app shows it: the account needs a grant on the
+  // folder, or one above it.
+  const topLevel = docs.filter((d) => !d.folder_id).map((d) => d.id).sort().join(',')
+  if (topLevel !== lastTopLevel) {
+    lastTopLevel = topLevel
+    const n = topLevel ? topLevel.split(',').length : 0
+    if (n) console.log(`${n} document(s) at the top level: filed nowhere, or in a folder ${EMAIL} cannot see`)
+  }
   const state = readState()
   for (const doc of docs) {
+    if (state[doc.id]?.last_version_id) relocate(doc, state)
     const hist = await (await api(`/api/docs/${doc.id}/history`)).json()
     // History returns versions newest-first; commits must go oldest-first.
     const versions = (hist.versions || []).sort((a, b) => a.seq - b.seq || a.id - b.id)

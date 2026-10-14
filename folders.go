@@ -254,49 +254,135 @@ func bestGrant(gs []folderGrant) (folderGrant, bool) {
 	return best, found
 }
 
+// ---- who gains access -----------------------------------------------------
+//
+// Filing a document and moving a folder both widen who can read something,
+// and the people widened to are told by mail — see mail.go. Both helpers are
+// called *before* the write: afterwards everyone in the destination has
+// access, and the newcomers can no longer be told from the rest.
+
+// chainUserIDs is everyone reaching a folder through a grant on it or on any
+// folder above it, each once, never the actor.
+func chainUserIDs(db *sql.DB, folderID string, actorID int64) ([]int64, error) {
+	members, err := chainMembers(db, folderID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for _, s := range members {
+		if s.UserID != actorID && !slices.Contains(ids, s.UserID) {
+			ids = append(ids, s.UserID)
+		}
+	}
+	return ids, nil
+}
+
+// newToDoc lists the people in a folder who cannot see a document yet. For a
+// document being created it is everyone in the folder; for one being moved
+// in, everyone who had no grant on it or on its old folder.
+func newToDoc(db *sql.DB, folderID, docID string, actorID int64) ([]int64, error) {
+	ids, err := chainUserIDs(db, folderID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	var out []int64
+	for _, uid := range ids {
+		role, err := roleFor(db, docID, uid)
+		if err != nil {
+			return nil, err
+		}
+		if role == "" {
+			out = append(out, uid)
+		}
+	}
+	return out, nil
+}
+
+// newToFolder lists the people in a destination folder who cannot see the
+// folder about to be moved into it.
+func newToFolder(db *sql.DB, destID, folderID string, actorID int64) ([]int64, error) {
+	ids, err := chainUserIDs(db, destID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	var out []int64
+	for _, uid := range ids {
+		role, err := folderRoleFor(db, folderID, uid)
+		if err != nil {
+			return nil, err
+		}
+		if role == "" {
+			out = append(out, uid)
+		}
+	}
+	return out, nil
+}
+
 // ---- handlers -------------------------------------------------------------
 
-// GET /api/folders — every folder you hold a grant on, plus everything below
-// it. Flat; the client builds the tree from parent_id, which is nulled for
-// parents you cannot see so that the forest you get is rooted at your grants
-// rather than at somebody else's.
+// visibleFolders is every folder a user holds a grant on, plus everything
+// below it. Flat; the client builds the tree from ParentID, which is nil for
+// parents the user cannot see so that the forest is rooted at their own
+// grants rather than at somebody else's. Shared by the list and by search.
+func visibleFolders(db *sql.DB, userID int64) ([]folder, error) {
+	rows, err := db.Query(grantedFoldersSQL+`
+		SELECT f.id,
+		       CASE WHEN f.parent_id IN (SELECT id FROM granted) THEN f.parent_id END,
+		       f.name, g.role
+		FROM granted g JOIN folders f ON f.id = g.id
+		ORDER BY f.name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// One row per (folder, granting role), so a folder reachable two ways
+	// arrives twice. Reduced here, keeping first-seen order.
+	byID := map[string]int{}
+	out := []folder{}
+	for rows.Next() {
+		var f folder
+		var parent sql.NullString
+		if err := rows.Scan(&f.ID, &parent, &f.Name, &f.Role); err != nil {
+			return nil, err
+		}
+		if parent.Valid {
+			f.ParentID = new(parent.String)
+		}
+		if i, seen := byID[f.ID]; seen {
+			out[i].Role = bestRole(out[i].Role, f.Role)
+			continue
+		}
+		byID[f.ID] = len(out)
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// folderPath names the folders above one, outermost first, as far up as the
+// viewer can see. Walks the list visibleFolders returned, so a parent the
+// viewer holds no grant on is simply not there and the path starts below it.
+func folderPath(folders []folder, id string) []string {
+	byID := map[string]folder{}
+	for _, f := range folders {
+		byID[f.ID] = f
+	}
+	var names []string
+	for f, ok := byID[id]; ok && f.ParentID != nil; f, ok = byID[*f.ParentID] {
+		p, ok := byID[*f.ParentID]
+		if !ok {
+			break
+		}
+		names = append(names, p.Name)
+	}
+	slices.Reverse(names)
+	return names
+}
+
+// GET /api/folders — see visibleFolders.
 func handleListFolders(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		u := currentUser(r)
-		rows, err := db.Query(grantedFoldersSQL+`
-			SELECT f.id,
-			       CASE WHEN f.parent_id IN (SELECT id FROM granted) THEN f.parent_id END,
-			       f.name, g.role
-			FROM granted g JOIN folders f ON f.id = g.id
-			ORDER BY f.name`, u.ID)
+		out, err := visibleFolders(db, currentUser(r).ID)
 		if err != nil {
-			jsonError(w, http.StatusInternalServerError, "db error")
-			return
-		}
-		defer rows.Close()
-		// One row per (folder, granting role), so a folder reachable two ways
-		// arrives twice. Reduced here, keeping first-seen order.
-		byID := map[string]int{}
-		out := []folder{}
-		for rows.Next() {
-			var f folder
-			var parent sql.NullString
-			if err := rows.Scan(&f.ID, &parent, &f.Name, &f.Role); err != nil {
-				jsonError(w, http.StatusInternalServerError, "db error")
-				return
-			}
-			if parent.Valid {
-				p := parent.String
-				f.ParentID = &p
-			}
-			if i, seen := byID[f.ID]; seen {
-				out[i].Role = bestRole(out[i].Role, f.Role)
-				continue
-			}
-			byID[f.ID] = len(out)
-			out = append(out, f)
-		}
-		if err := rows.Err(); err != nil {
 			jsonError(w, http.StatusInternalServerError, "db error")
 			return
 		}
@@ -408,7 +494,7 @@ func handleUpdateFolder(db *sql.DB) http.HandlerFunc {
 // edit: moving a folder changes who can read everything inside it. A rename and
 // a re-parent sitting behind one verb would also sit behind one permission bar,
 // and these two do not deserve the same one for long.
-func handleMoveFolder(db *sql.DB, h *hub) http.HandlerFunc {
+func handleMoveFolder(db *sql.DB, h *hub, mail *mailer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
 		id := r.PathValue("id")
@@ -429,6 +515,11 @@ func handleMoveFolder(db *sql.DB, h *hub) http.HandlerFunc {
 			jsonError(w, http.StatusBadRequest, "a folder cannot contain itself")
 			return
 		}
+		// Who gains access, read before the write for the reason newToFolder
+		// gives. Read whether or not mail is configured: it is a handful of
+		// queries on a rare action, and the alternative is a nil test at the
+		// call site that the mailer's design exists to avoid.
+		var newcomers []int64
 		if parent != "" {
 			role, err := folderRoleFor(db, parent, u.ID)
 			if err != nil {
@@ -450,6 +541,10 @@ func handleMoveFolder(db *sql.DB, h *hub) http.HandlerFunc {
 			}
 			if inside {
 				jsonError(w, http.StatusBadRequest, "cannot move a folder into itself")
+				return
+			}
+			if newcomers, err = newToFolder(db, parent, id, u.ID); err != nil {
+				jsonError(w, http.StatusInternalServerError, "db error")
 				return
 			}
 		}
@@ -482,6 +577,7 @@ func handleMoveFolder(db *sql.DB, h *hub) http.HandlerFunc {
 			return
 		}
 		recheckUnder(db, h, id)
+		mail.folderMoved(id, parent, newcomers, u.ID)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }
@@ -530,7 +626,7 @@ func handleDeleteFolder(db *sql.DB) http.HandlerFunc {
 // document, since the move changes who may read it, and `editor` on the
 // destination, since dropping a document into a folder is filling the folder
 // rather than shaping it.
-func handleMoveDoc(db *sql.DB, h *hub) http.HandlerFunc {
+func handleMoveDoc(db *sql.DB, h *hub, mail *mailer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
 		docID := r.PathValue("id")
@@ -547,6 +643,7 @@ func handleMoveDoc(db *sql.DB, h *hub) http.HandlerFunc {
 		if in.FolderID != nil {
 			dest = *in.FolderID
 		}
+		var newcomers []int64
 		if dest != "" {
 			role, err := folderRoleFor(db, dest, u.ID)
 			if err != nil {
@@ -555,6 +652,14 @@ func handleMoveDoc(db *sql.DB, h *hub) http.HandlerFunc {
 			}
 			if role == "" || roleRank[role] < roleRank["editor"] {
 				jsonError(w, http.StatusNotFound, "not found")
+				return
+			}
+			// Before the write, as handleMoveFolder does and for the same
+			// reason. A direct share mails the person it reaches; filing a
+			// document where people can read it is the same event for them,
+			// so it mails too.
+			if newcomers, err = newToDoc(db, dest, docID, u.ID); err != nil {
+				jsonError(w, http.StatusInternalServerError, "db error")
 				return
 			}
 		}
@@ -581,6 +686,7 @@ func handleMoveDoc(db *sql.DB, h *hub) http.HandlerFunc {
 		// Everyone whose access came from the old folder has lost it, and
 		// everyone in the new one has gained it at whatever rank it grants.
 		h.recheckAccess(docID)
+		mail.filed(docID, dest, newcomers, u.ID)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }
@@ -614,7 +720,7 @@ func handleListFolderShares(db *sql.DB) http.HandlerFunc {
 }
 
 // POST /api/folders/{id}/shares {email, role} — grant on a folder.
-func handleAddFolderShare(db *sql.DB, h *hub) http.HandlerFunc {
+func handleAddFolderShare(db *sql.DB, h *hub, mail *mailer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, ok := requireFolderRole(db, w, r, "manager")
 		if !ok {
@@ -657,6 +763,11 @@ func handleAddFolderShare(db *sql.DB, h *hub) http.HandlerFunc {
 			return
 		}
 		recheckUnder(db, h, id)
+		// Only a first grant is news, by the rule handleAddShare follows: a
+		// role change on a folder somebody already reaches is bookkeeping.
+		if existing == "" {
+			mail.folderShared(id, uid, currentUser(r).ID, in.Role)
+		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }

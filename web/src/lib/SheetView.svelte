@@ -28,6 +28,7 @@
   import FunctionsPanel from './FunctionsPanel.svelte'
   import CommentsPanel from './CommentsPanel.svelte'
   import DocTitle from './DocTitle.svelte'
+  import FolderPath from './FolderPath.svelte'
   import { listThreads, cellAnchor, cellKey, anchorKey } from '../comments.js'
   import { canEdit, canComment, canManage } from '../roles.js'
   import { load as loadPrefs, save as savePrefs } from '../prefs.js'
@@ -35,7 +36,7 @@
   import { handleCall } from '../sheet/scriptapi.js'
   import { allowTriggers, summariseEdit } from '../sheet/triggers.js'
 
-  let { me, doc, onBack, onShare, onHistory, onRenamed, onNotice } = $props()
+  let { me, doc, onBack, onShare, onHistory, onRenamed, onOpenFolder, onNotice } = $props()
 
   // $derived, not a plain const: props can change, and a const would keep
   // the value from the first render forever.
@@ -1850,6 +1851,7 @@
 <div class="viewbar">
   <a class="back" href="#list" title="Back to documents" aria-label="Back to documents"
      onclick={(e) => { e.preventDefault(); onBack() }}>←</a>
+  <FolderPath {doc} {onOpenFolder} />
   <DocTitle {doc} canRename={canEdit(doc.role)} {onRenamed} />
   <span class="label kind">{doc.role}</span>
 

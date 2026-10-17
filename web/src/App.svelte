@@ -1,6 +1,7 @@
 <script>
   // Root component: owns "who is signed in" and "which view is showing",
-  // and handles the location-hash routes (#doc=<id>, #share=<token>).
+  // and routes on the location hash (#doc=<id>, #folder=<id>, #scripts=<id>,
+  // and the two one-shot tokens #share=<token> and #invite=<token>).
   // Each view is its own component; this file only wires them together.
   import { onMount } from 'svelte'
   import { api } from './lib/api.js'
@@ -163,10 +164,35 @@
     }
   })
 
-  // Route on the location hash once signed in: #share=<token> redeems a
-  // share link, #doc=<id> reopens a document (survives refresh), else the
-  // doc list. Called on load and again right after login/signup, so a share
-  // link opened while signed out still redeems after signing in.
+  // ---- routing on the location hash ---------------------------------------
+  // The hash is the route: #doc=<id>, #folder=<id>, #scripts=<id>, or nothing
+  // for the list. The app writes it on every navigation and reads it back
+  // whenever the browser changes it — Back, Forward, an edited address bar —
+  // so the view and the URL never disagree. Two token forms, #share=<token>
+  // and #invite=<token>, are spent once at sign-in and are not routes; see
+  // afterAuth. See DESIGN-DECISIONS.md, *The hash is a route*.
+  //
+  // `written` is the hash the app itself last wrote. A hashchange that merely
+  // echoes it is the app's own navigation arriving as an event, and is
+  // ignored; anything else is the browser's doing and is routed. Without this
+  // every openDoc would route twice, the second time by refetching the list.
+  let written = location.hash.slice(1)
+
+  function go(hash) {
+    written = hash
+    location.hash = hash
+  }
+
+  function onHashChange() {
+    if (!me || location.hash.slice(1) === written) return
+    routeHash()
+  }
+
+  // Called on load and again right after login/signup, so a share link opened
+  // while signed out still redeems after signing in. Redeeming is the one
+  // thing here that is not a route: it grants access, so it runs once, and
+  // the #share entry is replaced in the history by the document's own URL so
+  // that Back never lands on the token and redeems it again.
   async function afterAuth() {
     const hash = new URLSearchParams(location.hash.slice(1))
     if (hash.get('share')) {
@@ -175,27 +201,43 @@
           method: 'POST',
           body: JSON.stringify({ token: hash.get('share') }),
         })
+        history.replaceState(null, '', '#doc=' + doc.id)
         openDoc(doc)
         return
       } catch (err) {
         alert(err.message) // invalid or revoked link; fall through to the list
       }
-    } else if (hash.get('scripts')) {
+    }
+    await routeHash()
+  }
+
+  // Show what the hash names. The tail of afterAuth, and the whole of what a
+  // Back or Forward press does. Anything it does not recognise, a spent token
+  // included, is the list.
+  //
+  // Two presses in quick succession are two of these in flight, and the
+  // document lookup is a fetch, so the earlier one can resolve last. The
+  // counter lets only the newest navigation land.
+  let routeSeq = 0
+  async function routeHash() {
+    const seq = ++routeSeq
+    const hash = new URLSearchParams(location.hash.slice(1))
+    const id = hash.get('scripts') || hash.get('doc')
+    const doc = id ? await findDoc(id) : null
+    if (seq !== routeSeq) return
+    if (hash.get('scripts')) {
       // A whole-window script editor. Its own route rather than a flag on the
       // editor route, because it is a different view of the same document and
       // has to survive a refresh — this is a URL people will keep open in a
       // second window all afternoon.
-      const doc = await findDoc(hash.get('scripts'))
-      if (doc && doc.kind === 'sheet') {
+      if (doc?.kind === 'sheet') {
+        written = location.hash.slice(1)
         route = { view: 'scripts', doc }
         return
       }
-    } else if (hash.get('doc')) {
-      const doc = await findDoc(hash.get('doc'))
-      if (doc) {
-        openDoc(doc)
-        return
-      }
+    } else if (doc) {
+      openDoc(doc)
+      return
     } else if (hash.get('folder')) {
       openFolder(hash.get('folder'))
       return
@@ -242,7 +284,7 @@
   }
 
   function showList() {
-    location.hash = ''
+    go('')
     route = { view: 'list' }
     loadNotes()
   }
@@ -252,13 +294,13 @@
   // mail link works and a refresh keeps the place. A folder the viewer cannot
   // see is not an error: the list simply has nothing to scroll to.
   function openFolder(id) {
-    location.hash = 'folder=' + id
+    go('folder=' + id)
     route = { view: 'list', folder: id }
     loadNotes()
   }
 
   function openDoc(doc, withComments = false) {
-    location.hash = 'doc=' + doc.id
+    go('doc=' + doc.id)
     route = { view: 'editor', doc, withComments }
   }
 
@@ -300,6 +342,8 @@
     route = { view: 'auth' }
   }
 </script>
+
+<svelte:window onhashchange={onHashChange} />
 
 <!-- The app bar is full bleed and a fixed height, so every screen starts on the
      same line. It carries only what is true everywhere: what this is, and who

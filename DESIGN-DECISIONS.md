@@ -668,6 +668,43 @@ exactly as they were before this. Making them followable is a separate question
 with a security surface of its own (`javascript:` targets, whether to open in a
 tab), and none of it was asked for.
 
+### The hash is a route
+
+Decided 2026-10-18. The location hash was written on every navigation and read
+once, at load. Back and Forward therefore changed the URL without changing the
+view, and the two disagreed until a reload. That predates document links, but
+links are what made anyone press Back: following one creates the expectation
+that going back returns, and the folder work added a third hash form,
+`#folder=<id>`, reached from a breadcrumb, a search hit and a mail link, which
+are three more places people arrive from and leave by the Back button.
+
+**A `hashchange` listener, and the app's own writes are filtered out.** Every
+navigation still writes the hash, so nothing about how views are entered
+changed. What is new is that the browser changing the hash now routes too. The
+one trap is that the app's own write *also* fires `hashchange`, and routing on
+it would open every document twice, the second time by refetching the list to
+find the row again. So `App.svelte` remembers the hash it last wrote and ignores
+an event that merely echoes it; anything else is the browser's doing.
+
+**A share token is spent, not routed.** `#share=<token>` grants access, which
+is the one thing on the hash that must not happen again on a Back press. It is
+redeemed once, at load or at sign-in, and the history entry holding it is then
+*replaced* by the document's own `#doc=<id>` URL, so Back never lands on the
+token. An invite token is handled the same way by consequence rather than by
+design: a hash the router does not recognise is the list, and it already was.
+
+**Two presses are two routes in flight.** The document lookup is a fetch, so
+the earlier one can resolve last; a sequence number lets only the newest land,
+the same shape the search box already uses against its own responses.
+
+**Not routes, and still not:** the share panel, the folder share panel and the
+history view carry no hash of their own. Back from any of them goes to whatever
+entry preceded the document, which is one hop further than a person might
+expect but is never wrong about which document. Giving them hashes would mean
+a second key beside `doc`, and nothing has asked for it. The scripts route no
+longer needs the forced reload the browser test used to carry, and that step
+is now the proof that routing reaches a live page.
+
 ### Print is the PDF export
 
 Shipped 2026-08-13. There is no PDF renderer, no HTML export path and no second
@@ -2950,10 +2987,9 @@ and the same pane can be opened as a whole window.
   can be closed without taking the editor with it.
 - **A route rather than a flag on the editor route**, because it must
   survive a refresh — this is a URL people keep open in a second window all
-  afternoon. Note the app routes on *load*: changing the fragment on a live
-  page does not re-route. Nothing in the UI does that (a pop-out is a fresh
-  document), but a test that navigates by hash has to force a reload, and
-  `ui_test.mjs` says so where it does.
+  afternoon. Since 2026-10-18 the app routes on `hashchange` as well as on
+  load, so a fragment change on a live page reaches this view too — see *The
+  hash is a route*.
 - **Popping out closes the drawer**, so only one editor from this browser is
   ever live on a document. Scripts are whole `{id, name, code}` objects in a
   Y.Map, so two open editors are two last-writers racing. The window is
@@ -5094,8 +5130,9 @@ folder row is one click from exactly that.
   delivery channel.~~ Also answered — see Notifications: in-app first and
   always, email optional and submission-only to an existing relay, so the
   deliverability burden never lands on this app.
-- Search: without server-side document reads, any full-text search must be
-  client-fed. Deferred until wanted.
+- ~~Search: without server-side document reads, any full-text search must be
+  client-fed. Deferred until wanted.~~ Answered — built in two stages on
+  2026-08-14, client-fed exactly as this predicted. See *Search*.
 - ~~Kanban: is a card a body inside the board, or a reference to a document?~~
   Answered — a card *is* a document, inheriting the board's access. See
   *Kanban*. Still open underneath it:
@@ -5153,12 +5190,9 @@ folder row is one click from exactly that.
     per-viewer objection was real and is now a README instruction rather than
     a refusal.
 
-- **Is the location hash a real route?** It is written on every navigation and
-  read only at startup, so the browser's back and forward buttons change the
-  URL without changing the view — the two then disagree until a reload. That
-  predates *Inter-document links*, but links are what make anyone press Back:
-  following one now creates the expectation that going back returns. A
-  `hashchange` listener is most of the fix; what needs deciding is how it
-  interacts with `afterAuth`, which also reads the hash and which redeems a
-  share token when it finds one. Re-running that on every back press is not
-  what anyone wants.
+- ~~**Is the location hash a real route?**~~ Answered 2026-10-18 — yes. A
+  `hashchange` listener routes, the app's own writes are filtered out of it,
+  and a share token is redeemed once and its history entry replaced, so Back
+  never re-runs the redemption. See *The hash is a route*. Still open
+  underneath it: the share, folder share and history views carry no hash, so
+  Back from one of them skips past the document.

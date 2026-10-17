@@ -304,8 +304,6 @@ test fails until you do, in both directions.
 
 Recorded so they are not re-proposed as oversights:
 
-- **Search** — needs a client-fed index, since the server never reads document
-  content. Deferred until actually wanted.
 - **Route-level lazy loading** — measured and declined: it buys a router
   loading state to save a fraction of a second, once, on a LAN app. Design
   doc, *Static assets*.

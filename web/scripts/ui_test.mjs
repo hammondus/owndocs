@@ -477,13 +477,11 @@ try {
     // button would test Chrome's popup blocker. The route is the part that
     // has to work — the button only calls it.
     //
-    // The reload is not ceremony: the app routes on load, so going from
-    // #doc=<id> to #scripts=<id> is a fragment-only change that Chrome treats
-    // as a same-document navigation — no load, no re-route, and the assertion
-    // below would sit on the sheet forever. A popped-out window is a fresh
-    // document and does not have this problem.
-    await page.goto(`${BASE}/#scripts=${sheetDocId}`, { waitUntil: 'networkidle0' })
-    await page.reload({ waitUntil: 'networkidle0' })
+    // Going from #doc=<id> to #scripts=<id> is a fragment-only change that
+    // Chrome treats as a same-document navigation: no load. The app routes on
+    // hashchange as well as on load, so no reload is forced here, and this
+    // step is also the proof that the scripts route reaches a live page.
+    await page.goto(`${BASE}/#scripts=${sheetDocId}`)
     await page.waitForSelector('.pane.standalone .editor .cm-content', { timeout: 8000 })
     // It syncs through the relay like any other client, so the script written
     // in the sheet window is here.
@@ -2602,6 +2600,38 @@ try {
     )
     check((await focusedFolder())?.includes('Runbooks'), 'and choosing it lands on the folder')
     check(!(await page.$('input[type="search"]')), 'the search panel closes behind it')
+  })
+
+  await step('the browser\'s Back and Forward buttons move between views', async () => {
+    // The hash is written on every navigation; this is the half that reads it
+    // back. Three entries are laid down by hand — list, document, list — and
+    // then walked with the browser's own buttons. Each hop is a fragment-only
+    // navigation, so a page that only routed on load would leave the view
+    // where it was while the URL moved on; the marker at the end proves none
+    // of it reloaded the page either.
+    await page.goto(BASE, { waitUntil: 'networkidle0' })
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await clickText(page, 'button', 'recent')
+    await clickText(page, 'a', 'UI test sheet')
+    await page.waitForSelector('canvas', { timeout: 5000 })
+    await clickSel(page, '[aria-label="Back to documents"]')
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    await page.evaluate(() => { window.__sameDocument = true })
+
+    await page.goBack()
+    await page.waitForSelector('canvas', { timeout: 5000 })
+    check(await page.evaluate(() => location.hash.startsWith('#doc=')),
+      'Back reopens the document the list was left for, and the URL names it')
+
+    await page.goBack()
+    await page.waitForSelector('input[placeholder="new document title"]', { timeout: 5000 })
+    check(await page.evaluate(() => location.hash === '' || location.hash === '#'),
+      'Back again is the list, with an empty hash')
+
+    await page.goForward()
+    await page.waitForSelector('canvas', { timeout: 5000 })
+    check(await page.evaluate(() => location.hash.startsWith('#doc=')), 'Forward retraces the step')
+    check(await page.evaluate(() => window.__sameDocument === true), 'and none of it reloaded the page')
   })
 
 } finally {

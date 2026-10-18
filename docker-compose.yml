@@ -6,3 +6,17 @@ services:
       - "8484:8484"
     volumes:
       - ./data:/data
+
+  # The website: the files in site/, served as they are in the repo, so a
+  # `make deploy` updates the site and the app together. Its own container
+  # rather than a route in the app, because the app's binary should stay the
+  # app. The config sets `Cache-Control: no-cache` on everything; see
+  # nginx/site.conf for why. Put it behind the same proxy as the app.
+  site:
+    image: nginx:1.30-alpine
+    restart: unless-stopped
+    ports:
+      - "8485:80"
+    volumes:
+      - ./site:/usr/share/nginx/html:ro
+      - ./nginx/site.conf:/etc/nginx/conf.d/default.conf:ro

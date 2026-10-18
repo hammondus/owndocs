@@ -6,6 +6,7 @@ import * as Y from 'yjs'
 import * as decoding from 'lib0/decoding'
 import { iterFrames } from './frames.js'
 import { canEdit } from './roles.js'
+import { apiFetch } from './lib/api.js'
 
 const TAIL_ROWS_LIMIT = 100
 const TAIL_BYTES_LIMIT = 128 * 1024
@@ -39,7 +40,7 @@ async function uploadSnapshot(docId, doc, lastSeq) {
     console.warn('snapshot self-check failed; not uploading')
     return
   }
-  await fetch(`/api/docs/${docId}/snapshot?last_seq=${lastSeq}`, {
+  await apiFetch(`/api/docs/${docId}/snapshot?last_seq=${lastSeq}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/octet-stream' },
     body: snap,
@@ -50,7 +51,7 @@ async function uploadSnapshot(docId, doc, lastSeq) {
 // Verify-bundle layout: [uvarint len][A][uvarint len][B][uvarint 8][seq be64]
 // where A = verified snapshot + full live log, B = pending snapshot + tail.
 async function verifyPending(docId) {
-  const res = await fetch(`/api/docs/${docId}/verify-bundle`)
+  const res = await apiFetch(`/api/docs/${docId}/verify-bundle`)
   if (!res.ok) return // pending vanished (another client verified it) — fine
   const parts = splitParts(new Uint8Array(await res.arrayBuffer()))
   if (parts.length !== 3) return
@@ -89,7 +90,7 @@ async function verifyPending(docId) {
 }
 
 function verdict(docId, lastSeq, ok) {
-  return fetch(`/api/docs/${docId}/verify`, {
+  return apiFetch(`/api/docs/${docId}/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ last_seq: lastSeq, ok }),

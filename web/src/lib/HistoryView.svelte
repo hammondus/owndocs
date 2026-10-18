@@ -5,7 +5,7 @@
   // through a normal collaborative edit — history itself is never touched.
   import { onMount, onDestroy } from 'svelte'
   import * as Y from 'yjs'
-  import { api } from './api.js'
+  import { api, apiFetch } from './api.js'
   import { canManage } from '../roles.js'
   import { iterFrames } from '../frames.js'
   import { mountPreview } from '../editor.js'
@@ -93,7 +93,7 @@
   // reconstruction a normal load does, stopped in the past. Extracted because
   // a diff needs two of them and the preview needs one.
   async function replayAt(seq) {
-    const res = await fetch(`/api/docs/${doc.id}/replay?to_seq=${seq}`)
+    const res = await apiFetch(`/api/docs/${doc.id}/replay?to_seq=${seq}`)
     if (!res.ok) throw new Error('failed to load that point')
     const frames = new Uint8Array(await res.arrayBuffer())
     const replayed = new Y.Doc()

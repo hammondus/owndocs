@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Every function the Own Docs sheet engine can call, with its arguments and an example.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+<title>Own Docs formulas</title>
+</head>
+<body>
+
+<!-- Every entry carries data-fn, and site_test.mjs compares the set with
+     CALLABLE in the engine in both directions: a function the engine lacks
+     fails, and a function this page omits fails. The page was first written
+     out from FUNCTION_DOCS in web/src/sheet/functions.js and is a static
+     file from here on; the test is what keeps the two in step. -->
+
+<header class="site">
+  <a class="wordmark" href="index.html">own docs</a>
+  <nav>
+    <a href="index.html">What it is</a>
+    <a href="self-host.html">Self-host</a>
+    <a href="formulas.html" aria-current="page">Formulas</a>
+  </nav>
+</header>
+
+<main>
+  <h1>Formulas</h1>
+  <p class="lede">Every function the sheet engine can call. A formula starts
+  with <code>=</code>, references cells as <code>A1</code> and ranges as
+  <code>A1:B10</code>, and <code>&amp;</code> joins text.</p>
+
+  <h2>Numbers</h2>
+  <dl class="fns">
+    <dt data-fn="SUM">SUM(value, …)</dt>
+    <dd>Adds numbers, or everything in a range.<code>=SUM(A1:A10)</code></dd>
+    <dt data-fn="AVERAGE">AVERAGE(value, …)</dt>
+    <dd>The mean of the numbers given.<code>=AVERAGE(B1:B12)</code></dd>
+    <dt data-fn="MIN">MIN(value, …)</dt>
+    <dd>The smallest number.<code>=MIN(A1:A10)</code></dd>
+    <dt data-fn="MAX">MAX(value, …)</dt>
+    <dd>The largest number.<code>=MAX(A1:A10)</code></dd>
+    <dt data-fn="ROUND">ROUND(number, places)</dt>
+    <dd>Rounds to a number of decimal places.<code>=ROUND(A1, 2)</code></dd>
+    <dt data-fn="ABS">ABS(number)</dt>
+    <dd>Drops the sign.<code>=ABS(-4)</code></dd>
+    <dt data-fn="SQRT">SQRT(number)</dt>
+    <dd>Square root.<code>=SQRT(16)</code></dd>
+    <dt data-fn="MOD">MOD(number, divisor)</dt>
+    <dd>The remainder after division.<code>=MOD(7, 3)</code></dd>
+  </dl>
+
+  <h2>Counting</h2>
+  <dl class="fns">
+    <dt data-fn="COUNT">COUNT(value, …)</dt>
+    <dd>How many of them are numbers.<code>=COUNT(A1:A10)</code></dd>
+    <dt data-fn="COUNTA">COUNTA(value, …)</dt>
+    <dd>How many are not empty, whatever they hold.<code>=COUNTA(A1:A10)</code></dd>
+  </dl>
+
+  <h2>Logic</h2>
+  <dl class="fns">
+    <dt data-fn="IF">IF(test, then, else)</dt>
+    <dd>Picks one of two values. Only the branch taken is worked out, so an error in the other cannot spoil it.<code>=IF(A1&gt;10, "over", "under")</code></dd>
+    <dt data-fn="AND">AND(test, …)</dt>
+    <dd>True when every one of them is.<code>=AND(A1&gt;0, B1&gt;0)</code></dd>
+    <dt data-fn="OR">OR(test, …)</dt>
+    <dd>True when any one of them is.<code>=OR(A1&gt;0, B1&gt;0)</code></dd>
+    <dt data-fn="NOT">NOT(test)</dt>
+    <dd>Turns true into false and back.<code>=NOT(A1&gt;0)</code></dd>
+  </dl>
+
+  <h2>Text</h2>
+  <dl class="fns">
+    <dt data-fn="CONCATENATE">CONCATENATE(text, …)</dt>
+    <dd>Joins text end to end. <code>&amp;</code> does the same thing.<code>=CONCATENATE(A1, " ", B1)</code></dd>
+    <dt data-fn="LEN">LEN(text)</dt>
+    <dd>How many characters.<code>=LEN(A1)</code></dd>
+    <dt data-fn="LEFT">LEFT(text, count)</dt>
+    <dd>The first few characters.<code>=LEFT(A1, 3)</code></dd>
+    <dt data-fn="RIGHT">RIGHT(text, count)</dt>
+    <dd>The last few characters.<code>=RIGHT(A1, 3)</code></dd>
+    <dt data-fn="MID">MID(text, start, count)</dt>
+    <dd>Characters from the middle, counting from 1.<code>=MID(A1, 2, 3)</code></dd>
+    <dt data-fn="UPPER">UPPER(text)</dt>
+    <dd>Everything in capitals.<code>=UPPER(A1)</code></dd>
+    <dt data-fn="LOWER">LOWER(text)</dt>
+    <dd>Everything in lower case.<code>=LOWER(A1)</code></dd>
+    <dt data-fn="TRIM">TRIM(text)</dt>
+    <dd>Removes spaces from both ends.<code>=TRIM(A1)</code></dd>
+  </dl>
+
+  <h2>Dates and times</h2>
+  <dl class="fns">
+    <dt data-fn="TODAY">TODAY()</dt>
+    <dd>Today's date.<code>=TODAY()</code></dd>
+    <dt data-fn="NOW">NOW()</dt>
+    <dd>The date and time right now.<code>=NOW()</code></dd>
+    <dt data-fn="DATE">DATE(year, month, day)</dt>
+    <dd>Builds a date from its parts.<code>=DATE(2026, 8, 13)</code></dd>
+    <dt data-fn="TIME">TIME(hour, minute, second)</dt>
+    <dd>Builds a time from its parts.<code>=TIME(9, 30, 0)</code></dd>
+    <dt data-fn="YEAR">YEAR(date)</dt>
+    <dd>The year out of a date.<code>=YEAR(A1)</code></dd>
+    <dt data-fn="MONTH">MONTH(date)</dt>
+    <dd>The month, 1 to 12.<code>=MONTH(A1)</code></dd>
+    <dt data-fn="DAY">DAY(date)</dt>
+    <dd>The day of the month.<code>=DAY(A1)</code></dd>
+    <dt data-fn="HOUR">HOUR(time)</dt>
+    <dd>The hour, 0 to 23.<code>=HOUR(A1)</code></dd>
+    <dt data-fn="MINUTE">MINUTE(time)</dt>
+    <dd>The minutes.<code>=MINUTE(A1)</code></dd>
+    <dt data-fn="SECOND">SECOND(time)</dt>
+    <dd>The seconds.<code>=SECOND(A1)</code></dd>
+    <dt data-fn="WEEKDAY">WEEKDAY(date)</dt>
+    <dd>Day of the week, 1 for Sunday.<code>=WEEKDAY(A1)</code></dd>
+    <dt data-fn="DAYS">DAYS(end, start)</dt>
+    <dd>How many days between two dates.<code>=DAYS(B1, A1)</code></dd>
+    <dt data-fn="EDATE">EDATE(date, months)</dt>
+    <dd>The same day, a number of months away.<code>=EDATE(A1, 3)</code></dd>
+  </dl>
+</main>
+
+<footer class="site">
+  The same reference is inside the app, in the formula drawer of any sheet.
+</footer>
+
+</body>
+</html>

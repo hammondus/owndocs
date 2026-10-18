@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="How to run Own Docs on your own machine: build it, deploy it with Docker, back it up, mirror versions into git, and connect notification email.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+<title>Self-host Own Docs</title>
+</head>
+<body>
+
+<!-- The commands here are duplicated from README.md on purpose, and
+     site_test.mjs holds the duplication: every `make` command on this page
+     must name a real target and must appear in the README. The prose around
+     them may differ, because a visitor and someone at a checkout want
+     different framing. See DESIGN-DECISIONS.md, *The self-hosting
+     instructions are duplicated on purpose*. -->
+
+<header class="site">
+  <a class="wordmark" href="index.html">own docs</a>
+  <nav>
+    <a href="index.html">What it is</a>
+    <a href="self-host.html" aria-current="page">Self-host</a>
+    <a href="formulas.html">Formulas</a>
+  </nav>
+</header>
+
+<main>
+  <h1>Self-host Own Docs</h1>
+  <p class="lede">A Go backend, a Svelte front end, and one SQLite file. The
+  build needs Go and Node; the deploy needs Docker.</p>
+
+  <h2>Run it on your machine</h2>
+  <p>To build the front end and the binary and start listening on
+  <code>127.0.0.1:8484</code>, run:</p>
+  <pre><code data-make="run">make run</code></pre>
+  <p>Open <code>http://127.0.0.1:8484</code>, sign up, create a document, and
+  open the same document in a second browser window to see it sync. To stop
+  new accounts, start the server with <code>-signup=closed</code> and invite
+  people with links instead.</p>
+
+  <h2>Build and test</h2>
+  <p>To run the Go vet, the Go tests, and the headless JavaScript suites:</p>
+  <pre><code data-make="test">make test</code></pre>
+  <p>To drive the real interface in a real Chrome, which needs Chrome
+  installed:</p>
+  <pre><code data-make="test-ui">make test-ui</code></pre>
+  <p>To build the front end and a binary for this machine without running
+  it:</p>
+  <pre><code data-make="build">make build</code></pre>
+
+  <h2>Deploy</h2>
+  <p>The deploy target is Linux on arm64, as a static binary with no runtime
+  dependencies. To cross-compile it into <code>dist/</code>:</p>
+  <pre><code data-make="release">make release</code></pre>
+  <p>On the server, with the repository checked out and Docker installed, to
+  pull the latest commit and rebuild the container:</p>
+  <pre><code data-make="deploy">make deploy</code></pre>
+  <p>The container keeps its database in a <code>data</code> volume beside the
+  compose file and closes signup. Put it behind the reverse proxy you already
+  run; it speaks plain HTTP on port 8484.</p>
+
+  <h2>Back it up</h2>
+  <p>On the server, to write a verified, timestamped copy into
+  <code>./data/backups</code>:</p>
+  <pre><code data-make="backup">make backup</code></pre>
+  <p>The same against a local development database:</p>
+  <pre><code data-make="backup-local">make backup-local</code></pre>
+  <p>Both are safe while people are editing. Every backup is reopened and
+  checked before it is reported as good. Do not back up by copying the
+  database file: it runs in WAL mode, so a plain copy can be a valid database
+  that is missing everything since the last checkpoint.</p>
+  <p>Scheduling is yours to own, and so is the second copy. The target above
+  is on the same disk as the database, which helps with a mistake and not
+  with a dead disk:</p>
+  <pre>0 3 * * *  cd /srv/owndocs &amp;&amp; make backup &amp;&amp; rsync -a data/backups/ elsewhere:/owndocs/</pre>
+  <p>To restore, stop the server, put the backup file at the database path,
+  and start it again:</p>
+  <pre>docker compose down
+cp data/backups/docs-20260814T220345Z.db data/docs.db
+docker compose up -d</pre>
+  <p>Backups contain password hashes and live session tokens. They are
+  written <code>0600</code>; keep them that way wherever they are copied
+  to.</p>
+
+  <h2>Export to git</h2>
+  <p>The exporter mirrors named versions into a git repository, one commit
+  per version, authored by whoever named it and dated when they did. It is an
+  ordinary client: it signs in with an account and sees only what that
+  account can see. To run a single pass:</p>
+  <pre>cd web
+DOCS_EMAIL=you@example.com DOCS_PASSWORD=... \
+  node scripts/exporter.mjs https://docs.example.com /path/to/repo --once</pre>
+  <p>Without <code>--once</code> it polls. A document becomes a markdown file
+  inside one directory per folder above it, and a sheet becomes a directory
+  of one CSV per tab. Grant the account at each root folder it should mirror,
+  and leave it there. The exporter never adds a remote; pushing somewhere is
+  yours to arrange.</p>
+
+  <h2>Notification email</h2>
+  <p>Off unless you set <code>-smtp</code>, and the app is whole without it:
+  mentions and replies always land in the in-app inbox. Mail covers the
+  events where the recipient is by definition not in the app. It submits to
+  a relay that already exists and never touches SPF, DKIM, DMARC, or
+  bounces.</p>
+  <p>To turn it on, add the flags to <code>docker-compose.yml</code>, where
+  <code>command:</code> is appended to the image's entrypoint:</p>
+  <pre>command: ["-smtp", "relay.internal:587",
+          "-mail-from", "owndocs@example.com",
+          "-base-url", "https://docs.example.com"]
+environment:
+  SMTP_USERNAME: owndocs
+  SMTP_PASSWORD: ...</pre>
+  <p><code>-base-url</code> is required with <code>-smtp</code>: the server
+  has no other way to know its own public address, and a message whose only
+  link is broken is worse than no message.</p>
+</main>
+
+<footer class="site">
+  The same commands are in the
+  <a href="https://github.com/hammondus/owndocs/blob/master/README.md">repository's README</a>,
+  which the test suite checks against this page.
+</footer>
+
+</body>
+</html>

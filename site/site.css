@@ -1,0 +1,219 @@
+/* The website's one stylesheet. Hand-written, no build step, and served as it
+   is in the repo. It borrows the app's visual language — a cool ink ramp, one
+   signal colour, monospace micro-labels, and the caret rule — so the site and
+   the screenshots of the app read as one thing. The tokens are the app's
+   (web/src/app.css), copied rather than shared: the site must not depend on
+   the app's build, and six colours are cheap to keep in step by eye.
+
+   Every scheme-dependent colour is written once as light-dark(), which the
+   app already relies on, so the site's support floor is the app's. */
+
+:root {
+  color-scheme: light dark;
+
+  --ground: light-dark(#f4f6f8, #0e1014);
+  --surface: light-dark(#ffffff, #16191e);
+  --surface-2: light-dark(#eef1f4, #1e222a);
+  --line: light-dark(#dde2e8, #262b33);
+  --ink: light-dark(#14171c, #e7eaef);
+  --ink-2: light-dark(#545c68, #a4adba);
+  --ink-3: light-dark(#858f9c, #717b8a);
+  --signal: light-dark(#2f5fe0, #7f9cff);
+  --signal-soft: light-dark(#e9eefc, #1b2440);
+
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --measure: 42rem;
+  --r: 4px;
+
+  accent-color: var(--signal);
+}
+
+html {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font);
+  line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding-inline: 16px;
+}
+
+/* ── Shell ──────────────────────────────────────────────────────────────── */
+
+header.site, main, footer.site {
+  max-width: var(--measure);
+  margin-inline: auto;
+}
+
+header.site {
+  display: flex;
+  align-items: baseline;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  padding-block: 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+/* The wordmark is a readout, not a logo, exactly as in the app bar: a
+   lowercase monospace micro-label with the caret rule beside it. */
+.wordmark {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  text-decoration: none;
+  border-inline-start: 2px solid var(--signal);
+  padding-inline-start: 0.6rem;
+}
+
+header.site nav {
+  display: flex;
+  gap: 1.25rem;
+  margin-inline-start: auto;
+  font-size: 0.9rem;
+}
+
+header.site nav a {
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+header.site nav a:hover,
+header.site nav a[aria-current="page"] {
+  color: var(--ink);
+}
+
+main {
+  padding-block: 2.5rem 3rem;
+}
+
+footer.site {
+  padding-block: 1.5rem 3rem;
+  border-top: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: 0.85rem;
+}
+
+/* ── Type ───────────────────────────────────────────────────────────────── */
+
+h1 {
+  font-size: 1.9rem;
+  line-height: 1.2;
+  margin-block: 0 0.75rem;
+  letter-spacing: -0.01em;
+}
+
+.lede {
+  font-size: 1.15rem;
+  color: var(--ink-2);
+  margin-block: 0 2.5rem;
+}
+
+/* Section headings in the app's micro-label voice: small, uppercase,
+   monospace, quieter than the text they introduce. */
+h2 {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-block: 2.5rem 0.75rem;
+}
+
+h3 {
+  font-size: 1rem;
+  margin-block: 1.5rem 0.4rem;
+}
+
+p, li, dd {
+  max-width: 38rem;
+}
+
+a {
+  color: var(--signal);
+}
+
+code, kbd, pre {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+:not(pre) > code,
+kbd {
+  background: var(--surface-2);
+  border-radius: var(--r);
+  padding: 0.1em 0.35em;
+}
+
+kbd {
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+}
+
+pre {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+
+/* ── Lists of things the tests check ────────────────────────────────────── */
+
+dl.terms {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1.25rem;
+  margin-block: 0.75rem 0;
+}
+
+dl.terms dt {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+dl.terms dd {
+  margin: 0;
+}
+
+/* The formula reference: one row per function, the name on the left. */
+dl.fns {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.75rem 1.25rem;
+  margin-block: 0.75rem 0;
+}
+
+dl.fns dt {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  padding-top: 0.1em;
+}
+
+dl.fns dd {
+  margin: 0;
+}
+
+dl.fns dd code {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--ink-2);
+  background: none;
+  padding: 0;
+}
+
+@media (max-width: 36rem) {
+  dl.terms, dl.fns {
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+  }
+  dl.terms dd, dl.fns dd {
+    margin-bottom: 0.6rem;
+  }
+}

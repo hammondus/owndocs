@@ -3714,7 +3714,7 @@ Open underneath this: whether instantiating substitutes per-instance values
 rewrite, so it forces the client-side path regardless of the choice above —
 see *Open questions*.
 
-## The site and the demo (decided, not built)
+## The site and the demo (the site is built; the demo is not)
 
 ### The name
 
@@ -3869,6 +3869,31 @@ list is deliberately honest about which exist:
    shot the site references that the harness does not produce fails, and one the
    harness produces that nothing uses fails, so the set cannot rot in either
    direction.
+
+**Built 2026-10-18**, as `web/scripts/site_test.mjs` in `make test`, with all
+five checks and three more of the same shape: every internal link resolves,
+every page declares both colour schemes, and `site/favicon.svg` is byte-equal
+to the app's. Three pages — what it is, self-hosting, and the formula
+reference — plus one stylesheet, served by an nginx container from
+`site/` as the files sit in the repo. Two things came out differently from
+the list above:
+
+- **`data-make` is checked one way, not both.** The Makefile has plumbing
+  targets (`js`, `runner-js`, `web/node_modules`) that nobody types, and a
+  page obliged to list them would be a page about the build. So a `data-make`
+  must name a real target, and its text must appear in `README.md`, and that
+  is all. The other four registries are complete lists and are checked both
+  ways.
+- **The two rank maps are checked against each other first.** The site check
+  for `data-role` needed a parser for `roleRank` in `docs_api.go`, and once
+  one existed, comparing it with `RANK` in `roles.js` was one line. That is
+  the cross-language drift the entry above predicted, now a test rather than
+  two comments.
+
+The fetch guard shipped with it. `lib/api.js` grew `apiFetch`, the raw form
+for the four calls that move bytes rather than JSON, and the test fails a
+`fetch(` anywhere else under `web/src`. The site does not yet link to the demo,
+because there is no demo; the entry point is step 3's.
 
 ### The self-hosting instructions are duplicated on purpose
 

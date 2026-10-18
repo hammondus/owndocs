@@ -60,52 +60,36 @@ one certificate, one proxy host with a custom location for `/demo`.
 It probes the subdomain fallback, on a scratch VM, if the path prefix ever turns
 out to be wrong.
 
-Build order. Steps 1 and 2 are useful without 3, and are not blocked by it:
+Build order. Step 1 shipped 2026-10-18: `site/` with three pages, the
+enforced tier, and `site_test.mjs` in `make test` — see *The enforced tier is
+data attributes, not prose* for what is checked and in which direction. Step 2
+is useful without 3, and is not blocked by it:
 
-1. **`site/`** — what it is, how to host it, and the self-hosting instructions
-   that today only exist in `README.md`. Static, no build step. Enforced claims
-   carry `data-` attributes; see *The enforced tier* for the mechanism and the
-   registry order.
 2. **`make site-shots`** — the images the site uses, driven through the real
    app by the `ui_test.mjs` harness. Locks the sync property in while the site
-   is small enough to retrofit cheaply.
+   is small enough to retrofit cheaply. `site_test.mjs` already compares
+   `data-shot` with `site/shots/` both ways; today both sides are empty.
 3. **The demo supervisor** — a mode of the same binary. Starts `owndocs -demo`
-   per visitor on a free port with a temp database, routes by hostname, kills it
-   after ~20 idle minutes and deletes the directory.
+   per visitor on a free port with a temp database, routes by path prefix,
+   kills it after ~20 idle minutes and deletes the directory. With it, a
+   contact address and a paragraph of acceptable use on the site, so there is
+   a way to report a problem — see *What is left once it is isolated*.
 
-`site_test.mjs`, built alongside step 1, in value order:
-
-- `data-make` → `.PHONY` targets. Do this one first: it is the class of claim
-  the rename broke, and it costs a regex over the `Makefile`.
-- `data-fn` → `CALLABLE`. Joins the existing `functions_test.mjs` check.
-- `data-role` → `RANK` in `roles.js` **and** `roleRank` in `docs_api.go`. Those
-  two are hand-mirrored with nothing checking them — a live drift risk in the
-  app, not just on the site.
-- `data-key` → the editor's `formatKeymap` only. The sheet's shortcuts are not a
-  registry; either the list stays editor-only or the sheet half stays prose.
-- `data-shot` → the files `make site-shots` writes, both directions.
-
-One more of the same shape, guarding the app rather than the site: **no raw
-`fetch('/api…')` outside `api.js`**. Once sessions are path-prefixed, a new
-absolute call works in dev, works self-hosted, and is silently broken in the
-demo alone — the worst shape a bug has. One regex, and it retires the four
-strays that exist today.
-
-Wanted with it, none of which exist:
+Wanted with the demo, none of which exist:
 
 - `-demo` mode: seeds the three users, and caps documents and bytes
 - Caps announced in the UI, and the message naming the *real* figure beside the
   demo one — the unsaved-change banner is the shape
 - A ceiling on concurrent sessions, and a per-source rate limit on creating one
-- `robots.txt` and `noindex` on **`*.demo.<domain>` only** — the site itself
-  wants indexing; it is the demo's abandoned scratchpads that must not surface
-  under the domain
-- A contact address and a paragraph of acceptable use
-- Base-path awareness, and it is small because `api()` is a chokepoint: the
-  prefix in `api.js`, the four raw `fetch` strays routed through it, the
-  WebSocket URL in `provider.js`, the two share-link builders off
-  `location.href`, `base: './'` in vite, and the session cookie `Path` from a
-  new flag. See *A path prefix per session* for the table
+- `robots.txt` and `noindex` on **`/demo/…` only** — the site itself wants
+  indexing; it is the demo's abandoned scratchpads that must not surface under
+  the domain
+- Base-path awareness, and it is small because `api.js` is a chokepoint: every
+  request already leaves through it, and `site_test.mjs` fails a raw `fetch`
+  anywhere else. What remains is the prefix itself in `api.js`, the WebSocket
+  URL in `provider.js`, the two share-link builders off `location.href`,
+  `base: './'` in vite, and the session cookie `Path` from a new flag. See *A
+  path prefix per session* for the table
 - One proxy host with a custom location for `/demo`. No wildcard DNS, no
   wildcard certificate, no DNS-01
 

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Own Docs is self-hosted collaborative documents and spreadsheets: one Go binary over SQLite, a markdown-native editor, and live sync in the browser.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+<title>Own Docs</title>
+</head>
+<body>
+
+<!-- The claims on this page sit in three tiers. A data- attribute marks an
+     enforced one: web/scripts/site_test.mjs compares it with the registry it
+     names and fails when they disagree. Prose around an attribute is free to
+     be prose. Anything with no attribute is reviewed like code and kept
+     short. See DESIGN-DECISIONS.md, *The enforced tier is data attributes,
+     not prose*. -->
+
+<header class="site">
+  <a class="wordmark" href="index.html">own docs</a>
+  <nav>
+    <a href="index.html" aria-current="page">What it is</a>
+    <a href="self-host.html">Self-host</a>
+    <a href="formulas.html">Formulas</a>
+  </nav>
+</header>
+
+<main>
+  <h1>Collaborative documents and spreadsheets, on a machine you run</h1>
+  <p class="lede">One Go binary over one SQLite file. Your team edits together
+  in the browser, and nothing leaves your server.</p>
+
+  <h2>Documents</h2>
+  <p>A document is a markdown file that several people edit at once. The
+  editor previews as you type and keeps the text plain: headings, lists,
+  tables, code blocks, footnotes, and links between documents. Name a version
+  when it matters, compare any two points in a document's history, and
+  comment on a selection.</p>
+
+  <h2>Sheets</h2>
+  <p>A sheet is tabs of cells with formulas, number formats, and charts. A
+  sheet is locked by default, and you unlock the cells that are inputs.
+  Scripts run in a sandbox with no network, when you run them or, if you ask,
+  on every edit. The <a href="formulas.html">formula reference</a> lists every
+  function the engine can call.</p>
+
+  <h2>Folders and sharing</h2>
+  <p>Share a document with a person, or file it into a shared folder and
+  everyone on the folder reaches it. Access adds and never subtracts: the best
+  grant a person holds, on the document or on a folder above it, is the one
+  that applies. Five roles:</p>
+  <dl class="terms">
+    <dt data-role="viewer">viewer</dt>
+    <dd>Reads the document.</dd>
+    <dt data-role="commenter">commenter</dt>
+    <dd>Reads and comments, but cannot change the content.</dd>
+    <dt data-role="editor">editor</dt>
+    <dd>Changes the content.</dd>
+    <dt data-role="manager">manager</dt>
+    <dd>Shares and administers the document, but cannot delete it or hand it
+    over.</dd>
+    <dt data-role="owner">owner</dt>
+    <dd>Everything, including deleting the document and transferring it.</dd>
+  </dl>
+  <p>A share link grants a role to whoever signs in with it, and you can
+  revoke the link without taking back what it already granted.</p>
+
+  <h2>Finding things</h2>
+  <p>Search covers folder names, document text, and comments, and a role
+  change takes effect on the next search. Mentions and replies land in an
+  in-app inbox. If you connect a mail relay, a mention or a share also sends
+  an email.</p>
+
+  <h2>Keeping copies</h2>
+  <p>Named versions can be mirrored into a git repository, one commit per
+  version, with folders as directories. Backups are verified before they are
+  reported as good. Printing a document is its PDF export.</p>
+
+  <h2>Keyboard shortcuts in the editor</h2>
+  <p>⌘ on a Mac, Ctrl elsewhere.</p>
+  <dl class="terms">
+    <dt><kbd data-key="Mod-b">⌘B</kbd></dt>
+    <dd>Bold</dd>
+    <dt><kbd data-key="Mod-i">⌘I</kbd></dt>
+    <dd>Italic</dd>
+    <dt><kbd data-key="Mod-e">⌘E</kbd></dt>
+    <dd>Inline code</dd>
+    <dt><kbd data-key="Mod-k">⌘K</kbd></dt>
+    <dd>Insert a link</dd>
+    <dt><kbd data-key="Shift-Enter">Shift+Enter</kbd></dt>
+    <dd>Hard line break</dd>
+    <dt><kbd data-key="Tab">Tab</kbd></dt>
+    <dd>Nest a list item</dd>
+    <dt><kbd data-key="Shift-Tab">Shift+Tab</kbd></dt>
+    <dd>Un-nest a list item</dd>
+  </dl>
+
+  <h2>Running it</h2>
+  <p>Own Docs is a single static binary and a data directory. The
+  <a href="self-host.html">self-hosting page</a> has the commands to run it
+  on your machine, deploy it with Docker, back it up, and connect mail.</p>
+</main>
+
+<footer class="site">
+  Own Docs is open source. The
+  <a href="https://github.com/hammondus/owndocs">source repository</a> holds
+  the design decisions behind everything on this page.
+</footer>
+
+</body>
+</html>

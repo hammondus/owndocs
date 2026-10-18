@@ -39,6 +39,12 @@ End-to-end sync check (needs a running server): `cd web && node scripts/e2e.mjs`
     make release      # dist/owndocs-linux-arm64, static binary
     make deploy       # on the server: git pull && docker compose up -d --build
 
+The compose file also starts the website: the pages in `site/`, served by
+nginx on port 8485 as they are in the repo, so a deploy updates both. Every
+claim on the site that carries a `data-` attribute is checked against the code
+by `make test`; see `DESIGN-DECISIONS.md`, *The enforced tier is data
+attributes, not prose*.
+
 ### Backups
 
     make backup       # on the server: a verified, timestamped copy in ./data/backups

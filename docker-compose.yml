@@ -4,19 +4,24 @@ services:
     restart: unless-stopped
     ports:
       - "8484:8484"
+    # A bind mount rather than a named volume, so backups land in a host
+    # directory that cron can copy away. The container runs as distroless's
+    # nonroot user (65532), and a bind mount keeps the host directory's
+    # owner, so `data/` must be chowned to 65532 before the first start.
     volumes:
       - ./data:/data
 
-  # The website: the files in site/, served as they are in the repo, so a
-  # `make deploy` updates the site and the app together. Its own container
-  # rather than a route in the app, because the app's binary should stay the
-  # app. The config sets `Cache-Control: no-cache` on everything; see
-  # nginx/site.conf for why. Put it behind the same proxy as the app.
+  # The website: the files in site/, served by nitro as they are in the
+  # repo, so a `make deploy` updates the site and the app together. Its own
+  # container rather than a route in the app, because the app's binary
+  # should stay the app. Every response is `Cache-Control: no-cache`; see
+  # nitro/site.conf for why. Put it behind the same proxy as the app.
   site:
-    image: nginx:1.30-alpine
+    build: ./nitro
+    image: owndocs-site
     restart: unless-stopped
     ports:
-      - "8485:80"
+      - "8485:8080"
     volumes:
-      - ./site:/usr/share/nginx/html:ro
-      - ./nginx/site.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./site:/srv/site:ro
+      - ./nitro/site.conf:/etc/nitro/nitro.conf:ro

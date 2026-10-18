@@ -7,10 +7,16 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/hammondus/nitrokit"
 )
 
 func routes(db *sql.DB, h *hub, mail *mailer, staticFS fs.FS, signupOpen, dev bool) http.Handler {
 	mux := http.NewServeMux()
+
+	// Liveness only, for the container's health check. It says the process
+	// answers requests, not that the database does.
+	mux.HandleFunc("GET /healthz", nitrokit.Healthz)
 
 	if dev {
 		mux.HandleFunc("GET /api/dev/users", handleDevUsers())

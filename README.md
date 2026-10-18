@@ -37,10 +37,16 @@ End-to-end sync check (needs a running server): `cd web && node scripts/e2e.mjs`
 ## Deploy
 
     make release      # dist/owndocs-linux-arm64, static binary
-    make deploy       # on the server: git pull && docker compose up -d --build
+    make deploy       # on the server: git pull, docker compose build --pull, up -d
+
+The container runs as an unprivileged user (uid 65532) and keeps its database
+in `./data`, a bind mount, so before the first start on a server give it that
+directory:
+
+    mkdir -p data && sudo chown -R 65532:65532 data
 
 The compose file also starts the website: the pages in `site/`, served by
-nginx on port 8485 as they are in the repo, so a deploy updates both. Every
+nitro on port 8485 as they are in the repo, so a deploy updates both. Every
 claim on the site that carries a `data-` attribute is checked against the code
 by `make test`; see `DESIGN-DECISIONS.md`, *The enforced tier is data
 attributes, not prose*.

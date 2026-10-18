@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/hammondus/nitrokit"
 )
 
 // all: includes dotfiles, so the tracked .gitkeep keeps the embed path
@@ -41,7 +43,18 @@ func main() {
 	mailFrom := flag.String("mail-from", "", "From address for notification email")
 	baseURL := flag.String("base-url", "", "public origin of this instance, e.g. https://docs.example.com — used for links in email")
 	backup := flag.String("backup", "", "write a verified backup to this file (or a timestamped one, if this is a directory) and exit; safe to run against a live instance")
+	healthcheck := flag.Bool("healthcheck", false, "probe the running server at -addr and exit")
 	flag.Parse()
+
+	// Backs the Dockerfile's HEALTHCHECK: the container runs this same binary
+	// with -healthcheck, and the exit status is the probe's. Docker does not
+	// restart an unhealthy container, so this reports status and nothing more.
+	if *healthcheck {
+		if err := nitrokit.HealthProbe(*addr); err != nil {
+			log.Fatalf("healthcheck: %v", err)
+		}
+		return
+	}
 
 	// Backup runs instead of the server, not alongside it, and takes its own
 	// read-only connection — so it works equally well against a stopped

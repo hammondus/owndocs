@@ -107,7 +107,9 @@ same(attrs('shot'), shots, 'screenshots')
 for (const [p, src] of Object.entries(html)) {
   for (const [, href] of src.matchAll(/href="([^"#?]+)/g)) {
     if (/^[a-z]+:/.test(href)) continue
-    if (!existsSync(join(siteDir, href))) fail(`${p} links to ${href}, which does not exist`)
+    // A directory link (./) is served as its index.html, so that file must exist.
+    const target = href.endsWith('/') ? join(siteDir, href, 'index.html') : join(siteDir, href)
+    if (!existsSync(target)) fail(`${p} links to ${href}, which does not exist`)
   }
   if (!/<meta name="color-scheme" content="light dark">/.test(src)) fail(`${p} does not declare its colour schemes`)
 }

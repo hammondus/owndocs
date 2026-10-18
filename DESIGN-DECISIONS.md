@@ -1828,6 +1828,44 @@ the data volume, which is the same disk as the database: fine for a mistake,
 useless for a disk failure. Whatever runs it on a schedule has to move the
 result somewhere else, and that is an operational step this repo does not own.
 
+### The app image follows the house Docker standard
+
+Decided 2026-10-18. The Dockerfile was a `golang:1.26-alpine` build on an
+`alpine:3.22` runtime with an `adduser`. It now follows the standard set
+across every project: `golang:1.27` to build, `gcr.io/distroless/static-debian13:nonroot`
+to run, `--pull` on every build, Go caches mounted on the build step, `npm ci`
+in the Node stage, a `.dockerignore`, and a `HEALTHCHECK` backed by a
+`-healthcheck` flag on the binary. The reasons that are specific to this app:
+
+- **The runtime user changed from 1000 to 65532.** `./data` is a bind mount,
+  because `make backup` and the restore instructions want the files in a host
+  directory, and a bind mount keeps the host directory's owner. So a server
+  moving to this image chowns `data/` once, and a fresh server does it before
+  the first start; the README and the site both say so. The image also
+  creates `/data` with the right owner, so a named volume would work without
+  that step.
+- **The probe comes from nitrokit, and that is the whole dependency.**
+  `nitrokit.Healthz` and `nitrokit.HealthProbe` are a few lines each and the
+  standard library would do. The standard names the kit so every project's
+  probe behaves the same way, and the linker drops the rest of the module.
+  The module's own dependencies (`x/crypto`, `x/net`, `x/text`) were already
+  here or are already pulled by what was.
+- **`/healthz` is liveness, not readiness.** It says the process answers
+  requests, nothing about the database. Docker does not restart on unhealthy
+  anyway, so the check shows status and nothing more.
+- **The base flags stay in ENTRYPOINT.** The standard template puts flags in
+  CMD so a compose `command:` replaces them. This app documents `command:`
+  as the place to *add* the mail flags, and that only works if the base flags
+  are in ENTRYPOINT. Kept, because an operator who follows the README and
+  loses `-signup=closed` is the worse outcome.
+- **`go.mod` still says 1.26.** The builder tag is the current minor as the
+  standard asks; the module's floor moves when a feature needs it.
+- **The site image cannot build until nitro is public.** `nitro/Dockerfile`
+  does `go install github.com/hammondus/nitro@v0.0.4`, which resolves through
+  the module proxy. The repository was private on 2026-10-18, so the proxy
+  cannot see it and the build fails on the server. Making nitro public is the
+  fix; nothing in this repo can work around it.
+
 ### Auth & sharing
 
 stdlib sessions, argon2id password hashing (`x/crypto`), ranked
@@ -3894,6 +3932,21 @@ The fetch guard shipped with it. `lib/api.js` grew `apiFetch`, the raw form
 for the four calls that move bytes rather than JSON, and the test fails a
 `fetch(` anywhere else under `web/src`. The site does not yet link to the demo,
 because there is no demo; the entry point is step 3's.
+
+### The site is served by nitro, not nginx
+
+Decided 2026-10-18. The `site` container runs nitro
+(`github.com/hammondus/nitro`, pinned in `nitro/Dockerfile`) instead of
+`nginx:1.30-alpine`. nitro is the house web server, and running it here
+puts it in front of real traffic. The behaviour the nginx config existed for
+carries over unchanged: every file is `Cache-Control: no-cache`, and
+`Last-Modified` turns each revalidation into a 304. The pages and the config
+stay bind-mounted, so `site/` is still served exactly as it sits in the
+repo.
+
+The home links in `site/` point at `./`, not `index.html`, because nitro
+redirects `/index.html` to `/` and each click would otherwise cost a 301.
+`site_test.mjs` checks that a directory link has an `index.html` behind it.
 
 ### The self-hosting instructions are duplicated on purpose
 

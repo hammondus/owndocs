@@ -19,9 +19,9 @@
      instructions are duplicated on purpose*. -->
 
 <header class="site">
-  <a class="wordmark" href="index.html">own docs</a>
+  <a class="wordmark" href="./">own docs</a>
   <nav>
-    <a href="index.html">What it is</a>
+    <a href="./">What it is</a>
     <a href="self-host.html" aria-current="page">Self-host</a>
     <a href="formulas.html">Formulas</a>
   </nav>
@@ -58,8 +58,9 @@
   <p>On the server, with the repository checked out and Docker installed, to
   pull the latest commit and rebuild the container:</p>
   <pre><code data-make="deploy">make deploy</code></pre>
-  <p>The container keeps its database in a <code>data</code> volume beside the
-  compose file and closes signup. Put it behind the reverse proxy you already
+  <p>The container runs as an unprivileged user and keeps its database in a
+  <code>data</code> directory beside the compose file, so before the first
+  start, create that directory and give it to user 65532. It closes signup. Put it behind the reverse proxy you already
   run; it speaks plain HTTP on port 8484.</p>
 
   <h2>Back it up</h2>

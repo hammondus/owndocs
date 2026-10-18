@@ -58,12 +58,14 @@ clean:
 	rm -f $(BIN) runner cmd/runner/runtime.js
 	rm -rf dist web/static/assets web/static/index.html web/static/favicon.svg
 
+# --pull: without it Docker reuses the cached base images, and a floating
+# tag like golang:1.27 never picks up a patch release.
 docker-build:
-	docker compose build
+	docker compose build --pull
 
 # Run on the server.
 deploy:
-	git pull && docker compose up -d --build
+	git pull && docker compose build --pull && docker compose up -d
 
 logs:
 	docker compose logs -f owndocs
@@ -85,7 +87,7 @@ logs:
 .PHONY: backup backup-local
 backup:
 	mkdir -p ./data/backups
-	docker compose exec owndocs owndocs -db /data/docs.db -backup /data/backups
+	docker compose exec owndocs /owndocs -db /data/docs.db -backup /data/backups
 
 # The same, against a local dev database with no Docker in the way.
 backup-local: build

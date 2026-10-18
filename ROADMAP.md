@@ -42,7 +42,7 @@ address — see *Rate-limiting the login surface* in the design doc.
 
 ## Website, and a demo anyone can log into
 
-Decided 2026-08-14. `site/` static pages served by nginx from its own
+Decided 2026-08-14. `site/` static pages served by nitro from its own
 container, plus a demo that hands every visitor their own throwaway instance.
 See *The site and the demo* in the design doc — the reasoning that matters is
 why the demo isolates instead of moderating, and why the caps are bytes rather

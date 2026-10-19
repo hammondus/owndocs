@@ -15,6 +15,7 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CALLABLE } from '../src/sheet/engine.js'
 import { CHART_TYPES } from '../src/sheet/chart.js'
+import { readSnapshot, OPERATORS } from './google_functions.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const read = (p) => readFileSync(join(root, p), 'utf8')
@@ -82,6 +83,19 @@ const absent = attrs('absent-fn')
 const shipped = absent.filter((fn) => CALLABLE.includes(fn))
 if (shipped.length) fail('the site calls these functions missing, and the engine has them', shipped.join(', '))
 else if (absent.length) ok(`every function the site calls missing is missing (${absent.length})`)
+
+// ---- data-absent-fn and data-operator → the Google Sheets snapshot ---------
+// Both ways against google-sheets-functions.tsv: every function in the
+// snapshot that the engine lacks is on the site, as missing or as an operator,
+// and nothing else is. When the engine gains a function, this fails until
+// `node scripts/google_functions.mjs render` drops it from the page. The
+// snapshot itself changes only when someone refreshes it, so Google adding a
+// function never fails this test.
+
+const snapshot = readSnapshot()
+const lacks = [...snapshot.category.keys()].filter((n) => !CALLABLE.includes(n))
+same([...absent, ...attrs('operator')], lacks, `Google Sheets functions the engine lacks, as of ${snapshot.date}`)
+same(attrs('operator'), Object.keys(OPERATORS), 'operators listed under their Google names')
 
 // ---- data-chart → CHART_TYPES ----------------------------------------------
 // Both ways: the comparison page says "charts other than these", so a new

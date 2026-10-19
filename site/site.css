@@ -220,3 +220,31 @@ dl.fns dd code {
     margin-bottom: 0.6rem;
   }
 }
+
+/* The Google Sheets functions Own Docs lacks: one disclosure per category,
+   closed. Closed <details> content stays reachable by the browser's find in
+   page, which is how a reader looks for one name in 455. */
+details.fnset {
+  border-top: 1px solid var(--line);
+  padding-block: 0.5rem;
+}
+
+details.fnset:last-of-type {
+  border-bottom: 1px solid var(--line);
+}
+
+details.fnset summary {
+  cursor: pointer;
+}
+
+details.fnset .count {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  color: var(--ink-3);
+  margin-inline-start: 0.4rem;
+}
+
+details.fnset p {
+  line-height: 1.9;
+  margin-block: 0.5rem 0.25rem;
+}

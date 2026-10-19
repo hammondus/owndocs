@@ -4004,6 +4004,44 @@ contain that rather than deny it:
   a Sheets user is most likely to look for, not every function the engine
   lacks.
 
+**The full function list, added the same day.** The formulas page ends with
+every Google Sheets function the engine lacks, built from a snapshot rather
+than typed. `web/scripts/google-sheets-functions.tsv` holds Google's category
+and name for each function, fetched once and dated in its header, without
+Google's descriptions. `google_functions.mjs fetch` refreshes it with one
+request, and `render` rewrites the section between two markers in
+`formulas.html`. Neither runs in `make test`, for the reason the formula page
+itself is a static file: what is served is what is in the repo.
+
+`site_test.mjs` compares the page with the snapshot both ways, so the page
+lists exactly the snapshot's functions that `CALLABLE` lacks. When the engine
+gains a function, the test fails until `render` runs again. When Google adds
+one, nothing fails, because the snapshot only changes when someone refreshes
+it. The page states the snapshot's date for that reason.
+
+Three judgements sit in the script, not in the data:
+
+- **Fifteen "operator" functions are not missing.** Google lists `ADD`,
+  `MINUS`, `EQ`, and the rest as functions. Each is a named form of an
+  operator `parseFormula` already handles, checked against the parser on
+  2026-10-19, so the page lists them with their operator, under
+  `data-operator`. `ISBETWEEN` and `UNIQUE` sit in the same Google category
+  and are real gaps, so they stay in the missing list.
+- **Ten functions are different by design.** `IMPORTXML`, `GOOGLEFINANCE`,
+  `AI`, and the others in the script's `NETWORK` list fetch from the network
+  or call a Google service. A sheet here has no network on purpose (see
+  *Scripting*), so the page groups them apart instead of calling them gaps.
+  The grouping is by function, not by Google's category: `HYPERLINK`,
+  `ENCODEURL`, and `QUERY` sit in Google's Web and Google categories and need
+  neither.
+- **A shared name is not a compatibility claim.** All 35 engine functions
+  have a Sheets namesake, and the page says nobody has tested them against
+  Sheets.
+
+Each category is a closed `<details>`. A list of 455 names open would bury
+the page, and browsers search the text of a closed `<details>`, so a reader
+looking for one name still finds it.
+
 The rest of the "not in Own Docs" list is prose, and it is the part to review
 when a feature ships. It states absence and never intent, so it is not a
 roadmap: an item leaves the list when it ships, and no item says it is coming.

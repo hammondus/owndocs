@@ -14,6 +14,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CALLABLE } from '../src/sheet/engine.js'
+import { CHART_TYPES } from '../src/sheet/chart.js'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const read = (p) => readFileSync(join(root, p), 'utf8')
@@ -70,6 +71,23 @@ else fail('the site shows no make commands')
 // ---- data-fn → CALLABLE ----------------------------------------------------
 
 same(attrs('fn'), CALLABLE, 'formulas')
+
+// ---- data-absent-fn → not in CALLABLE --------------------------------------
+// The comparison page names functions the engine lacks. One direction only:
+// the claim is that each named function is absent, not that the list is every
+// absent function. When one ships, this fails until the page stops calling it
+// missing.
+
+const absent = attrs('absent-fn')
+const shipped = absent.filter((fn) => CALLABLE.includes(fn))
+if (shipped.length) fail('the site calls these functions missing, and the engine has them', shipped.join(', '))
+else if (absent.length) ok(`every function the site calls missing is missing (${absent.length})`)
+
+// ---- data-chart → CHART_TYPES ----------------------------------------------
+// Both ways: the comparison page says "charts other than these", so a new
+// chart type makes the sentence wrong.
+
+same(attrs('chart'), CHART_TYPES.map((t) => t.id), 'chart types')
 
 // ---- data-role → roles.js and docs_api.go ----------------------------------
 // The two rank maps are hand-mirrored with a comment on each saying so. This

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="How Own Docs compares with Google Docs and Google Sheets: what works the same, what differs on purpose, and what Own Docs does not have.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+<title>Own Docs compared with Google Docs</title>
+</head>
+<body>
+
+<!-- Every statement on this page is about Own Docs. Google products are named
+     only for features they have had for years, with no counts, prices, or
+     versions, because this repo cannot see Google ship. Two lists are
+     enforced: data-absent-fn must name a function the engine lacks, and
+     data-chart must match CHART_TYPES in chart.js both ways. See
+     DESIGN-DECISIONS.md, *One comparison, and how it is kept true*. -->
+
+<header class="site">
+  <a class="wordmark" href="./">own docs</a>
+  <nav>
+    <a href="./">What it is</a>
+    <a href="self-host.html">Self-host</a>
+    <a href="formulas.html">Formulas</a>
+    <a href="compare.html" aria-current="page">Comparison</a>
+  </nav>
+</header>
+
+<main>
+  <h1>Own Docs compared with Google Docs</h1>
+  <p class="lede">Own Docs covers the part of Google Docs and Google Sheets
+  that most teams use every day, on a server you run. It is not a copy of
+  either, and this page says where it differs.</p>
+  <p>Compared on <time datetime="2026-10-19">2026-10-19</time>. Google changes
+  its products without notice to this page, so read the Google side as it
+  stood on that date.</p>
+
+  <h2>The same</h2>
+  <ul>
+    <li>Several people edit a document or a sheet at once, and each person
+    sees where the others are working.</li>
+    <li>You comment on a text selection or a cell, reply in a thread, resolve
+    the thread, and mention someone with <code>@</code> to notify them.</li>
+    <li>Version history keeps every edit. You name the versions that matter
+    and restore any earlier point. A restore is an ordinary edit, so you can
+    undo it.</li>
+    <li>You share with a person at a role, or with a link.</li>
+    <li>A shared folder gives everyone on it access to every document inside.
+    A document sits in one folder.</li>
+    <li>A sheet has tabs, formulas that reference other tabs, a fill handle,
+    number and date formats, and charts.</li>
+    <li>Search finds documents by their text, and finds folders and
+    comments.</li>
+    <li>Printing a document saves it as a PDF.</li>
+  </ul>
+
+  <h2>Different on purpose</h2>
+  <ul>
+    <li><strong>Your server holds everything.</strong> Own Docs is one
+    program and one database file on a machine you run. Accounts exist only
+    on your instance.</li>
+    <li><strong>A document is markdown text.</strong> Formatting says what
+    something is, such as a heading, a list, or a quote, rather than how it
+    looks. A document marked rich adds text colour, relative text sizes,
+    highlight colours, and alignment. Fonts and page layout are absent from
+    both kinds.</li>
+    <li><strong>Nothing is public.</strong> A share link grants its role to
+    someone who signs in on your instance. Once you close signup, new
+    accounts come only from invite links.</li>
+    <li><strong>A fifth role, manager,</strong> shares and administers a
+    document but cannot delete it or transfer it.</li>
+    <li><strong>A sheet is locked by default,</strong> and you unlock the
+    cells that are inputs. The lock stops an editor's mistake. It does not
+    stop an editor who sets out to get around it.</li>
+    <li><strong>Scripts run in a sandbox</strong> with no network and no
+    access to your account. A script runs when you run it or, if you ask,
+    after every edit. Google Apps Script runs with your Google identity.</li>
+    <li><strong>Arithmetic can be exact.</strong> A cell can opt in to exact
+    decimal arithmetic, and a cell that loses digits to rounding says
+    so.</li>
+    <li><strong>History compares any two points</strong> in a document, and
+    named versions can be mirrored into a git repository, one commit per
+    version.</li>
+  </ul>
+
+  <h2>Not in Own Docs</h2>
+  <p>Google Docs or Google Sheets has each of these, and Own Docs does
+  not.</p>
+
+  <h3>Across the product</h3>
+  <ul>
+    <li>Slides, forms, and storage for other files. Own Docs holds documents
+    and sheets.</li>
+    <li>Offline editing, and apps for phones and tablets.</li>
+    <li>Single sign-on and two-factor authentication.</li>
+    <li>Access by link without an account, and publishing to the web.</li>
+    <li>Assigning a comment to someone, and emoji reactions.</li>
+    <li>Built-in AI features, add-ons, and templates.</li>
+    <li>Opening or saving Word, Excel, or OpenDocument files.</li>
+  </ul>
+
+  <h3>Documents</h3>
+  <ul>
+    <li>Suggestion mode, or tracked changes.</li>
+    <li>Spelling and grammar checks.</li>
+    <li>Find and replace, and a word count.</li>
+    <li>Fonts, and font sizes beyond the relative sizes of a rich
+    document.</li>
+    <li>Page breaks, headers, footers, page numbers, margins, and
+    columns.</li>
+    <li>Equations and drawings.</li>
+    <li>Uploading an image. A document shows an image from a web
+    address.</li>
+    <li>Downloading a document as a file. To keep a copy, print it as a PDF
+    or mirror its versions into git.</li>
+  </ul>
+
+  <h3>Sheets</h3>
+  <ul>
+    <li>Sorting, filtering, and freezing rows or columns.</li>
+    <li>Data validation and dropdowns in cells.</li>
+    <li>Conditional formatting, merged cells, borders, and font
+    choice.</li>
+    <li>Pivot tables, array formulas, and references to another file.</li>
+    <li>Lookup and conditional functions, such as
+    <code data-absent-fn="VLOOKUP">VLOOKUP</code>,
+    <code data-absent-fn="XLOOKUP">XLOOKUP</code>,
+    <code data-absent-fn="INDEX">INDEX</code>,
+    <code data-absent-fn="MATCH">MATCH</code>,
+    <code data-absent-fn="SUMIF">SUMIF</code>,
+    <code data-absent-fn="COUNTIF">COUNTIF</code>, and
+    <code data-absent-fn="IFERROR">IFERROR</code>. The
+    <a href="formulas.html">formula reference</a> lists every function the
+    engine has.</li>
+    <li>Charts other than <span data-chart="column">column</span>,
+    <span data-chart="line">line</span>, and
+    <span data-chart="pie">pie</span>.</li>
+    <li>Opening an Excel or CSV file. Pasting from another spreadsheet
+    works.</li>
+    <li>Downloading a whole workbook. Each tab downloads as a CSV file.</li>
+    <li>Scheduled scripts in the app. On your server, cron can run a sheet's
+    scripts with the command-line runner.</li>
+    <li>Reordering tabs by dragging, and copying a tab into another
+    sheet.</li>
+  </ul>
+</main>
+
+<footer class="site">
+  The design notes in the
+  <a href="https://github.com/hammondus/owndocs">source repository</a> say
+  why each difference exists.
+</footer>
+
+</body>
+</html>

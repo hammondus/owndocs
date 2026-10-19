@@ -70,9 +70,12 @@ header.site {
   padding-inline-start: 0.6rem;
 }
 
+/* Wraps at phone width rather than pushing the page sideways: four links
+   no longer fit beside the wordmark in 343px. */
 header.site nav {
   display: flex;
-  gap: 1.25rem;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
   margin-inline-start: auto;
   font-size: 0.9rem;
 }

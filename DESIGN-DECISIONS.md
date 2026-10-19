@@ -3969,9 +3969,44 @@ commands have to agree, and those are exactly what a rename breaks.
 ### What the site does not claim
 
 Cheaper to decide once than to relitigate per page. No uptime or performance
-promises, no roadmap or "coming soon", and **no comparison table** — a table of
+promises, no roadmap or "coming soon", and ~~**no comparison table** — a table of
 competitors is the fastest-rotting content on any software site, because it goes
-stale when *someone else* ships, which is not an event this repo can observe.
+stale when *someone else* ships, which is not an event this repo can observe.~~
+**Reversed 2026-10-19 for one comparison, with Google Docs**; see the next
+section. The rot argument still stands, and the next section is how the page
+lives with it.
+
+### One comparison, and how it is kept true
+
+Decided 2026-10-19, on request: `site/compare.html` sets Own Docs beside Google
+Docs and Google Sheets, in three lists: what works the same, what differs on
+purpose, and what Own Docs does not have. Someone deciding whether to self-host
+already has Google as the reference point, so the page answers the question
+they arrive with.
+
+The objection above was that the page goes stale when Google ships. Four rules
+contain that rather than deny it:
+
+- **Every statement is about Own Docs.** "Own Docs has no suggestion mode" is
+  a fact about this repo, and it stays true until this repo changes it. Google
+  is named only for features it has had for years, so Google shipping
+  something new makes the "not in Own Docs" list incomplete. It does not make
+  any line on it wrong.
+- **No counts, prices, versions, or limits on Google's side.** Those are the
+  claims that change without Google announcing anything.
+- **The page carries the date it was compared**, and tells the reader to take
+  the Google side as of that date.
+- **The two lists that change with this repo are enforced.** The missing
+  functions carry `data-absent-fn`, and `site_test.mjs` fails when the engine
+  gains one. The chart types carry `data-chart` and are compared with
+  `CHART_TYPES` both ways, because the sentence is "charts other than these".
+  `data-absent-fn` is one-directional on purpose: the page names the absences
+  a Sheets user is most likely to look for, not every function the engine
+  lacks.
+
+The rest of the "not in Own Docs" list is prose, and it is the part to review
+when a feature ships. It states absence and never intent, so it is not a
+roadmap: an item leaves the list when it ships, and no item says it is coming.
 
 ### Every visitor gets their own instance, because the demo cannot be moderated
 

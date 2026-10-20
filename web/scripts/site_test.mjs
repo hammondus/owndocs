@@ -126,26 +126,43 @@ const keymap = read('web/src/editor.js').match(/const formatKeymap = \[([\s\S]*?
 same(attrs('key'), [...keymap.matchAll(/key: '([^']+)'/g)].map((m) => m[1]), 'editor shortcuts')
 
 // ---- data-shot → site/shots ------------------------------------------------
-// Both ways: a shot the site uses that nothing produces, and a shot produced
-// that nothing uses, both fail. Empty on both sides until `make site-shots`
-// exists, which is a pass.
+// Both ways, and in both schemes. `make site-shots` writes each shot twice,
+// as <name>-light.png and <name>-dark.png, and the page picks one with
+// <picture>. So every data-shot needs both files, both referenced, and every
+// file in site/shots must belong to a data-shot. A file that is neither half
+// of a pair is something the script did not write.
 
 const shotsDir = join(siteDir, 'shots')
-const shots = existsSync(shotsDir) ? readdirSync(shotsDir).filter((f) => f.endsWith('.png')).map((f) => f.replace(/\.png$/, '')) : []
-same(attrs('shot'), shots, 'screenshots')
+const shotFiles = existsSync(shotsDir) ? readdirSync(shotsDir) : []
+const strayShots = shotFiles.filter((f) => !/^[a-z0-9-]+-(light|dark)\.png$/.test(f))
+if (strayShots.length) fail('site/shots holds files that are not one scheme of a shot', strayShots.join(', '))
+const inScheme = (scheme) =>
+  shotFiles.filter((f) => f.endsWith(`-${scheme}.png`)).map((f) => f.slice(0, -`-${scheme}.png`.length))
+same(attrs('shot'), inScheme('light'), 'screenshots in the light scheme')
+same(attrs('shot'), inScheme('dark'), 'screenshots in the dark scheme')
+const unpaired = attrs('shot').filter(
+  (n) => !all.includes(`src="shots/${n}-light.png"`) || !all.includes(`srcset="shots/${n}-dark.png"`),
+)
+if (unpaired.length) fail('a data-shot that does not offer both schemes', unpaired.join(', '))
+else if (attrs('shot').length) ok('every screenshot offers its light and its dark file')
 
 // ---- hygiene the pages share -----------------------------------------------
 
 for (const [p, src] of Object.entries(html)) {
-  for (const [, href] of src.matchAll(/href="([^"#?]+)/g)) {
+  // Links, images, and image sources alike. A srcset here is one URL; a
+  // srcset with descriptors would need splitting first.
+  for (const [, href] of src.matchAll(/(?:href|src|srcset)="([^"#?]+)/g)) {
     if (/^[a-z]+:/.test(href)) continue
     // A directory link (./) is served as its index.html, so that file must exist.
     const target = href.endsWith('/') ? join(siteDir, href, 'index.html') : join(siteDir, href)
-    if (!existsSync(target)) fail(`${p} links to ${href}, which does not exist`)
+    if (!existsSync(target)) fail(`${p} refers to ${href}, which does not exist`)
+  }
+  for (const [img] of src.matchAll(/<img\b[^>]*>/g)) {
+    if (!/\balt="[^"]+"/.test(img)) fail(`${p} has an image with no alt text`, img)
   }
   if (!/<meta name="color-scheme" content="light dark">/.test(src)) fail(`${p} does not declare its colour schemes`)
 }
-ok('every internal link resolves, and every page declares light and dark')
+ok('every internal link and image resolves, every image has alt text, and every page declares light and dark')
 
 if (read('site/favicon.svg') === read('web/public/favicon.svg')) ok('the site serves the same favicon as the app')
 else fail('site/favicon.svg differs from web/public/favicon.svg')

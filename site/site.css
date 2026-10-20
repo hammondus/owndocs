@@ -40,6 +40,10 @@ html {
 body {
   margin: 0;
   padding-inline: 16px;
+  /* For the screenshots, which size against the body rather than against
+     100vw. 100vw counts a classic scrollbar, so a figure sized by it pushes
+     the page sideways on Windows. */
+  container-type: inline-size;
 }
 
 /* ── Shell ──────────────────────────────────────────────────────────────── */
@@ -247,4 +251,25 @@ details.fnset .count {
 details.fnset p {
   line-height: 1.9;
   margin-block: 0.5rem 0.25rem;
+}
+
+/* ── Screenshots ────────────────────────────────────────────────────────── */
+
+/* Taken at 960 CSS pixels and twice the pixel ratio by `make site-shots`. In
+   the 42rem text column the app's text shrinks to about 11px, so a figure
+   grows past the column, centred on it, to 56rem or the body's width,
+   whichever is less. At phone width the two are the same and the negative
+   margin is zero. The width and height attributes on each <img> reserve the
+   box before the file arrives. */
+figure.shot {
+  margin-block: 1.5rem 0;
+  margin-inline: calc((100% - min(56rem, 100cqi)) / 2);
+}
+
+figure.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
 }

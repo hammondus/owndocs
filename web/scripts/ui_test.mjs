@@ -13,25 +13,15 @@
 // ~150 MB browser, this one drives the Chrome already on the machine. It is a
 // devDependency, never in the binary, and never cross-compiled — the deploy
 // target has no browser and does not want one.
-import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import puppeteer from 'puppeteer-core'
 import { CALLABLE } from '../src/sheet/engine.js'
+import { findChrome, startServer, watchConsole, clickText, clickSel } from './harness.mjs'
 
 const PORT = process.env.UI_TEST_PORT || 8599 // never 8484: that is the dev instance
 const BASE = `http://127.0.0.1:${PORT}`
-const BIN = join(import.meta.dirname, '../../owndocs')
-
-// Chrome is found, never downloaded. CHROME_PATH overrides for a machine that
-// keeps it somewhere else.
-const CHROME_CANDIDATES = [
-  process.env.CHROME_PATH,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-].filter(Boolean)
 
 let failures = 0
 const ok = (what) => console.log('ok:', what)
@@ -45,100 +35,9 @@ function check(cond, what, detail) {
 }
 
 // ---- harness ---------------------------------------------------------------
-
-async function findChrome() {
-  const { access } = await import('node:fs/promises')
-  for (const path of CHROME_CANDIDATES) {
-    try {
-      await access(path)
-      return path
-    } catch {}
-  }
-  throw new Error(
-    `no Chrome found. Tried:\n  ${CHROME_CANDIDATES.join('\n  ')}\nSet CHROME_PATH to override.`,
-  )
-}
-
-async function startServer(dbDir) {
-  const proc = spawn(BIN, ['-dev', '-addr', `127.0.0.1:${PORT}`, '-db', join(dbDir, 'ui.db')], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  proc.stderr.on('data', (b) => process.env.UI_TEST_VERBOSE && process.stderr.write(b))
-  // Poll rather than sleep: a fixed wait is either slow or flaky, and this is
-  // the loop every CI failure otherwise gets blamed on.
-  for (let i = 0; i < 100; i++) {
-    try {
-      const res = await fetch(BASE + '/')
-      if (res.ok) return proc
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  proc.kill()
-  throw new Error(`server did not come up on ${BASE}`)
-}
-
-// Errors are collected per *step* so a failure names the click that caused it,
-// rather than surfacing at the end of the run detached from its cause.
-//
-// The browser logs a "Failed to load resource" console error for any non-2xx,
-// including two the app makes on purpose: the /api/me probe that decides
-// whether to show the sign-in form, and a favicon this project does not ship.
-// Those are matched by URL, not by message text, so a genuinely broken request
-// to some *other* endpoint still fails the step.
-const EXPECTED_4XX = [/\/api\/me$/, /favicon\.ico$/]
-
-function watchConsole(page) {
-  const errors = []
-  page.on('console', (m) => {
-    if (m.type() !== 'error') return
-    const url = m.location()?.url || ''
-    if (EXPECTED_4XX.some((re) => re.test(url))) return
-    errors.push(`console: ${m.text()}${url ? ` (${url})` : ''}`)
-  })
-  // An uncaught exception is never expected. This is the one that catches a
-  // component throwing inside {#if} and presenting as a dead control.
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`))
-  return { drain: () => errors.splice(0) }
-}
-
-// clickText finds a control by its visible label, the way a person would.
-// Selectors tied to Svelte's scoped class hashes break on every recompile.
-//
-// The click is *dispatched* rather than driven through puppeteer's synthetic
-// mouse. ElementHandle.click() waits for the element to stop moving first, and
-// on a live page it never does — the editor header re-renders as sync status
-// and peer count change, so a click on a link beside them hangs forever rather
-// than timing out. The trade-off is real and worth stating: a dispatched click
-// does not exercise hit-testing, so a control hidden behind an overlay would
-// still register here. That is a class of bug this file cannot see.
-async function clickText(page, tag, text) {
-  const clicked = await page.evaluate(
-    (tag, text) => {
-      const el = [...document.querySelectorAll(tag)].find((e) =>
-        e.textContent.trim().includes(text),
-      )
-      if (!el) return false
-      el.click()
-      return true
-    },
-    tag,
-    text,
-  )
-  if (!clicked) throw new Error(`no <${tag}> containing ${JSON.stringify(text)}`)
-}
-
-// Same dispatched click, addressed by selector rather than by visible text.
-// For controls whose label is a glyph: an arrow is not a word, so clickText has
-// nothing to match on and the accessible name is the honest handle.
-async function clickSel(page, selector) {
-  const clicked = await page.evaluate((s) => {
-    const el = document.querySelector(s)
-    if (!el) return false
-    el.click()
-    return true
-  }, selector)
-  if (!clicked) throw new Error(`no element matching ${JSON.stringify(selector)}`)
-}
+// Chrome, the server, the console watch and the two click helpers live in
+// harness.mjs, shared with site_shots.mjs. What follows is specific to this
+// suite.
 
 // Lets a committed edit land before the step ends, so its console output is
 // drained by the step that caused it.
@@ -200,7 +99,7 @@ watchdog.unref?.()
 
 const dbDir = await mkdtemp(join(tmpdir(), 'docs-ui-'))
 const chrome = await findChrome()
-const server = await startServer(dbDir)
+const server = await startServer(BASE, join(dbDir, 'ui.db'))
 const browser = await puppeteer.launch({
   executablePath: chrome,
   headless: true,

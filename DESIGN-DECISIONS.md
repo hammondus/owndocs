@@ -4046,6 +4046,77 @@ The rest of the "not in Own Docs" list is prose, and it is the part to review
 when a feature ships. It states absence and never intent, so it is not a
 roadmap: an item leaves the list when it ships, and no item says it is coming.
 
+### Screenshots are generated
+
+Built 2026-10-20, as `make site-shots` and `web/scripts/site_shots.mjs`. The
+script starts the real binary on a scratch database, builds each page state
+through the UI in a real Chrome, and writes `site/shots/<name>-light.png` and
+`<name>-dark.png`. Two shots so far: a document with a second person's cursor
+in it, and a sheet with a formula selected and a chart. Each one stands
+beside the paragraph on the front page that it shows.
+
+**One harness, not two.** Chrome, the server, the console watch, and the click
+helpers moved out of `ui_test.mjs` into `harness.mjs`, and both scripts import
+them. A shot runs under the same rule as a test: a page that logged an error
+throws, because a screenshot of a page with an error in its console is a
+picture of a bug.
+
+**Both schemes, chosen by `<picture>`.** The site follows the reader's scheme,
+and a light screenshot on a dark page reads as broken. A `<source>` with
+`media="(prefers-color-scheme: dark)"` is the HTML form of `light-dark()` for
+images. It is widely available, and the browser downloads only the file it
+shows. `site_test.mjs` now checks pairs: every `data-shot` has both files and
+references both, and every file in `site/shots` is one scheme of a
+`data-shot`. The link check also covers `src` and `srcset`, and every `<img>`
+must have alt text.
+
+**Content arrives by paste, not by typing.** The editor continues lists and
+closes brackets as a person types, so markdown typed into it comes out
+doubled. The script sends a synthetic paste event, the same mechanism the
+oversized-update step in `ui_test.mjs` uses.
+
+**The output is byte-stable, and that took two fixes.** A shot that changes
+when nothing in the app changed costs about 125 KB of git history per file
+per run, and its diff says nothing to a reviewer. Four runs now produce
+identical bytes. Two things moved between runs:
+
+- **The peer's colour.** A Yjs client ID is random per session, and
+  `peerColor` is that ID modulo the palette, so Bob had one of eight colours
+  on each run. Bob's page alone gets a seeded generator behind
+  `crypto.getRandomValues`, installed before the app loads. The app still
+  runs its own code path. Only the random values are fixed, and only on a
+  page that a script throws away after the run.
+- **Edge pixels.** On the GPU, about 45 pixels along box edges differed by up
+  to 6 levels between runs. `--disable-gpu` rasterises in software, which is
+  exact. `--force-color-profile=srgb` also keeps a shot taken on another
+  machine from taking on that machine's display colours.
+
+**Figures grow past the text column.** In the 42rem column, the app's 16px
+text came out at about 11px. A figure grows to 56rem, centred on the column,
+and is capped by the body's width in container query units. `100vw` would
+count a classic scrollbar and push the page sideways on Windows at some
+window sizes.
+
+Two faults came to light the first time the shots were looked at, and both
+are fixed:
+
+- **Remote name tags were in serif, in white.** `y-codemirror.next` ships a
+  theme whose rules sit two classes deep and are injected after `app.css`,
+  so the single-class rules in `app.css` never applied. The dark ink that
+  `peers.js` and the sheet's tags rely on was not in effect in the editor.
+  The rules are now three classes deep, with a comment saying why.
+- **The site said "a sheet is locked by default".** A new sheet says
+  **unprotected**, and the screenshot showed it beside that sentence. The
+  design (see *Locked by default, and you unlock the inputs*) is that every
+  *cell* is locked, and the lock takes effect when you protect the sheet. Both
+  pages now say that.
+
+To retake the shots, run `make site-shots` after a change the shots show, and
+commit the PNGs with the change. Nothing runs it automatically: it needs
+Chrome, as `make test-ui` does. A change that alters a shot without a retake
+leaves the site out of date until someone runs it. The check guarantees that
+every shot and every reference exists, not that the pixels are current.
+
 ### Every visitor gets their own instance, because the demo cannot be moderated
 
 The server checks a role on a document write and then stores opaque bytes; it

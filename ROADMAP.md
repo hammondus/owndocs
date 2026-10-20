@@ -60,15 +60,11 @@ one certificate, one proxy host with a custom location for `/demo`.
 It probes the subdomain fallback, on a scratch VM, if the path prefix ever turns
 out to be wrong.
 
-Build order. Step 1 shipped 2026-10-18: `site/` with three pages, the
-enforced tier, and `site_test.mjs` in `make test` — see *The enforced tier is
-data attributes, not prose* for what is checked and in which direction. Step 2
-is useful without 3, and is not blocked by it:
+Build order. Step 1 shipped 2026-10-18: `site/`, the enforced tier, and
+`site_test.mjs` in `make test` — see *The enforced tier is data attributes,
+not prose* for what is checked and in which direction. Step 2 shipped
+2026-10-20: `make site-shots`, see *Screenshots are generated*. What is left:
 
-2. **`make site-shots`** — the images the site uses, driven through the real
-   app by the `ui_test.mjs` harness. Locks the sync property in while the site
-   is small enough to retrofit cheaply. `site_test.mjs` already compares
-   `data-shot` with `site/shots/` both ways; today both sides are empty.
 3. **The demo supervisor** — a mode of the same binary. Starts `owndocs -demo`
    per visitor on a free port with a temp database, routes by path prefix,
    kills it after ~20 idle minutes and deletes the directory. With it, a

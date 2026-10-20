@@ -572,15 +572,21 @@ legend { font-family: var(--mono); font-size: var(--t-micro);
   --tok-invalid: #c33;
 }
 
-/* remote cursors (y-codemirror.next) */
-.cm-ySelectionCaret { position: relative; border-left: 1px solid; margin-left: -1px; }
-.cm-ySelectionCaretDot { border-radius: 50%; position: absolute; width: .4em; height: .4em;
+/* Remote cursors (y-codemirror.next). The library ships its own theme for
+   these, scoped under CodeMirror's generated class, so each of its rules is
+   two classes deep and is injected after this file. Single-class rules here
+   lost to it every time: name tags were set in serif, in white ink that does
+   not read on the middle-lightness peer colours (see peers.js). Three classes
+   is what wins, not a preference for long selectors. The site screenshots
+   are where this showed. */
+.cm-editor .cm-content .cm-ySelectionCaret { position: relative; border-left: 1px solid; margin-left: -1px; }
+.cm-editor .cm-content .cm-ySelectionCaretDot { border-radius: 50%; position: absolute; width: .4em; height: .4em;
                          top: -.2em; left: -.2em; background: inherit; }
-.cm-ySelectionInfo { position: absolute; top: -1.4em; left: -1px; font-size: .7em;
+.cm-editor .cm-content .cm-ySelectionInfo { position: absolute; top: -1.4em; left: -1px; font-size: .7em;
                      font-family: var(--ui); font-style: normal; font-weight: 500;
                      line-height: normal; user-select: none; color: #000; padding: 0 .3em;
                      border-radius: 2px; white-space: nowrap; opacity: 0; transition: opacity .3s; }
-.cm-ySelectionCaret:hover > .cm-ySelectionInfo { opacity: 1; }
+.cm-editor .cm-content .cm-ySelectionCaret:hover > .cm-ySelectionInfo { opacity: 1; }
 
 /* Commented ranges in the markdown editor. Underline rather than a heavy
    background: the text stays readable, and several overlapping comments do

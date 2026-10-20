@@ -41,6 +41,14 @@ test: runner-js
 test-ui: build
 	cd web && node scripts/ui_test.mjs
 
+# The website's screenshots, taken from the real app through the same harness
+# as test-ui, in both colour schemes. Rerun after a change the shots show, and
+# commit the PNGs with it: site_test.mjs fails when the pages and site/shots
+# disagree.
+.PHONY: site-shots
+site-shots: build
+	cd web && node scripts/site_shots.mjs
+
 # Local dev run: quick-login users + vite dev server origin allowed.
 # Production runs via docker compose, whose entrypoint has neither flag.
 run: build

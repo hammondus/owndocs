@@ -430,8 +430,9 @@ export const serialize = (ast) => ser(ast, 1)
 
 // ctx must provide:
 //   refValue(ref)      -> value of one cell
-//   rangeValues(a, b)  -> flat array of values in the rectangle
-// Function args are evaluated to values; a range arg becomes {range: [...]}.
+//   rangeValues(a, b)  -> {values, cols}: the rectangle row by row, and its width
+// Function args are evaluated to values; a range arg becomes {range: [...], cols}.
+// Most functions read only `range`; the lookups need `cols` for the shape.
 
 export function evaluate(ast, ctx) {
   switch (ast.n) {
@@ -584,7 +585,7 @@ function compare(l, r) {
 // they need their arguments *unevaluated*. Anything added here must be added
 // to this list too — it is what the function reference derives from, and
 // functions.js has a test that fails if the two disagree.
-export const SPECIAL_FORMS = ['IF']
+export const SPECIAL_FORMS = ['IF', 'IFERROR']
 
 function call(ast, ctx) {
   // IF is a special form: only the taken branch is evaluated, so an error
@@ -596,6 +597,17 @@ function call(ast, ctx) {
     if (c) return evaluate(ast.args[1], ctx)
     return ast.args[2] ? evaluate(ast.args[2], ctx) : false
   }
+  // IFERROR has to see the error, and `call` below returns an argument's
+  // error before the function runs. Without a second argument the cell is
+  // blank, as Google's IFERROR page says. A circular reference is not
+  // caught: it is a mistake in the sheet's structure, and a 0 in its place
+  // would hide the loop rather than handle a missing value.
+  if (ast.fn === 'IFERROR') {
+    if (ast.args.length < 1 || ast.args.length > 2) return ERR('#VALUE!')
+    const v = evaluate(ast.args[0], ctx)
+    if (!isErr(v) || v.error === '#CYCLE!') return v
+    return ast.args[1] ? evaluate(ast.args[1], ctx) : null
+  }
   const fn = FUNCTIONS[ast.fn]
   if (!fn) return ERR('#NAME?')
   const args = []
@@ -604,7 +616,7 @@ function call(ast, ctx) {
       if (a.a.kind === 'dead' || a.b.kind === 'dead') return ERR('#REF!')
       const rv = ctx.rangeValues(a.a, a.b)
       if (isErr(rv)) return rv // an endpoint's row/col was deleted since parse
-      args.push({ range: rv })
+      args.push({ range: rv.values, cols: rv.cols })
     } else {
       const v = evaluate(a, ctx)
       if (isErr(v)) return v // errors in args fail the call, Excel-style
@@ -845,6 +857,105 @@ export const FUNCTIONS = {
     if (start < 1 || n < 0) return ERR('#VALUE!')
     return s.slice(start - 1, start - 1 + n)
   },
+  // ---- lookups and conditions (helpers below the registry) ----
+  VLOOKUP: (args) => {
+    if (args.length < 3 || args.length > 4) return ERR('#VALUE!')
+    const [key, table] = args
+    if (isRange(key) || !isRange(table)) return ERR('#VALUE!')
+    const col = intArg(args[2])
+    if (isErr(col)) return col
+    const sorted = args.length === 4 ? boolArg(args[3]) : true
+    if (isErr(sorted)) return sorted
+    const { cols, rows } = shape(table)
+    if (col < 1) return ERR('#VALUE!')
+    if (col > cols) return ERR('#REF!')
+    const first = Array.from({ length: rows }, (_, r) => table.range[r * cols])
+    const r = sorted ? sortedFind(first, key, 1) : exactFind(first, key, wildcard(key), forward(rows))
+    return r < 0 ? ERR('#N/A') : table.range[r * cols + col - 1]
+  },
+  MATCH: (args) => {
+    if (args.length < 2 || args.length > 3) return ERR('#VALUE!')
+    const [key, where] = args
+    if (isRange(key) || !isRange(where)) return ERR('#VALUE!')
+    const list = vector(where)
+    if (!list) return ERR('#N/A')
+    const type = args.length === 3 ? intArg(args[2]) : 1
+    if (isErr(type)) return type
+    const i = type === 0 ? exactFind(list, key, wildcard(key), forward(list.length)) : sortedFind(list, key, Math.sign(type))
+    return i < 0 ? ERR('#N/A') : i + 1
+  },
+  // Google's INDEX page: row and column default to 0, and 0 means the whole
+  // row or column. A formula here holds one value, so a 0 works only where
+  // the whole row or column is one cell: INDEX(A1:A9, 3) is A3.
+  INDEX: (args) => {
+    if (args.length < 1 || args.length > 3 || !isRange(args[0])) return ERR('#VALUE!')
+    const t = args[0]
+    const { cols, rows } = shape(t)
+    let r = args.length > 1 ? intArg(args[1]) : 0
+    if (isErr(r)) return r
+    let c = args.length > 2 ? intArg(args[2]) : 0
+    if (isErr(c)) return c
+    if (r < 0 || c < 0) return ERR('#VALUE!')
+    if (r > rows || c > cols) return ERR('#REF!')
+    if (r === 0) {
+      if (rows !== 1) return ERR('#VALUE!')
+      r = 1
+    }
+    if (c === 0) {
+      if (cols !== 1) return ERR('#VALUE!')
+      c = 1
+    }
+    return t.range[(r - 1) * cols + c - 1]
+  },
+  XLOOKUP: (args) => {
+    if (args.length < 3 || args.length > 6) return ERR('#VALUE!')
+    const [key, lookIn, from] = args
+    if (isRange(key) || !isRange(lookIn) || !isRange(from)) return ERR('#VALUE!')
+    const list = vector(lookIn), out = vector(from)
+    // Google returns a whole row when the result range is wider than one
+    // column. A formula here holds one value, so that is an error instead.
+    if (!list || !out || out.length !== list.length) return ERR('#VALUE!')
+    if (list.length > 1 && (lookIn.cols === 1) !== (from.cols === 1)) return ERR('#VALUE!')
+    const missing = args.length > 3 ? args[3] : ERR('#N/A')
+    if (isRange(missing)) return ERR('#VALUE!')
+    const mode = args.length > 4 ? intArg(args[4]) : 0
+    if (isErr(mode)) return mode
+    const search = args.length > 5 ? intArg(args[5]) : 1
+    if (isErr(search)) return search
+    // 2 and -2 are Google's binary searches, which need sorted data. On
+    // sorted data a straight search finds the same value, so they run as 1
+    // and -1. On unsorted data the answers can differ, and Google's are
+    // not defined there either.
+    if (![1, -1, 2, -2].includes(search) || ![0, 1, -1, 2].includes(mode)) return ERR('#VALUE!')
+    const order = search > 0 ? forward(list.length) : forward(list.length).reverse()
+    const i = mode === 1 || mode === -1
+      ? nearestFind(list, key, mode, order)
+      : exactFind(list, key, mode === 2 ? wildcard(key) : null, order)
+    return i < 0 ? missing : out[i]
+  },
+  SUMIF: (args) => {
+    if (args.length < 2 || args.length > 3) return ERR('#VALUE!')
+    const [where, crit] = args
+    const sum = args.length === 3 ? args[2] : where
+    if (!isRange(where) || isRange(crit) || !isRange(sum)) return ERR('#VALUE!')
+    // Google's page does not say what a sum range of another size does.
+    // Excel stretches it from its top-left corner, which adds up cells
+    // nobody selected, so a mismatch is an error here.
+    if (sum.cols !== where.cols || sum.range.length !== where.range.length) return ERR('#VALUE!')
+    const test = criterion(crit)
+    // SUM's rule for a range: only numbers are added, so a matched row
+    // whose sum cell holds text adds nothing.
+    const ns = []
+    where.range.forEach((v, i) => {
+      if (test(v) && isNum(sum.range[i])) ns.push(sum.range[i])
+    })
+    return sumOf(ns)
+  },
+  COUNTIF: (args) => {
+    if (args.length !== 2 || !isRange(args[0]) || isRange(args[1])) return ERR('#VALUE!')
+    const test = criterion(args[1])
+    return args[0].range.filter(test).length
+  },
 }
 
 // Everything a formula may call, from the one place that knows: the registry
@@ -901,4 +1012,137 @@ function sub(args, fn) {
   if (isErr(n)) return n
   if (n < 0) return ERR('#VALUE!')
   return fn(s, Math.trunc(n))
+}
+
+// ---- lookups and conditions -------------------------------------------------
+//
+// The rules follow Google's help pages for each function, read 2026-10-20.
+// Where a page is silent, the choice made here is written beside it. See
+// DESIGN-DECISIONS.md, *Lookups and conditions*.
+
+const isRange = (a) => a !== null && typeof a === 'object' && 'range' in a
+
+const shape = (a) => ({ cols: a.cols, rows: a.range.length / a.cols })
+
+// A1:A9 and A1:F1 are both a list; A1:B9 is not, and gives null.
+function vector(a) {
+  const { cols, rows } = shape(a)
+  return cols === 1 || rows === 1 ? a.range : null
+}
+
+const forward = (n) => Array.from({ length: n }, (_, i) => i)
+
+// A whole number from a scalar argument. A range there is #VALUE!, not a
+// crash in toNum, which expects one value.
+function intArg(a) {
+  if (isRange(a)) return ERR('#VALUE!')
+  const n = toNum(a)
+  return isErr(n) ? n : Math.trunc(n)
+}
+
+function boolArg(a) {
+  return isRange(a) ? ERR('#VALUE!') : toBool(a)
+}
+
+// What a value is, for matching. A lookup never matches across kinds, so the
+// number 5 does not find the text "5" (Google's VLOOKUP page warns about
+// numbers stored as text), and an empty cell or an error matches nothing.
+const kind = (v) => (isNum(v) ? 'n' : typeof v === 'string' ? 's' : typeof v === 'boolean' ? 'b' : null)
+
+// A text pattern as a whole-text, case-insensitive RegExp: * is any run of
+// characters, ? is any one, and ~ makes the next character literal. Null for
+// a key that is not text, which then matches by value.
+function wildcard(pattern) {
+  if (typeof pattern !== 'string') return null
+  let re = ''
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]
+    if (ch === '~' && i + 1 < pattern.length) re += escapeRe(pattern[++i])
+    else if (ch === '*') re += '.*'
+    else if (ch === '?') re += '.'
+    else re += escapeRe(ch)
+  }
+  return new RegExp(`^${re}$`, 'is')
+}
+const escapeRe = (ch) => ch.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')
+
+// Equal for a lookup: the same kind, then compare(), which makes text
+// case-insensitive and an exact value compare exactly. A pattern, when given,
+// decides for text instead.
+function same(v, key, pattern) {
+  if (kind(v) !== kind(key)) return false
+  return pattern ? pattern.test(v) : compare(v, key) === 0
+}
+
+// The first position, in `order`, whose value equals the key.
+function exactFind(list, key, pattern, order) {
+  if (kind(key) === null) return -1
+  for (const i of order) if (same(list[i], key, pattern)) return i
+  return -1
+}
+
+// A sorted lookup, as Google's VLOOKUP page describes it: go down the list
+// until a value is larger than the key, and take the one before. In a sorted
+// list, that is the last value no larger than the key. dir -1 is the mirror,
+// for a list sorted largest first (MATCH with -1). A value of another kind is
+// stepped over, so a heading above a column of numbers does not end the
+// search.
+function sortedFind(list, key, dir) {
+  if (kind(key) === null) return -1
+  let found = -1
+  for (let i = 0; i < list.length; i++) {
+    if (kind(list[i]) !== kind(key)) continue
+    if (dir * compare(list[i], key) > 0) break
+    found = i
+  }
+  return found
+}
+
+// XLOOKUP's "exact match, or the next larger" (dir 1) or "next smaller"
+// (dir -1). No order is assumed: the closest value on that side wins, and an
+// equal value wins outright, the first one in search order.
+function nearestFind(list, key, dir, order) {
+  if (kind(key) === null) return -1
+  let best = -1
+  for (const i of order) {
+    const v = list[i]
+    if (kind(v) !== kind(key)) continue
+    const c = compare(v, key)
+    if (c === 0) return i
+    if (Math.sign(c) !== dir) continue
+    if (best < 0 || dir * compare(v, list[best]) < 0) best = i
+  }
+  return best
+}
+
+// A SUMIF or COUNTIF criterion, as a test of one cell. Google's SUMIF page
+// gives the shape: a number, or text holding one, is an equality check; a
+// leading =, < or > compares; in text, * and ? are wildcards and ~ escapes
+// them. The page names only those three operators. <=, >= and <> work as
+// they do in Excel.
+//
+// Choices the page leaves open:
+//   - Nothing after the operator: "" and "=" match empty cells, "<>" matches
+//     every other cell, and "<" or ">" alone matches nothing.
+//   - "<>" matches every cell not equal to the operand, of any kind, so
+//     COUNTIF(A1:A9, "<>5") counts text and empty cells too.
+//   - < and > compare only with cells of the operand's kind.
+function criterion(c) {
+  if (c === null) c = ''
+  if (typeof c !== 'string') return (v) => same(v, c, null)
+  const [, op = '=', rest] = /^(<=|>=|<>|=|<|>)?([\s\S]*)$/.exec(c)
+  if (rest === '') {
+    const empty = (v) => v === null || v === ''
+    if (op === '=') return empty
+    if (op === '<>') return (v) => !empty(v)
+    return () => false
+  }
+  // The operand is read the way toNum reads typed text, then as TRUE or
+  // FALSE, and is text otherwise.
+  const n = rest.trim() === '' ? NaN : Number(rest)
+  const operand = !Number.isNaN(n) ? n : /^(true|false)$/i.test(rest) ? rest.toUpperCase() === 'TRUE' : rest
+  const pattern = typeof operand === 'string' ? wildcard(operand) : null
+  if (op === '=') return (v) => same(v, operand, pattern)
+  if (op === '<>') return (v) => !same(v, operand, pattern)
+  return (v) => kind(v) === kind(operand) && CMP[op](compare(v, operand))
 }

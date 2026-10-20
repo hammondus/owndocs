@@ -2765,6 +2765,73 @@ The browser test counts the rendered rows against `CALLABLE` rather than
 against a number written in the test, so a function added to the engine and
 missed by the panel fails there as well.
 
+### Lookups and conditions
+
+Built 2026-10-20: `VLOOKUP`, `XLOOKUP`, `MATCH`, `INDEX`, `SUMIF`, `COUNTIF`,
+and `IFERROR`. The comparison with Google Sheets named these seven as the gap a
+Sheets user meets first, and none of them was on this roadmap.
+
+**The rules come from Google's help pages, not from memory of Excel.** The
+pages for `VLOOKUP`, `XLOOKUP`, `INDEX`, `SUMIF`, and `IFERROR` were read on
+2026-10-20, in one search and four fetches. Where the two products differ,
+these follow Google, because people arriving from Google Sheets are who the
+comparison is for. Two examples:
+
+- **A sorted `VLOOKUP` is a walk, not a binary search.** Google's page says to
+  go down the first column until a value is larger than the key and take the
+  row before. On sorted data, that is the same answer a binary search gives.
+  On unsorted data, it is the answer Google documents, and a test pins it.
+- **`INDEX` defaults row and column to 0**, and 0 means the whole row or
+  column. So `INDEX(A1:A9, 3)` is row 3, column 0, which in a one-column range
+  is one cell. In Excel, a single index on a one-row range counts along the
+  row. Here, as in Google's syntax, it is a row, and row 3 of a one-row range
+  is `#REF!`.
+
+**A range now carries its width.** `rangeValues` returned a flat array, which
+is all `SUM` needed. The lookups need rows and columns, so it returns
+`{values, cols}`, and a range argument is `{range, cols}`. Every existing
+function still reads `range` alone.
+
+**`IFERROR` is a special form, like `IF`.** `call` returns an argument's error
+before a function runs, so a registry function can never see one. It does not
+catch `#CYCLE!`: a circular reference is a mistake in the sheet, and a 0 in
+its place would hide the loop.
+
+**A value matches only its own kind.** The number 5 does not find the text
+"5", and an empty cell or an error matches nothing. Google's `VLOOKUP` page
+warns that numbers stored as text give unexpected results, and `=` in a
+formula already treats them as different. Text matches without regard to
+case, through the same `compare` that `=` uses, so exact values compare
+exactly here too.
+
+**Choices the pages leave open**, each written beside its code in
+`engine.js`:
+
+- **A `SUMIF` sum range of another size is `#VALUE!`.** Excel stretches it
+  from its top-left corner, which adds up cells nobody selected.
+- **Criteria accept `<=`, `>=`, and `<>`** as well as the `=`, `<`, and `>`
+  that Google's page names. An empty criterion matches empty cells, `"<>"`
+  matches the rest, and `"<>5"` matches every cell that is not 5, text and
+  empty cells included.
+- **`SUMIF` adds numbers only**, which is `SUM`'s rule for a range.
+- **`XLOOKUP` search modes 2 and -2**, Google's binary searches, run as
+  straight searches from the start and the end. On the sorted data they
+  require, the two agree.
+
+**What a formula here cannot do**, because a cell holds one value and the
+engine has no arrays:
+
+- `XLOOKUP` with a result range wider than one column, and `INDEX` with a 0
+  over several cells, both return a whole row or column in Google Sheets.
+  Here they are `#VALUE!`.
+- An argument cannot be left empty, so `XLOOKUP(key, a, b, , 2)` does not
+  parse. Supporting it means an empty node in the parser, the serializer, and
+  reference mapping, which is more than seven functions justified.
+
+The next of the same families, `SUMIFS`, `COUNTIFS`, `AVERAGEIF`, `HLOOKUP`,
+and `IFNA`, are named on the comparison page as missing. `criterion` and the
+three find helpers are what they would be built from.
+
 ### Writing a formula by pointing, and seeing what one refers to
 
 Shipped 2026-08-13, from the complaint that formulas had to be typed out in
@@ -4034,11 +4101,11 @@ Three judgements sit in the script, not in the data:
   The grouping is by function, not by Google's category: `HYPERLINK`,
   `ENCODEURL`, and `QUERY` sit in Google's Web and Google categories and need
   neither.
-- **A shared name is not a compatibility claim.** All 35 engine functions
+- **A shared name is not a compatibility claim.** All 42 engine functions
   have a Sheets namesake, and the page says nobody has tested them against
   Sheets.
 
-Each category is a closed `<details>`. A list of 455 names open would bury
+Each category is a closed `<details>`. A list of 448 names open would bury
 the page, and browsers search the text of a closed `<details>`, so a reader
 looking for one name still finds it.
 

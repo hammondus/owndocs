@@ -35,7 +35,7 @@ function eq(got, want, what) {
 
 const noCtx = {
   refValue: () => null,
-  rangeValues: () => [],
+  rangeValues: () => ({ values: [], cols: 1 }),
 }
 const calc = (src) => {
   const v = evaluate(parseFormula(src), noCtx)
@@ -696,6 +696,117 @@ for (const src of ['Sheet2!A1', "'My Sheet'!A1+1", 'SUM(Data!A1:B2)', 'Sheet2!$A
   // downstream of it, which is why the total above changed on its own.
   m.setExact({ r1: 0, c1: 0, r2: 1, c2: 0 }, null)
   eq(m.display(2, 0).text, '987654321098765400', 'clearing the flag puts it back on doubles')
+}
+
+// ---- lookups and conditions ------------------------------------------------
+// The seven functions most missed coming from Google Sheets, against a real
+// model so ranges have their real shape. Each rule asserted here is either
+// one Google's help page states or a choice engine.js says it made.
+
+{
+  const m = newModel()
+  const rows = [
+    ['Name', 'Qty', 'Price'],
+    ['apple', '10', '1.5'],
+    ['banana', '3', '0.25'],
+    ['cherry', '7', '4'],
+    ['date', '0', '2'],
+  ]
+  rows.forEach((row, r) => row.forEach((v, c) => m.setCell(r, c, v)))
+  // E1:F4 sorted ascending, H1:H4 descending, J1:K3 with a repeated key.
+  ;[['10', 'a'], ['20', 'b'], ['30', 'c'], ['40', 'd']].forEach(([k, v], r) => {
+    m.setCell(r, 4, k)
+    m.setCell(r, 5, v)
+    m.setCell(r, 7, String(50 - k))
+  })
+  ;[['x', '1'], ['y', '2'], ['x', '3']].forEach(([k, v], r) => {
+    m.setCell(r, 9, k)
+    m.setCell(r, 10, v)
+  })
+  m.setCell(0, 11, 'a') // L1:L4, two of them empty
+  m.setCell(2, 11, 'b')
+  m.setCell(0, 12, '*') // M1:M2, a literal star and a word
+  m.setCell(1, 12, 'star')
+  m.setCell(0, 6, "'10") // G1, the number 10 stored as text
+
+  // A formula typed into a spare cell, and what it shows.
+  const f = (src) => {
+    m.setCell(20, 0, '=' + src)
+    return val(m, 20, 0)
+  }
+
+  eq(f('VLOOKUP("banana", A2:C5, 3, FALSE)'), 0.25, 'VLOOKUP exact: the value from the third column')
+  eq(f('VLOOKUP("BANANA", A2:C5, 2, FALSE)'), 3, 'and text matches without regard to case')
+  eq(f('VLOOKUP("b*", A2:C5, 2, FALSE)'), 3, 'and * is a wildcard in exact mode')
+  eq(f('VLOOKUP("kiwi", A2:C5, 2, FALSE)'), '#N/A', 'a key that is not there is #N/A')
+  eq(f('VLOOKUP(25, E1:F4, 2)'), 'b', 'sorted is the default, and takes the row before the first larger value')
+  eq(f('VLOOKUP(40, E1:F4, 2, TRUE)'), 'd', 'an equal value at the end is found')
+  eq(f('VLOOKUP(5, E1:F4, 2)'), '#N/A', 'a key below the first value is #N/A, as Google says')
+  eq(f('VLOOKUP("apple", A2:C5, 0, FALSE)'), '#VALUE!', 'a column below 1 is #VALUE!')
+  eq(f('VLOOKUP("apple", A2:C5, 4, FALSE)'), '#REF!', 'a column past the range is #REF!')
+  eq(f('VLOOKUP(10, G1:G1, 1, FALSE)'), '#N/A', 'the number 10 does not find the text "10"')
+  // P1:Q3 out of order. Google's page describes a walk that stops at the
+  // first larger value, so the 30 ends the search before the 20 is seen.
+  ;[['10', 'first'], ['30', 'second'], ['20', 'third']].forEach(([k, v], r) => {
+    m.setCell(r, 15, k)
+    m.setCell(r, 16, v)
+  })
+  eq(f('VLOOKUP(25, P1:Q3, 2)'), 'first', 'unsorted, the walk stops at the first larger value, as Google describes')
+
+  eq(f('MATCH("cherry", A2:A5, 0)'), 3, 'MATCH 0: the position, counting from 1')
+  eq(f('MATCH(25, E1:E4)'), 2, 'MATCH defaults to the sorted rule')
+  eq(f('MATCH(25, H1:H4, -1)'), 2, 'MATCH -1: the smallest value no smaller than the key, in a descending list')
+  eq(f('MATCH(5, E1:E4)'), '#N/A', 'nothing small enough is #N/A')
+  eq(f('MATCH("apple", A2:C5, 0)'), '#N/A', 'a range two wide is not a list')
+
+  eq(f('INDEX(A2:C5, 2, 3)'), 0.25, 'INDEX counts from the range, not the sheet')
+  eq(f('INDEX(A2:A5, 3)'), 'cherry', 'in one column, the row is enough')
+  eq(f('INDEX(A1:C1, 0, 2)'), 'Qty', 'and in one row, the column is enough')
+  eq(f('INDEX(A2:C5, 2)'), '#VALUE!', 'a whole row of several cells needs arrays, which a cell cannot hold')
+  eq(f('INDEX(A2:C5, 9, 1)'), '#REF!', 'a row past the range is #REF!')
+  eq(f('INDEX(A2:C5, MATCH("cherry", A2:A5, 0), 2)'), 7, 'INDEX and MATCH together')
+
+  eq(f('XLOOKUP("cherry", A2:A5, C2:C5)'), 4, 'XLOOKUP returns from the result range')
+  eq(f('XLOOKUP("kiwi", A2:A5, C2:C5)'), '#N/A', 'missing defaults to #N/A')
+  eq(f('XLOOKUP("kiwi", A2:A5, C2:C5, "none")'), 'none', 'or the value given for it')
+  eq(f('XLOOKUP(25, E1:E4, F1:F4, "", -1)'), 'b', 'match -1: the next smaller value')
+  eq(f('XLOOKUP(25, E1:E4, F1:F4, "", 1)'), 'c', 'match 1: the next larger value')
+  eq(f('XLOOKUP("ch*", A2:A5, B2:B5, "", 2)'), 7, 'match 2 allows wildcards')
+  eq(f('XLOOKUP("ch*", A2:A5, B2:B5)'), '#N/A', 'and match 0 does not')
+  eq(f('XLOOKUP("x", J1:J3, K1:K3)'), 1, 'the first equal value, searching from the top')
+  eq(f('XLOOKUP("x", J1:J3, K1:K3, "", 0, -1)'), 3, 'and from the bottom with search -1')
+  eq(f('XLOOKUP("Qty", A1:C1, A2:C2)'), 10, 'across a row as well as down a column')
+  eq(f('XLOOKUP("apple", A2:A5, B2:C5)'), '#VALUE!', 'a result range two wide would be an array')
+  eq(f('XLOOKUP("apple", A2:A5, B2:B4)'), '#VALUE!', 'and one of another length is a mistake')
+
+  eq(f('SUMIF(B2:B5, ">5")'), 17, 'SUMIF with a comparison adds the matching cells')
+  eq(f('SUMIF(A2:A5, "banana", C2:C5)'), 0.25, 'and with a third range, the cells beside them')
+  eq(f('SUMIF(A2:A5, "<>banana", B2:B5)'), 17, '<> is not equal')
+  eq(f('SUMIF(A2:A5, "*an*", B2:B5)'), 3, 'wildcards in text')
+  eq(f('SUMIF(B2:B5, "7", C2:C5)'), 4, 'text holding a number is an equality check, as Google says')
+  eq(f('SUMIF(A2:A5, "apple", C2:C4)'), '#VALUE!', 'a sum range of another size is refused, not stretched')
+
+  eq(f('COUNTIF(B2:B5, ">=7")'), 2, 'COUNTIF counts the matching cells')
+  eq(f('COUNTIF(L1:L4, "")'), 2, 'an empty criterion counts empty cells')
+  eq(f('COUNTIF(L1:L4, "<>")'), 2, 'and <> alone counts the rest')
+  eq(f('COUNTIF(M1:M2, "~*")'), 1, '~ makes a star literal')
+  eq(f('COUNTIF(M1:M2, "*")'), 2, 'where a bare star matches anything')
+  eq(f('COUNTIF(E1:E4, 20)'), 1, 'a number criterion matches the number')
+  eq(f('COUNTIF(G1:G1, 10)'), 0, 'and not the number stored as text')
+
+  eq(f('IFERROR(1/0, "none")'), 'none', 'IFERROR replaces an error')
+  eq(f('IFERROR(VLOOKUP("kiwi", A2:C5, 2, FALSE), 0)'), 0, 'including the #N/A a lookup gives')
+  eq(f('IFERROR(5, 0)'), 5, 'and passes anything else through')
+  eq(f('IFERROR(1/0)'), null, 'with one argument, an error becomes a blank, as Google says')
+  m.setCell(21, 0, '=IFERROR(A22, 0)')
+  eq(val(m, 21, 0), '#CYCLE!', 'but a circular reference is not hidden')
+
+  // Exactness travels through SUMIF the way it travels through SUM.
+  m.setCell(0, 13, '987654321098765432')
+  m.setCell(1, 13, '1')
+  m.setExact({ r1: 0, c1: 13, r2: 1, c2: 13 }, true)
+  m.setCell(22, 0, '=SUMIF(N1:N2, ">0")')
+  eq(m.display(22, 0).text, '987654321098765433', 'SUMIF over exact cells is exact')
 }
 
 {

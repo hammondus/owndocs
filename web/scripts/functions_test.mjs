@@ -59,7 +59,7 @@ ok('every group has a name and something in it')
 // all this needs — the assertion is about names and parsing, not arithmetic.
 const ctx = {
   refValue: () => null,
-  rangeValues: () => [],
+  rangeValues: () => ({ values: [], cols: 1 }),
 }
 for (const f of all) {
   let ast

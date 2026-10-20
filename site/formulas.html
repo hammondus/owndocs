@@ -51,6 +51,8 @@
     <dd>Square root.<code>=SQRT(16)</code></dd>
     <dt data-fn="MOD">MOD(number, divisor)</dt>
     <dd>The remainder after division.<code>=MOD(7, 3)</code></dd>
+    <dt data-fn="SUMIF">SUMIF(range, criterion, sum_range)</dt>
+    <dd>Adds the cells that meet a criterion, such as "&gt;100", "&lt;&gt;0", or "pe*". With sum_range, which must be the same size, adds the cells beside the ones that match.<code>=SUMIF(A2:A20, "pears", C2:C20)</code></dd>
   </dl>
 
   <h2>Counting</h2>
@@ -59,6 +61,8 @@
     <dd>How many of them are numbers.<code>=COUNT(A1:A10)</code></dd>
     <dt data-fn="COUNTA">COUNTA(value, …)</dt>
     <dd>How many are not empty, whatever they hold.<code>=COUNTA(A1:A10)</code></dd>
+    <dt data-fn="COUNTIF">COUNTIF(range, criterion)</dt>
+    <dd>How many cells meet a criterion, such as "&gt;100", "pe*", or "" for empty cells.<code>=COUNTIF(B2:B20, "&gt;100")</code></dd>
   </dl>
 
   <h2>Logic</h2>
@@ -71,6 +75,20 @@
     <dd>True when any one of them is.<code>=OR(A1&gt;0, B1&gt;0)</code></dd>
     <dt data-fn="NOT">NOT(test)</dt>
     <dd>Turns true into false and back.<code>=NOT(A1&gt;0)</code></dd>
+    <dt data-fn="IFERROR">IFERROR(value, if_error)</dt>
+    <dd>The value, or if_error when the value is an error. Without if_error, the cell is blank. A circular reference still shows.<code>=IFERROR(A1/B1, 0)</code></dd>
+  </dl>
+
+  <h2>Lookup</h2>
+  <dl class="fns">
+    <dt data-fn="VLOOKUP">VLOOKUP(key, range, column, sorted)</dt>
+    <dd>Finds key in the first column and returns the value from another column, counting from 1. Give FALSE for an exact match: sorted is TRUE unless you say otherwise, and then the first column must be in order.<code>=VLOOKUP("pears", A2:C20, 3, FALSE)</code></dd>
+    <dt data-fn="XLOOKUP">XLOOKUP(key, look_in, return_from, if_missing, match, search)</dt>
+    <dd>Finds key in one row or column and returns the value in the same place in another. Match 0 is exact, -1 or 1 also takes the next smaller or larger, and 2 allows * and ?. Search -1 starts from the end.<code>=XLOOKUP(A2, D2:D50, F2:F50, "none")</code></dd>
+    <dt data-fn="MATCH">MATCH(key, range, type)</dt>
+    <dd>The position of key in one row or column, counting from 1. Type 0 is an exact match. Type 1, the default, needs the list in ascending order.<code>=MATCH("pears", A2:A20, 0)</code></dd>
+    <dt data-fn="INDEX">INDEX(range, row, column)</dt>
+    <dd>The cell at a row and column of a range, counting from 1. In a single column, the row is enough.<code>=INDEX(A2:C20, 4, 2)</code></dd>
   </dl>
 
   <h2>Text</h2>
@@ -126,8 +144,8 @@
   <!-- google-functions:start -->
   <h2 id="google-sheets">In Google Sheets, not in Own Docs</h2>
   <p>Google Sheets listed 515 functions on
-  <time datetime="2026-10-19">2026-10-19</time>, and Own Docs has 35 of them
-  by name. Each of the 35 does the same job as the Google function of
+  <time datetime="2026-10-19">2026-10-19</time>, and Own Docs has 42 of them
+  by name. Each of the 42 does the same job as the Google function of
   that name. Nobody has tested them against Google Sheets, so an edge case can
   differ.</p>
   <p>Google also lists 15 operators as
@@ -159,7 +177,7 @@
     <code data-absent-fn="IMPORTHTML">IMPORTHTML</code>
     <code data-absent-fn="IMPORTRANGE">IMPORTRANGE</code>
     <code data-absent-fn="IMPORTXML">IMPORTXML</code></p>
-  <p>The other 455, by Google's category:</p>
+  <p>The other 448, by Google's category:</p>
   <details class="fnset">
     <summary>Statistical <span class="count">131</span></summary>
     <p><code data-absent-fn="AVEDEV">AVEDEV</code>
@@ -295,7 +313,7 @@
     <code data-absent-fn="ZTEST">ZTEST</code></p>
   </details>
   <details class="fnset">
-    <summary>Math <span class="count">79</span></summary>
+    <summary>Math <span class="count">77</span></summary>
     <p><code data-absent-fn="ACOS">ACOS</code>
     <code data-absent-fn="ACOSH">ACOSH</code>
     <code data-absent-fn="ACOT">ACOT</code>
@@ -316,7 +334,6 @@
     <code data-absent-fn="COT">COT</code>
     <code data-absent-fn="COTH">COTH</code>
     <code data-absent-fn="COUNTBLANK">COUNTBLANK</code>
-    <code data-absent-fn="COUNTIF">COUNTIF</code>
     <code data-absent-fn="COUNTIFS">COUNTIFS</code>
     <code data-absent-fn="COUNTUNIQUE">COUNTUNIQUE</code>
     <code data-absent-fn="CSC">CSC</code>
@@ -369,7 +386,6 @@
     <code data-absent-fn="SINH">SINH</code>
     <code data-absent-fn="SQRTPI">SQRTPI</code>
     <code data-absent-fn="SUBTOTAL">SUBTOTAL</code>
-    <code data-absent-fn="SUMIF">SUMIF</code>
     <code data-absent-fn="SUMIFS">SUMIFS</code>
     <code data-absent-fn="SUMSQ">SUMSQ</code>
     <code data-absent-fn="TAN">TAN</code>
@@ -569,26 +585,6 @@
     <code data-absent-fn="TYPE">TYPE</code></p>
   </details>
   <details class="fnset">
-    <summary>Lookup <span class="count">17</span></summary>
-    <p><code data-absent-fn="ADDRESS">ADDRESS</code>
-    <code data-absent-fn="CHOOSE">CHOOSE</code>
-    <code data-absent-fn="COLUMN">COLUMN</code>
-    <code data-absent-fn="COLUMNS">COLUMNS</code>
-    <code data-absent-fn="FORMULATEXT">FORMULATEXT</code>
-    <code data-absent-fn="GETPIVOTDATA">GETPIVOTDATA</code>
-    <code data-absent-fn="HLOOKUP">HLOOKUP</code>
-    <code data-absent-fn="INDEX">INDEX</code>
-    <code data-absent-fn="INDIRECT">INDIRECT</code>
-    <code data-absent-fn="LOOKUP">LOOKUP</code>
-    <code data-absent-fn="MATCH">MATCH</code>
-    <code data-absent-fn="OFFSET">OFFSET</code>
-    <code data-absent-fn="ROW">ROW</code>
-    <code data-absent-fn="ROWS">ROWS</code>
-    <code data-absent-fn="SHEET">SHEET</code>
-    <code data-absent-fn="VLOOKUP">VLOOKUP</code>
-    <code data-absent-fn="XLOOKUP">XLOOKUP</code></p>
-  </details>
-  <details class="fnset">
     <summary>Date <span class="count">13</span></summary>
     <p><code data-absent-fn="DATEDIF">DATEDIF</code>
     <code data-absent-fn="DATEVALUE">DATEVALUE</code>
@@ -603,6 +599,22 @@
     <code data-absent-fn="WORKDAY">WORKDAY</code>
     <code data-absent-fn="WORKDAY.INTL">WORKDAY.INTL</code>
     <code data-absent-fn="YEARFRAC">YEARFRAC</code></p>
+  </details>
+  <details class="fnset">
+    <summary>Lookup <span class="count">13</span></summary>
+    <p><code data-absent-fn="ADDRESS">ADDRESS</code>
+    <code data-absent-fn="CHOOSE">CHOOSE</code>
+    <code data-absent-fn="COLUMN">COLUMN</code>
+    <code data-absent-fn="COLUMNS">COLUMNS</code>
+    <code data-absent-fn="FORMULATEXT">FORMULATEXT</code>
+    <code data-absent-fn="GETPIVOTDATA">GETPIVOTDATA</code>
+    <code data-absent-fn="HLOOKUP">HLOOKUP</code>
+    <code data-absent-fn="INDIRECT">INDIRECT</code>
+    <code data-absent-fn="LOOKUP">LOOKUP</code>
+    <code data-absent-fn="OFFSET">OFFSET</code>
+    <code data-absent-fn="ROW">ROW</code>
+    <code data-absent-fn="ROWS">ROWS</code>
+    <code data-absent-fn="SHEET">SHEET</code></p>
   </details>
   <details class="fnset">
     <summary>Database <span class="count">12</span></summary>
@@ -620,9 +632,8 @@
     <code data-absent-fn="DVARP">DVARP</code></p>
   </details>
   <details class="fnset">
-    <summary>Logical <span class="count">9</span></summary>
+    <summary>Logical <span class="count">8</span></summary>
     <p><code data-absent-fn="FALSE">FALSE</code>
-    <code data-absent-fn="IFERROR">IFERROR</code>
     <code data-absent-fn="IFNA">IFNA</code>
     <code data-absent-fn="IFS">IFS</code>
     <code data-absent-fn="LAMBDA">LAMBDA</code>

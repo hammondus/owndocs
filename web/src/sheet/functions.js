@@ -25,6 +25,7 @@ export const FUNCTION_DOCS = [
       { name: 'ABS', args: '(number)', help: 'Drops the sign.', eg: '=ABS(-4)' },
       { name: 'SQRT', args: '(number)', help: 'Square root.', eg: '=SQRT(16)' },
       { name: 'MOD', args: '(number, divisor)', help: 'The remainder after division.', eg: '=MOD(7, 3)' },
+      { name: 'SUMIF', args: '(range, criterion, sum_range)', help: 'Adds the cells that meet a criterion, such as ">100", "<>0", or "pe*". With sum_range, which must be the same size, adds the cells beside the ones that match.', eg: '=SUMIF(A2:A20, "pears", C2:C20)' },
     ],
   },
   {
@@ -32,6 +33,7 @@ export const FUNCTION_DOCS = [
     items: [
       { name: 'COUNT', args: '(value, …)', help: 'How many of them are numbers.', eg: '=COUNT(A1:A10)' },
       { name: 'COUNTA', args: '(value, …)', help: 'How many are not empty, whatever they hold.', eg: '=COUNTA(A1:A10)' },
+      { name: 'COUNTIF', args: '(range, criterion)', help: 'How many cells meet a criterion, such as ">100", "pe*", or "" for empty cells.', eg: '=COUNTIF(B2:B20, ">100")' },
     ],
   },
   {
@@ -41,6 +43,16 @@ export const FUNCTION_DOCS = [
       { name: 'AND', args: '(test, …)', help: 'True when every one of them is.', eg: '=AND(A1>0, B1>0)' },
       { name: 'OR', args: '(test, …)', help: 'True when any one of them is.', eg: '=OR(A1>0, B1>0)' },
       { name: 'NOT', args: '(test)', help: 'Turns true into false and back.', eg: '=NOT(A1>0)' },
+      { name: 'IFERROR', args: '(value, if_error)', help: 'The value, or if_error when the value is an error. Without if_error, the cell is blank. A circular reference still shows.', eg: '=IFERROR(A1/B1, 0)' },
+    ],
+  },
+  {
+    group: 'Lookup',
+    items: [
+      { name: 'VLOOKUP', args: '(key, range, column, sorted)', help: 'Finds key in the first column and returns the value from another column, counting from 1. Give FALSE for an exact match: sorted is TRUE unless you say otherwise, and then the first column must be in order.', eg: '=VLOOKUP("pears", A2:C20, 3, FALSE)' },
+      { name: 'XLOOKUP', args: '(key, look_in, return_from, if_missing, match, search)', help: 'Finds key in one row or column and returns the value in the same place in another. Match 0 is exact, -1 or 1 also takes the next smaller or larger, and 2 allows * and ?. Search -1 starts from the end.', eg: '=XLOOKUP(A2, D2:D50, F2:F50, "none")' },
+      { name: 'MATCH', args: '(key, range, type)', help: 'The position of key in one row or column, counting from 1. Type 0 is an exact match. Type 1, the default, needs the list in ascending order.', eg: '=MATCH("pears", A2:A20, 0)' },
+      { name: 'INDEX', args: '(range, row, column)', help: 'The cell at a row and column of a range, counting from 1. In a single column, the row is enough.', eg: '=INDEX(A2:C20, 4, 2)' },
     ],
   },
   {

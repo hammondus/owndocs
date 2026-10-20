@@ -1629,13 +1629,13 @@ export class SheetModel {
         if (r1 === undefined || c1 === undefined || r2 === undefined || c2 === undefined) {
           return ERR('#REF!')
         }
-        const out = []
+        const values = []
         for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++) {
           for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
-            out.push(m._valueById(m.rowIds[r], m.colIds[c]))
+            values.push(m._valueById(m.rowIds[r], m.colIds[c]))
           }
         }
-        return out
+        return { values, cols: Math.abs(c2 - c1) + 1 }
       },
     }
   }
